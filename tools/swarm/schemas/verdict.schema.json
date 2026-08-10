@@ -1,0 +1,112 @@
+{
+ "type": "object",
+ "properties": {
+  "analysis": {
+   "type": "string"
+  },
+  "verdict": {
+   "type": "string",
+   "enum": [
+    "approve",
+    "request_changes",
+    "blocked"
+   ]
+  },
+  "summary": {
+   "type": "string"
+  },
+  "findings": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string"
+     },
+     "line": {
+      "type": "integer"
+     },
+     "severity": {
+      "type": "string",
+      "enum": [
+       "blocker",
+       "major",
+       "minor"
+      ]
+     },
+     "category": {
+      "type": "string",
+      "enum": [
+       "correctness",
+       "tests",
+       "style",
+       "scope",
+       "architecture"
+      ]
+     },
+     "confidence": {
+      "type": "number"
+     },
+     "issue": {
+      "type": "string"
+     },
+     "suggestion": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "file",
+     "severity",
+     "category",
+     "confidence",
+     "issue"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "out_of_scope_notes": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "verification_requests": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "run_tests",
+       "run_all_tests",
+       "git_show",
+       "git_log",
+       "python"
+      ]
+     },
+     "arg": {
+      "type": "string"
+     },
+     "why": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "why"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ "required": [
+  "analysis",
+  "verdict",
+  "summary",
+  "findings",
+  "out_of_scope_notes",
+  "verification_requests"
+ ],
+ "additionalProperties": false
+}

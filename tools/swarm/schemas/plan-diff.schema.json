@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "properties": {
+    "analysis": {"type": "string"},
+    "summary": {"type": "string"},
+    "ops": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "op": {"type": "string", "enum": ["add", "update", "remove"]},
+          "id": {"type": "string"},
+          "task": {
+            "type": "object",
+            "properties": {
+              "id": {"type": "string"},
+              "title": {"type": "string"},
+              "type": {"type": "string", "enum": ["feature", "feature-tests", "test-task", "idea"]},
+              "milestone": {"type": "string"},
+              "gate": {"type": "string", "enum": ["full", "module"]},
+              "paths": {"type": "array", "items": {"type": "string"}},
+              "test_module": {"type": "string"},
+              "spec": {"type": "string"},
+              "acceptance": {"type": "array", "items": {"type": "string"}},
+              "deps": {"type": "array", "items": {"type": "string"}},
+              "status": {"type": "string", "enum": ["pending", "blocked", "done"]}
+            },
+            "required": ["id", "title", "type", "milestone", "gate", "paths",
+                         "test_module", "spec", "acceptance", "deps", "status"],
+            "additionalProperties": false
+          },
+          "reason": {"type": "string"}
+        },
+        "required": ["op", "id", "reason"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["analysis", "summary", "ops"],
+  "additionalProperties": false
+}

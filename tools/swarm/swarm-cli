@@ -1,0 +1,15 @@
+#!/bin/sh
+# Единая точка входа: swarm <команда>
+#
+# Путь разрешается через symlink: команда ставится в ~/.local/bin/swarm
+# ссылкой сюда, и `dirname "$0"` тогда указывал бы на каталог ссылки,
+# а не на код.
+self="$0"
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case "$link" in
+        /*) self="$link" ;;
+        *)  self="$(dirname "$self")/$link" ;;
+    esac
+done
+exec python3 "$(cd "$(dirname "$self")" && pwd)/swarm/cli.py" "$@"

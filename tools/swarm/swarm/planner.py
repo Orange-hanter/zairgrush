@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""Планировщик петли (§3.1): goal -> план-дифф с механической валидацией.
+
+Два режима:
+  plan   --goal "<цель>"          — декомпозиция цели в задачи
+  replan --task <id> --dispute f  — пересмотр плана по спору исполнителя
+
+Планировщик выдаёт НЕ новый tasks.json, а дифф к нему (add/update/remove).
+Оркестратор валидирует дифф механически и только потом применяет:
+схема, уникальность id, существование целей update/remove, разрешимость
+deps, отсутствие циклов, обязательность paths/acceptance, легальность
+статусов. Невалидный дифф = одна повторная попытка, затем эскалация.
+
+Артефакты: plan-metrics.jsonl, raw/<mode>-<n>.json, применённый tasks.json.
+"""
+import argparse
+import copy
+import json
+import pathlib
+import subprocess
+import time
+
+PLAN = pathlib.Path(__file__).resolve().parent
+SCHEMA = (PLAN.parent / "schemas" / "plan-diff.schema.json").read_text()
+METRICS = PLAN / "plan-metrics.jsonl"
+RAW = PLAN / "raw"
+LEGAL_STATUS = {"pending", "blocked", "done"}
+
+
+def metric(**row):
+    row["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    with METRICS.open("a") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def repo_map(stand):
+    """Карта репозитория для планировщика: модули, тесты, размер сьюта."""
+    files = sorted(p.relative_to(stand).as_posix()
+                   for p in stand.rglob("*.py")
+                   if "__pycache__" not in p.parts and ".git" not in p.parts)
+    r = subprocess.run(["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."],
+                       capture_output=True, text=True, cwd=stand)
+    tail = (r.stdout + r.stderr).strip().splitlines()[-2:]
+    return "\n".join(files), " ".join(tail)
+
+
+def plan_prompt(goal, tasks, files, suite):
+    return f"""Ты — планировщик в автоматической петле разработки. Ответ парсится механически.
+
+## Цель
+{goal}
+
+## Текущее состояние репозитория
+Файлы:
+{files}
+
+Состояние тестов: {suite}
+
+## Текущая очередь задач
+{json.dumps(tasks, ensure_ascii=False, indent=1)}
+
+## Что от тебя требуется
+Выдай ПЛАН-ДИФФ — список операций add/update/remove над очередью, а не новый
+файл целиком. Правила, которые оркестратор проверяет механически:
+
+- `id` задачи — короткий уникальный хеш-подобный идентификатор (4 символа,
+  латиница+цифры), не порядковый номер; не должен совпадать с существующими;
+- обязательны `paths` (glob-список файлов, которые разрешено править) и
+  `acceptance` (проверяемые критерии приёмки, по ним будет судить ревьюер);
+- `deps` — только id задач, существующих в очереди или добавляемых этим же
+  диффом; циклы запрещены;
+- `type`: feature (правит продукционный код; тесты трогать нельзя),
+  feature-tests (сам пишет свои новые тесты), test-task (правит только
+  тесты), idea (замечание на будущее);
+- `gate`: full (полный сьют — по умолчанию для правок существующего кода);
+- `test_module` — модуль тестов, которым проверяется задача;
+- задачи должны быть маленькими: одна задача = один связный результат,
+  сходящийся за 1–2 итерации;
+- `paths` обязаны учитывать ФАКТИЧЕСКОЕ состояние репозитория выше, включая
+  файлы, созданные соседними задачами очереди.
+
+В поле analysis сначала рассуждай, потом формируй ops.
+"""
+
+
+def replan_prompt(task, dispute, tasks, files, suite):
+    return f"""Ты — планировщик в автоматической петле разработки. Ответ парсится механически.
+
+## Ситуация
+Задача ушла в blocked через канал dispute: исполнитель заявил, что требования
+невыполнимы в заданных рамках. Твоя работа — устранить причину диффом к плану.
+
+## Задача
+{json.dumps(task, ensure_ascii=False, indent=1)}
+
+## Спор исполнителя (dispute)
+{json.dumps(dispute, ensure_ascii=False, indent=1)}
+
+## Текущее состояние репозитория
+Файлы:
+{files}
+
+Состояние тестов: {suite}
+
+## Текущая очередь задач
+{json.dumps(tasks, ensure_ascii=False, indent=1)}
+
+## Что от тебя требуется
+Выдай ПЛАН-ДИФФ, который делает задачу выполнимой: расширь `paths`, уточни
+`acceptance`, при необходимости разбей задачу на несколько или сними
+неисполнимое требование. Ограничения те же, что и при планировании: paths и
+acceptance обязательны, deps без циклов, id уникальны, задачи маленькие.
+Верни задачу в статус pending, если она снова исполнима.
+
+В поле analysis объясни, кто прав в споре и почему план оказался устаревшим.
+"""
+
+
+def call_planner(prompt, tag, attempt=1):
+    t0 = time.time()
+    r = subprocess.run(["claude", "-p", prompt, "--output-format", "json",
+                        "--json-schema", SCHEMA, "--allowedTools",
+                        "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*)",
+                        "--max-budget-usd", "1.50"],
+                       capture_output=True, text=True)
+    dur = round(time.time() - t0, 1)
+    RAW.mkdir(exist_ok=True)
+    (RAW / f"{tag}-a{attempt}.json").write_text(r.stdout)
+    diff, cost = None, None
+    try:
+        env = json.loads(r.stdout)
+        diff = env.get("structured_output")
+        cost = env.get("total_cost_usd")
+    except ValueError:
+        pass
+    metric(mode=tag, attempt=attempt, dur_s=dur, cost_usd=cost,
+           ops=len((diff or {}).get("ops", [])))
+    return diff
+
+
+def validate_plan_diff(diff, tasks):
+    """Механическая валидация плана-диффа (§3.1). -> список ошибок."""
+    errs = []
+    if not isinstance(diff, dict) or not isinstance(diff.get("ops"), list):
+        return ["дифф не объект или нет ops"]
+    if not diff["ops"]:
+        return ["пустой дифф: планировщик не предложил ни одной операции"]
+    # analysis печатается и уходит в журнал наравне с reason: отсутствие
+    # поля роняло вывод уже после успешной валидации.
+    if not str(diff.get("analysis") or "").strip():
+        errs.append("дифф без analysis: планировщик не обосновал план")
+    existing = {t["id"] for t in tasks}
+    added = set()
+    removed = set()
+    touched = {}
+    for i, op in enumerate(diff["ops"]):
+        kind, tid = op.get("op"), op.get("id")
+        where = f"ops[{i}] {kind} {tid}"
+        # `reason` печатается и уходит в журнал: без него падает вывод.
+        if not op.get("reason"):
+            errs.append(f"{where}: операция без reason")
+        # Две операции над одной задачей в одном диффе неоднозначны по
+        # порядку, а remove+update ещё и роняет применение.
+        if tid in touched:
+            errs.append(f"{where}: повторная операция над задачей "
+                        f"(уже {touched[tid]})")
+        if tid is not None:
+            touched[tid] = kind
+        if kind == "add":
+            if tid in existing or tid in added:
+                errs.append(f"{where}: id уже существует")
+            t = op.get("task")
+            if not isinstance(t, dict):
+                errs.append(f"{where}: add без task")
+                continue
+            if t.get("id") != tid:
+                errs.append(f"{where}: task.id != op.id")
+            if not t.get("paths"):
+                errs.append(f"{where}: пустой paths")
+            if not t.get("acceptance"):
+                errs.append(f"{where}: пустой acceptance")
+            if t.get("status") not in LEGAL_STATUS:
+                errs.append(f"{where}: недопустимый статус {t.get('status')}")
+            added.add(tid)
+        elif kind in ("update", "remove"):
+            if tid not in existing:
+                errs.append(f"{where}: цель не существует в очереди")
+            if kind == "remove":
+                removed.add(tid)
+            else:
+                t = op.get("task")
+                if not isinstance(t, dict):
+                    errs.append(f"{where}: update без task")
+                    continue
+                # Смена id рвёт deps, ссылающиеся на прежний id, и делает
+                # ключ очереди рассогласованным с телом задачи.
+                if "id" in t and t["id"] != tid:
+                    errs.append(f"{where}: update меняет id на {t['id']}")
+                if not t.get("paths") or not t.get("acceptance"):
+                    errs.append(f"{where}: update обнуляет paths/acceptance")
+                if "status" in t and t["status"] not in LEGAL_STATUS:
+                    errs.append(f"{where}: недопустимый статус {t['status']}")
+        else:
+            errs.append(f"{where}: неизвестная операция")
+    # deps: ссылки только на существующие/добавляемые, без циклов.
+    # Удаляемые задачи выпадают и из universe, и из графа: иначе их
+    # собственные deps дают ложный отказ уже после того, как задача ушла.
+    universe = (existing | added) - removed
+    graph = {t["id"]: list(t.get("deps") or [])
+             for t in tasks if t["id"] not in removed}
+    for op in diff["ops"]:
+        t = op.get("task")
+        # id берётся из операции: частичный update законно не повторяет его
+        # в теле задачи, и обращение к t["id"] роняло валидатор.
+        tid = op.get("id")
+        if isinstance(t, dict) and tid is not None and tid not in removed:
+            if "deps" in t:
+                graph[tid] = list(t.get("deps") or [])
+            else:
+                graph.setdefault(tid, [])
+    for tid, deps in graph.items():
+        for d in deps:
+            if d not in universe:
+                errs.append(f"deps {tid} -> {d}: задача не существует")
+    color = {}
+
+    def cyclic(node):
+        color[node] = 1
+        for nxt in graph.get(node, []):
+            if color.get(nxt) == 1:
+                return True
+            if color.get(nxt, 0) == 0 and cyclic(nxt):
+                return True
+        color[node] = 2
+        return False
+
+    for tid in list(graph):
+        if color.get(tid, 0) == 0 and cyclic(tid):
+            errs.append(f"цикл в deps около {tid}")
+            break
+    return errs
+
+
+def apply_plan_diff(diff, tasks):
+    # Копия обязана быть глубокой: `dict(t)` оставляет общими вложенные
+    # структуры (paths, deps, acceptance), и правка результата тихо меняет
+    # исходную очередь — поймано мутационным аудитом.
+    by_id = {t["id"]: copy.deepcopy(t) for t in tasks}
+    order = [t["id"] for t in tasks]
+    for op in diff["ops"]:
+        if op["op"] == "add":
+            by_id[op["id"]] = copy.deepcopy(op["task"])
+            order.append(op["id"])
+        elif op["op"] == "update":
+            by_id[op["id"]].update(op["task"])
+        elif op["op"] == "remove":
+            by_id.pop(op["id"], None)
+            order = [x for x in order if x != op["id"]]
+    return [by_id[i] for i in order if i in by_id]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("mode", choices=["plan", "replan"])
+    ap.add_argument("--stand", required=True)
+    ap.add_argument("--tasks", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--goal")
+    ap.add_argument("--task")
+    ap.add_argument("--dispute")
+    args = ap.parse_args()
+
+    stand = pathlib.Path(args.stand)
+    data = json.loads(pathlib.Path(args.tasks).read_text())
+    tasks = data["tasks"]
+    files, suite = repo_map(stand)
+
+    if args.mode == "plan":
+        prompt = plan_prompt(args.goal, tasks, files, suite)
+    else:
+        task = next(t for t in tasks if t["id"] == args.task)
+        dispute = json.loads(pathlib.Path(args.dispute).read_text())
+        prompt = replan_prompt(task, dispute, tasks, files, suite)
+
+    diff = call_planner(prompt, args.mode)
+    errs = validate_plan_diff(diff, tasks) if diff else ["невалидный JSON"]
+    if errs:
+        print("ПЛАН-ДИФФ НЕВАЛИДЕН (попытка 1):", *errs, sep="\n  ")
+        diff = call_planner(prompt + "\n\n## Ошибки прошлой попытки\n"
+                            + "\n".join(errs), args.mode, attempt=2)
+        errs = validate_plan_diff(diff, tasks) if diff else ["невалидный JSON"]
+        if errs:
+            print("ЭСКАЛАЦИЯ: дифф невалиден после повтора:", *errs, sep="\n  ")
+            metric(mode=args.mode, result="escalation", errors=errs)
+            raise SystemExit(2)
+
+    print(f"analysis: {diff['analysis'][:400]}\n")
+    for op in diff["ops"]:
+        t = op.get("task") or {}
+        print(f"  {op['op']:6} {op['id']}  {t.get('title', '')[:60]}")
+        print(f"         paths={t.get('paths')} deps={t.get('deps')}")
+        print(f"         reason: {op['reason'][:150]}")
+    data["tasks"] = apply_plan_diff(diff, tasks)
+    pathlib.Path(args.out).write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    metric(mode=args.mode, result="applied", tasks_after=len(data["tasks"]))
+    print(f"\nприменено -> {args.out} ({len(data['tasks'])} задач)")
+
+
+if __name__ == "__main__":
+    main()

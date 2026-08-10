@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZAIrgRush — рой агентов «исполнитель ↔ ревьюер»</title>
+<meta name="description" content="ZAIrgRush — самостоятельная реализация мультиагентной петли разработки: Kimi Code (исполнитель) и Claude Code (ревьюер) передают задачи по кругу через тонкий оркестратор.">
+<link rel="icon" type="image/svg+xml" href="assets/mascot.svg">
+<style>
+  :root{
+    --bg:#0d0a16;
+    --bg-raised:#161225;
+    --card-border:#2a2340;
+    --ink:#eee9fb;
+    --ink-dim:#a79fc4;
+    --amber:#ff9d54;
+    --amber-soft:#3a2a22;
+    --cyan:#3ecbe0;
+    --cyan-soft:#1c2e33;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{background:var(--bg)}
+  body{
+    margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans);
+    line-height:1.6; overflow-x:hidden;
+  }
+  a{color:var(--cyan)}
+  .wrap{max-width:920px; margin:0 auto; padding:0 24px}
+  code, .mono{font-family:var(--mono)}
+
+  /* hero */
+  .hero{
+    position:relative; padding:88px 24px 64px; text-align:center;
+    background:
+      radial-gradient(60% 50% at 50% 0%, rgba(74,46,120,0.55), transparent 70%),
+      var(--bg);
+    overflow:hidden;
+  }
+  .hero::before{
+    content:""; position:absolute; inset:0; pointer-events:none; opacity:0.35;
+    background-image:
+      linear-gradient(rgba(167,159,196,0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(167,159,196,0.08) 1px, transparent 1px);
+    background-size:42px 42px;
+    mask-image:radial-gradient(60% 60% at 50% 20%, black, transparent 75%);
+  }
+  .mascot{width:220px; height:220px; position:relative; z-index:1;
+    filter:drop-shadow(0 18px 40px rgba(0,0,0,0.55));
+    animation:float 6s ease-in-out infinite;}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+  h1{
+    font-size:clamp(2.2rem, 5vw, 3.2rem); margin:20px 0 6px; letter-spacing:-0.02em;
+    position:relative; z-index:1;
+  }
+  .tagline{color:var(--ink-dim); font-size:1.1rem; max-width:520px; margin:0 auto 28px; position:relative; z-index:1}
+  .badges{display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin-bottom:32px; position:relative; z-index:1}
+  .badge{
+    font-family:var(--mono); font-size:0.75rem; padding:5px 10px; border-radius:6px;
+    border:1px solid var(--card-border); color:var(--ink-dim); background:var(--bg-raised);
+  }
+  .cta{display:flex; gap:14px; justify-content:center; flex-wrap:wrap; position:relative; z-index:1}
+  .btn{
+    display:inline-flex; align-items:center; gap:8px; padding:12px 22px; border-radius:10px;
+    font-weight:600; text-decoration:none; font-size:0.95rem; transition:transform .15s ease;
+  }
+  .btn:hover{transform:translateY(-2px)}
+  .btn.primary{background:linear-gradient(180deg, var(--amber), #ff7a3d); color:#241205}
+  .btn.ghost{background:var(--bg-raised); color:var(--ink); border:1px solid var(--card-border)}
+
+  section{padding:64px 0}
+  h2{font-size:1.6rem; margin:0 0 10px}
+  .lede{color:var(--ink-dim); max-width:640px; margin:0 0 36px}
+
+  .features{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:18px}
+  .card{
+    background:var(--bg-raised); border:1px solid var(--card-border); border-radius:14px;
+    padding:22px;
+  }
+  .card h3{margin:0 0 8px; font-size:1.02rem}
+  .card p{margin:0; color:var(--ink-dim); font-size:0.92rem}
+
+  .roles{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:18px; margin-top:36px}
+  .role{border-radius:14px; padding:22px; border:1px solid var(--card-border)}
+  .role.exec{background:linear-gradient(160deg, var(--amber-soft), var(--bg-raised))}
+  .role.rev{background:linear-gradient(160deg, var(--cyan-soft), var(--bg-raised))}
+  .role .who{font-family:var(--mono); font-size:0.78rem; text-transform:uppercase; letter-spacing:.06em}
+  .role.exec .who{color:var(--amber)}
+  .role.rev .who{color:var(--cyan)}
+  .role h3{margin:6px 0 8px}
+  .role p{color:var(--ink-dim); margin:0; font-size:0.92rem}
+
+  figure{margin:0}
+  figcaption{color:var(--ink-dim); font-size:0.85rem; margin-top:14px; text-align:center}
+  svg.diagram{width:100%; height:auto; color:var(--ink-dim)}
+  svg.diagram text{fill:currentColor; font-family:var(--mono); font-size:12px}
+  svg.diagram .box{fill:var(--bg-raised); stroke:var(--card-border); stroke-width:1.5}
+  svg.diagram .box.exec{stroke:var(--amber)}
+  svg.diagram .box.rev{stroke:var(--cyan)}
+  svg.diagram .title{fill:var(--ink); font-weight:600; font-size:13px}
+
+  pre{
+    background:var(--bg-raised); border:1px solid var(--card-border); border-radius:12px;
+    padding:18px 20px; overflow-x:auto; font-family:var(--mono); font-size:0.85rem; color:var(--ink);
+  }
+  .docs{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px}
+  .doclink{
+    display:block; padding:16px 18px; border-radius:12px; border:1px solid var(--card-border);
+    background:var(--bg-raised); text-decoration:none; color:var(--ink);
+  }
+  .doclink:hover{border-color:var(--cyan)}
+  .doclink .name{font-family:var(--mono); color:var(--cyan); font-size:0.85rem}
+  .doclink .desc{color:var(--ink-dim); font-size:0.86rem; margin-top:4px}
+
+  footer{padding:40px 24px 60px; text-align:center; color:var(--ink-dim); font-size:0.85rem; border-top:1px solid var(--card-border)}
+  footer a{color:var(--ink-dim)}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <img class="mascot" src="assets/mascot.svg" alt="Маскот ZAIrgRush — стилизованный зерлинг с янтарно-циановыми жвалами и хвостом-циклом">
+  <h1>ZAIrgRush</h1>
+  <p class="tagline">Zerg rush, только рой — это два ИИ-агента, а ранняя атака — это ваш код. Петля «исполнитель ↔ ревьюер» без постоянного участия человека.</p>
+  <div class="badges">
+    <span class="badge">MIT license</span>
+    <span class="badge">status: experimental</span>
+    <span class="badge">tests: 448 passed</span>
+  </div>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/Orange-hanter/zairgrush">Репозиторий на GitHub</a>
+    <a class="btn ghost" href="https://github.com/Orange-hanter/zairgrush/blob/main/05-agent-swarm.md">Дизайн-док</a>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section id="what">
+    <h2>Что это</h2>
+    <p class="lede">Мультиагентная петля разработки: два независимых CLI-агента по очереди передают друг другу задачи, пока код не сойдётся к принятому виду. Оркестратор — тупой; вся «умность» в агентах.</p>
+    <div class="features">
+      <div class="card">
+        <h3>Агенты stateless</h3>
+        <p>Каждый вызов — свежий <code>kimi -p</code> / <code>claude -p</code>. Память итераций живёт в файлах и git, а не в контекстном окне.</p>
+      </div>
+      <div class="card">
+        <h3>Git — источник правды</h3>
+        <p>Ревьюер смотрит <code>git diff</code>, а не рассказ исполнителя о том, что он сделал. Каждая принятая итерация — коммит.</p>
+      </div>
+      <div class="card">
+        <h3>Строгие JSON-контракты</h3>
+        <p>Verdict ревьюера — закрытые enum'ы severity/category. Невалидный ответ агента — один retry, затем эскалация человеку.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>Как работает</h2>
+    <p class="lede">Оркестратор запускает обоих агентов свежими subprocess-вызовами; асимметрия ролей — намеренная: ревьюер не видит рассуждений исполнителя, только требования и diff.</p>
+
+    <figure>
+      <svg class="diagram" viewBox="0 0 760 400" role="img" aria-label="Оркестратор запускает исполнителя и ревьюера как отдельные subprocess-вызовы; исполнитель читает и пишет состояние, ревьюер только читает diff и пишет verdict; оба замыкаются на общее состояние, из которого оркестратор начинает следующую итерацию.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- orchestrator -->
+        <rect class="box" x="270" y="16" width="220" height="56" rx="10"/>
+        <text class="title" x="380" y="40" text-anchor="middle">ОРКЕСТРАТОР (swarm)</text>
+        <text x="380" y="58" text-anchor="middle">не содержит LLM</text>
+
+        <!-- arrows down to roles -->
+        <line x1="330" y1="72" x2="200" y2="128" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="230" y="100" text-anchor="middle">subprocess</text>
+        <line x1="430" y1="72" x2="560" y2="128" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="530" y="100" text-anchor="middle">subprocess</text>
+
+        <!-- executor box -->
+        <rect class="box exec" x="80" y="130" width="240" height="64" rx="10"/>
+        <text class="title" x="200" y="156" text-anchor="middle">ИСПОЛНИТЕЛЬ</text>
+        <text x="200" y="176" text-anchor="middle">kimi -p --agent implementer</text>
+
+        <!-- reviewer box -->
+        <rect class="box rev" x="440" y="130" width="240" height="64" rx="10"/>
+        <text class="title" x="560" y="156" text-anchor="middle">РЕВЬЮЕР</text>
+        <text x="560" y="176" text-anchor="middle">claude -p (read-only)</text>
+
+        <!-- arrows to state -->
+        <line x1="220" y1="194" x2="300" y2="270" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="220" y="235" text-anchor="middle">читает / пишет</text>
+        <line x1="540" y1="194" x2="460" y2="270" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="545" y="235" text-anchor="middle">diff → verdict</text>
+
+        <!-- state box -->
+        <rect class="box" x="230" y="274" width="300" height="80" rx="10"/>
+        <text class="title" x="380" y="298" text-anchor="middle">СОСТОЯНИЕ</text>
+        <text x="380" y="316" text-anchor="middle">.swarm/tasks.json · state.json</text>
+        <text x="380" y="332" text-anchor="middle">log/ · git</text>
+
+        <!-- loop back to orchestrator -->
+        <path d="M 230 314 C 60 314, 60 44, 268 44" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+        <text x="70" y="180" text-anchor="middle" transform="rotate(-90 70 180)">следующая итерация</text>
+      </svg>
+      <figcaption>Оркестратор не хранит контекст сам — читает и пишет только файлы состояния; после verdict'а цикл начинается заново с чистого вызова обоих агентов.</figcaption>
+    </figure>
+
+    <div class="roles">
+      <div class="role exec">
+        <div class="who">executor · kimi k3</div>
+        <h3>Пишет код</h3>
+        <p>Получает задачу + diff + последний verdict. Может открыть dispute, если требование противоречит коду — тогда задача уходит на реплан, а не тонет в бесконечных попытках.</p>
+      </div>
+      <div class="role rev">
+        <div class="who">reviewer · claude code</div>
+        <h3>Проверяет, не видя рассуждений</h3>
+        <p>Строго read-only: только требования и <code>git diff</code>. Выносит verdict с закрытым enum'ом severity/category — иначе «взаимные комплименты» агентов не остановить.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <h2>Быстрый старт</h2>
+    <pre>git clone git@github.com:Orange-hanter/zairgrush.git
+cd zairgrush/tools/swarm
+
+python3 -m pytest                                    # тесты
+./swarm-cli --root /путь/к/репо doctor                # проверка окружения
+./swarm-cli --root /путь/к/репо go --goal "цель"      # от и до эскалации</pre>
+  </section>
+
+  <section id="docs">
+    <h2>Документация</h2>
+    <div class="docs">
+      <a class="doclink" href="https://github.com/Orange-hanter/zairgrush/blob/main/05-agent-swarm.md">
+        <div class="name">05-agent-swarm.md</div>
+        <div class="desc">Архитектура петли, протокол handoff, контракты, план внедрения</div>
+      </a>
+      <a class="doclink" href="https://github.com/Orange-hanter/zairgrush/blob/main/05-agent-swarm-audit.md">
+        <div class="name">05-agent-swarm-audit.md</div>
+        <div class="desc">Аудит v0.4 — источники решений, вошедших в v0.5+</div>
+      </a>
+      <a class="doclink" href="https://github.com/Orange-hanter/zairgrush/blob/main/06-knowledge-infra-experiments.md">
+        <div class="name">06-knowledge-infra-experiments.md</div>
+        <div class="desc">Программа экспериментов: дублирующие варианты, протокол ADR</div>
+      </a>
+      <a class="doclink" href="https://github.com/Orange-hanter/zairgrush/blob/main/07-experiments-journal.md">
+        <div class="name">07-experiments-journal.md</div>
+        <div class="desc">Связный журнал программы экспериментов</div>
+      </a>
+      <a class="doclink" href="https://github.com/Orange-hanter/zairgrush/blob/main/08-operators-guide.md">
+        <div class="name">08-operators-guide.md</div>
+        <div class="desc">Руководство оператора петли</div>
+      </a>
+      <a class="doclink" href="https://github.com/Orange-hanter/zairgrush/tree/main/experiments/adr">
+        <div class="name">experiments/adr/</div>
+        <div class="desc">Принятые решения экспериментальной программы</div>
+      </a>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <p>MIT License · <a href="https://github.com/Orange-hanter/zairgrush">github.com/Orange-hanter/zairgrush</a></p>
+</footer>
+
+</body>
+</html>

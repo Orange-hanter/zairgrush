@@ -1,0 +1,39 @@
+# --- Python / tools/swarm ---
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+*.egg-info/
+.venv/
+venv/
+
+# --- ОС / редакторы ---
+.DS_Store
+.idea/
+.vscode/
+
+# --- локальное состояние петли (см. §6.3 05-agent-swarm.md: .swarm/ — не в git) ---
+.swarm/
+**/.swarm/
+# случайный локальный лог метрик из корня tools/swarm (не деливеребл)
+tools/swarm/swarm/metrics.jsonl
+
+# --- experiments/: рабочие стенды и бенч-артефакты — воспроизводимый scratch,
+# не деливеребл. В git идут только выводы программы: ADR, findings, отчёты.
+# Правило программы (§1.4 06-knowledge-infra-experiments.md): проигравший
+# вариант удаляется вместе с ADR — живые стенды не должны оседать в истории.
+experiments/bench/
+experiments/canary/
+experiments/driver/
+experiments/helpers/
+experiments/neg/
+experiments/pilot/
+experiments/plan/
+experiments/repomap/
+experiments/smoke1/
+experiments/stand/
+experiments/stand-*/
+experiments/verify/
+
+# --- Claude Code локальные настройки (не для всех участников) ---
+.claude/settings.local.json

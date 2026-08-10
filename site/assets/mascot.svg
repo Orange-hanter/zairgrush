@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a2e78"/>
+      <stop offset="55%" stop-color="#2a1a4a"/>
+      <stop offset="100%" stop-color="#150c28"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffd28a"/>
+      <stop offset="100%" stop-color="#ff7a3d"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#bff4ff"/>
+      <stop offset="100%" stop-color="#3ecbe0"/>
+    </linearGradient>
+    <linearGradient id="loopgrad" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3ecbe0"/>
+      <stop offset="100%" stop-color="#ff9d54"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g transform="rotate(-5 256 300)">
+
+  <!-- motion streaks (speed / "rush") -->
+  <g stroke="url(#loopgrad)" stroke-linecap="round" opacity="0.35" fill="none">
+    <path d="M60,235 L15,225" stroke-width="6"/>
+    <path d="M65,270 L10,266" stroke-width="5"/>
+    <path d="M75,300 L25,302" stroke-width="4"/>
+  </g>
+
+  <!-- far-side legs (depth cue, darker, no glow) -->
+  <polygon points="330,305 305,335 345,362 358,402 336,412 308,394 292,352 305,312" fill="#1c1030"/>
+  <polygon points="205,300 165,312 190,352 172,396 150,410 168,370 152,332 178,296" fill="#1c1030"/>
+
+  <!-- tail: organic curling loop, contrast to angular body -->
+  <path d="M172,231 C110,240 68,268 78,308 C86,338 128,344 148,318 C160,303 148,286 130,290 C118,292 114,304 122,312"
+        fill="none" stroke="url(#loopgrad)" stroke-width="14" stroke-linecap="round" filter="url(#glow)"/>
+
+  <!-- main torso silhouette (neck now cut back so the head reads as separate) -->
+  <polygon fill="url(#body)" points="
+    360,255 345,225 345,195 320,180
+    300,195 292,140 278,190
+    255,205 248,160 236,202
+    214,215 208,178 198,213
+    170,232 150,245 138,272 140,300
+    185,305 255,325 330,320 355,290" />
+
+  <!-- HEAD: distinct wedge pointing forward, joined at the neck -->
+  <polygon fill="url(#body)" points="345,195 460,238 430,268 400,300 355,290 345,225"/>
+
+  <!-- mandible blades crossing at the snout tip: executor (amber) over reviewer (cyan) -->
+  <polygon points="418,222 486,198 452,244" fill="url(#amber)" filter="url(#glow)"/>
+  <polygon points="410,268 480,296 442,250" fill="url(#cyan)" filter="url(#glow)"/>
+
+  <!-- near-side back leg (haunch, powerful stride, amber accent claw) -->
+  <polygon points="210,298 158,322 186,360 158,406 132,424 152,382 140,340 172,300" fill="url(#body)"/>
+  <polygon points="132,424 152,382 162,396 140,436" fill="url(#amber)"/>
+
+  <!-- near-side front leg (reaching stride, cyan accent claw) -->
+  <polygon points="352,298 378,342 400,378 380,416 354,428 342,406 366,378 348,346" fill="url(#body)"/>
+  <polygon points="354,428 342,406 350,420 326,438" fill="url(#cyan)"/>
+
+  <!-- dorsal spikes, swept back for speed -->
+  <polygon points="300,195 285,136 278,190" fill="url(#amber)" filter="url(#glow)"/>
+  <polygon points="255,205 236,156 236,202" fill="url(#amber)" filter="url(#glow)" opacity="0.9"/>
+  <polygon points="214,215 194,180 198,213" fill="url(#amber)" filter="url(#glow)" opacity="0.75"/>
+
+  <!-- eye slit on the head -->
+  <rect x="352" y="203" width="28" height="9" rx="4.5" fill="url(#cyan)" filter="url(#glow)"
+        transform="rotate(16 366 207)"/>
+
+  </g>
+</svg>
