@@ -38,6 +38,22 @@ EXIT_ASK_USER = 11   # нужен ответ человека по замысл�
 EXIT_ESCALATE = 20   # разбирается человеком целиком
 MIN_ANALYSIS = 40
 MIN_SUMMARY = 20
+
+# Ревью может не состояться по разным причинам, и лечение у них разное.
+# Оператору отдаётся диагноз, а не голое «invalid_verdict»: на пилоте
+# задача с зелёным гейтом и чистыми границами ушла в blocked молча —
+# инбокс пуст, журнал пуст, и понять причину можно было только чтением
+# сырых ответов ревьюера.
+REVIEW_DIAGNOSIS = {
+    "budget_exhausted": (
+        "ревьюер обрублен по бюджету, вердикта нет. Работа исполнителя "
+        "цела, гейт был зелёный. Почти всегда причина — объём диффа: "
+        "проверь, не попал ли в него сгенерированный файл; при "
+        "необходимости подними review_budget_usd"),
+    "invalid": (
+        "ревьюер дважды не вернул разбираемый вердикт: ответ не проходит "
+        "схему. Смотри сырые ответы в .swarm/log/*-review.json"),
+}
 QUOTA_MARKERS = ("session limit", "rate limit", "quota", "usage limit",
                  "429", "too many requests")
 
@@ -298,11 +314,30 @@ class Loop:
         return self._sh(["git", "rev-parse", "--short", "HEAD"]).stdout.strip()
 
     def cleanup(self, task, reason):
-        """Терминальный исход оставляет worktree чистым (§5.5.1)."""
+        """Терминальный исход оставляет worktree чистым (§5.5.1).
+
+        Два урока пилота, оба стоили работы:
+
+        1. `git stash push` ОТКАЗЫВАЕТСЯ работать поверх записей
+           intent-to-add: «Entry ... not uptodate. Cannot merge». А их
+           оставляет `work_diff` — тот самый `git add -A -N`, которым
+           созданные файлы делаются видимыми для `git diff`. Починка
+           одного представления работы ломала другое, поэтому индекс
+           сбрасывается перед стешем.
+        2. Метка возвращалась БЕЗ проверки кода возврата. Запись задачи
+           ссылалась на стеш `swarm:g1nt-invalid-verdict`, которого не
+           существовало, и отправляла оператора искать работу там, где
+           её нет. Не создался — так и скажем.
+        """
         if not self._sh(["git", "status", "--porcelain"]).stdout.strip():
             return None
+        self._sh(["git", "reset", "-q"])
         label = f"swarm:{task['id']}-{reason}"
-        self._sh(["git", "stash", "push", "-u", "-q", "-m", label])
+        r = self._sh(["git", "stash", "push", "-u", "-q", "-m", label])
+        if r.returncode != 0:
+            self.state.log("stash_failed", task=task["id"], reason=reason,
+                           stderr=(r.stderr or "").strip()[:300])
+            return None
         return label
 
     def _apply_patch(self, diff_text):
@@ -434,9 +469,23 @@ class Loop:
 
             verdict = self.agents.review(task, tail, iteration)
             if verdict is None:
+                # Работа могла быть готовой и зелёной — сорвалось РЕВЬЮ.
+                # Молчаливый blocked оставлял оператора без единого слова
+                # о том, что произошло: инбокс пуст, журнал пуст, статус
+                # «invalid_verdict». Диагноз обязателен.
                 stash = self.cleanup(task, "invalid-verdict")
+                why = getattr(self.agents, "last_review_failure", None)
+                diagnosis = REVIEW_DIAGNOSIS.get(
+                    why, REVIEW_DIAGNOSIS["invalid"])
+                self.state.log("review_failed", task=tid, round=iteration,
+                               why=why or "invalid", stash=stash,
+                               gate_passed=True)
+                qid = self.state.ask(tid, "review_failed", diagnosis,
+                                     stash=stash, round=iteration)
                 self.state.set_status(tid, "blocked", reason="invalid_verdict",
-                                      stash=stash, iterations=iteration)
+                                      stash=stash, iterations=iteration,
+                                      question_id=qid, diagnosis=diagnosis)
+                self.ui(f"    РЕВЬЮ НЕ СОСТОЯЛОСЬ [{qid}]: {diagnosis}")
                 return "blocked"
 
             raw_findings = verdict.get("findings") or []

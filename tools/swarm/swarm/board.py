@@ -70,15 +70,23 @@ def _verdicts(swarm_dir, tid):
     """
     out = []
     for path in sorted((swarm_dir / "log").glob(f"{tid}-i*-review.json")):
+        stem = path.stem.replace(f"{tid}-", "").replace("-review", "")
         try:
             env = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError:
+            continue
+        except ValueError:
+            # Нечитаемый ответ — САМОЕ интересное для оператора: раунд был,
+            # деньги потрачены, вердикта нет. Пропуская такой файл, доска
+            # показывала задачу так, будто ревью и не запускалось.
+            out.append({"round": stem, "failed": True,
+                        "why": "ответ ревьюера не разобран"})
             continue
         v = env.get("structured_output")
-        stem = path.stem.replace(f"{tid}-", "").replace("-review", "")
         if not isinstance(v, dict):
             out.append({"round": stem, "failed": True,
-                        "why": env.get("subtype") or "ответ не разобран"})
+                        "why": (env.get("terminal_reason")
+                                or env.get("subtype") or "ответ не разобран")})
             continue
         out.append({
             "round": stem, "verdict": v.get("verdict"),

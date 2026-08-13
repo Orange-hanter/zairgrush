@@ -9,12 +9,25 @@ import hashlib
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCHEMAS = HERE.parent / "schemas"
+
+# Ревьюер получает дифф целиком, а размер сгенерированных артефактов ничем
+# не ограничен. На пилоте golden-эталон в 15 894 строки дал промпт в 285 000
+# токенов: вызов обрубался по `--max-budget-usd`, и так дважды подряд —
+# $6.59 за ноль вердиктов при полностью готовой и зелёной работе.
+#
+# Поднимать бюджет бессмысленно: читать построчно 16 000 строк машинно
+# порождённых данных ревьюеру нечего. Ему нужен КОД, который их порождает,
+# и признак того, что содержимое изменилось. Поэтому длинные файлы диффа
+# сворачиваются до сводки — с прямым объявлением, что показано не всё.
+DIFF_FILE_LIMIT = 400
+DIFF_EXCERPT = 40
 
 
 def _load(name):
@@ -23,6 +36,54 @@ def _load(name):
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def condense_diff(diff, limit=DIFF_FILE_LIMIT, excerpt=DIFF_EXCERPT):
+    """Свернуть файлы диффа длиннее `limit` строк до сводки.
+
+    Сводка называет файл, число добавленных и удалённых строк, хэш
+    содержимого и выдержку сверху. Утаивание объявляется ПРЯМО: ревьюер,
+    не знающий, что видит не всё, одобряет невиданное — а это ровно то,
+    от чего защищает `git add -A -N` в work_diff.
+
+    Хэш нужен, чтобы вердикт вообще был привязан к содержимому: без него
+    два разных эталона одинаковой длины для ревьюера неразличимы.
+    """
+    if not diff:
+        return diff
+    out = []
+    for chunk in re.split(r"(?m)^(?=diff --git )", diff):
+        if not chunk:
+            continue
+        lines = chunk.splitlines()
+        if not lines[0].startswith("diff --git ") or len(lines) <= limit:
+            out.append(chunk.rstrip("\n"))
+            continue
+        body = lines[1:]
+        added = sum(1 for x in body
+                    if x.startswith("+") and not x.startswith("+++"))
+        removed = sum(1 for x in body
+                      if x.startswith("-") and not x.startswith("---"))
+        digest = hashlib.sha256(chunk.encode("utf-8")).hexdigest()[:12]
+        # Выдержка обязана быть СОДЕРЖИМЫМ. Первые строки куска — это
+        # `new file mode`, `index`, `---`, `+++`, `@@`: их пять, и в
+        # выдержке из пяти строк ревьюер не увидел бы ни одной строки
+        # файла. Заголовок отдаём целиком (он короткий и полезный),
+        # выдержку берём после первого `@@`.
+        cut = next((i + 1 for i, x in enumerate(body) if x.startswith("@@")), 0)
+        head = "\n".join(body[cut:cut + excerpt])
+        out.append(
+            "\n".join(lines[:cut + 1]) + "\n"
+            f"[оркестратор свернул этот файл: {len(body)} строк диффа, "
+            f"+{added} −{removed}, sha256={digest}]\n"
+            f"[показано не всё. Причина: файл длиннее {limit} строк и, "
+            f"судя по объёму, порождён машинно. Оценивай КОД, который его "
+            f"строит, и соответствие спецификации; о содержимом суди по "
+            f"выдержке и по тому, что тесты гейта прошли.]\n"
+            f"[если для вердикта нужен файл целиком — это finding "
+            f"severity=major с verdict=needs_changes, а не approve вслепую]\n"
+            f"[выдержка, первые {excerpt} строк:]\n{head}\n[…]")
+    return "\n".join(out)
 
 
 class Agents:
@@ -34,6 +95,10 @@ class Agents:
         self._helpers = None
         self._codemap = None
         self._map_cache = None
+        # Почему ревью не состоялось: оркестратору нужен диагноз, а не
+        # голое None. «Кончился бюджет» и «модель ответила мусором» —
+        # разные болезни с разным лечением.
+        self.last_review_failure = None
 
     # --- контекст ---------------------------------------------------------
 
@@ -248,7 +313,7 @@ Acceptance:
         # Голый `git diff` не показывает созданные файлы: ревьюер получал
         # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
         # в историю. Единый источник — state.work_diff (intent-to-add).
-        diff = self.work_diff()
+        diff = condense_diff(self.work_diff())
         schema = (SCHEMAS / "verdict-v1.schema.json").read_text()
         t0 = time.time()
         proc = subprocess.run(
@@ -268,7 +333,7 @@ Acceptance:
         raw = (self.state.dir / "log"
                / f"{task['id']}-i{iteration}-{phase}{attempt}-review.json")
         raw.write_text(proc.stdout)
-        verdict, cost = None, None
+        verdict, cost, terminal = None, None, None
         try:
             env = json.loads(proc.stdout)
             quota = self.loop_mod.quota_error(env)
@@ -278,6 +343,7 @@ Acceptance:
                 raise self.loop_mod.QuotaExceeded(quota)
             verdict = env.get("structured_output")
             cost = env.get("total_cost_usd")
+            terminal = env.get("terminal_reason")
         except ValueError:
             pass
         valid = self.loop_mod.validate_verdict(verdict)
@@ -285,12 +351,23 @@ Acceptance:
                           attempt=attempt, dur_s=round(time.time() - t0, 1),
                           cost_usd=cost, verdict=(verdict or {}).get("verdict"),
                           findings=len((verdict or {}).get("findings", [])),
-                          valid=valid)
+                          valid=valid, terminal_reason=terminal)
+        if not valid and terminal == "budget_exhausted":
+            # Повтор обречён: тот же промпт кончится на том же месте.
+            # На пилоте вторая попытка стоила ещё $3.23 и дала то же
+            # самое. Детерминированный отказ ретраить нельзя — эскалируем.
+            self.last_review_failure = "budget_exhausted"
+            self.state.log("review_budget_exhausted", task=task["id"],
+                           round=iteration, attempt=attempt, cost_usd=cost,
+                           limit=self.config.get("review_budget_usd", 1.0))
+            return None
         if not valid and attempt == 1:
             return self.review(task, gate_tail, iteration, attempt=2,
                                verify_results=verify_results)
         if not valid:
+            self.last_review_failure = "invalid"
             return None
+        self.last_review_failure = None
         # Второй вызов с результатами — ровно один раунд на итерацию
         # (анти-петля): иначе ревьюер может запрашивать проверки бесконечно.
         requests = verdict.get("verification_requests")
@@ -333,6 +410,9 @@ Acceptance:
     # --- хелперы ----------------------------------------------------------
 
     def commit_message(self, task, diff):
+        # Хелпер дешёвый, но не бесплатный, и 336 КБ эталона ему так же
+        # нечего читать, как и ревьюеру.
+        diff = condense_diff(diff)
         fallback = f"{task['id']}: {task['title']}"
         if self._helpers is None:
             try:
