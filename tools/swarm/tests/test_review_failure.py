@@ -376,5 +376,103 @@ class TestReviewFailureEscalates(RepoCase):
         self.assertTrue(task.get("question_id"))
 
 
+class TestConfirmationIsNotARegression(RepoCase):
+    """Подтверждающий раунд ревьюет ТОТ ЖЕ дифф — регресса там быть не может.
+
+    На PILOT-1 (задача g2pf) первый проход дал 1 находку, подтверждающий —
+    2, и петля объявила «регресс 2 против 1 — откат», хотя исполнитель в
+    подтверждающем раунде не вызывался и кода никто не трогал. Это разброс
+    ревьюера, а не деградация. Цена ложной тревоги — ненужный цикл
+    revert + git apply поверх неизменного дерева; при сбое `git apply`
+    работа была бы потеряна на ровном месте.
+    """
+
+    TASK = {"id": "c1", "title": "t", "spec": "s", "acceptance": ["ок"],
+            "paths": ["mod.py"], "type": "feature", "status": "pending",
+            "deps": []}
+
+    def _verdict(self, n):
+        return {"verdict": "approve",
+                "findings": [{"severity": "minor", "category": "style",
+                              "confidence": 0.5, "issue": f"замечание {i}"}
+                             for i in range(n)],
+                "analysis": "разобрал дифф целиком и сверился со спецификацией",
+                "summary": "работа соответствует требованиям задачи"}
+
+    class Reviewer:
+        """Один и тот же дифф получает 1 находку, потом 2."""
+
+        last_review_failure = None
+
+        def __init__(self, outer):
+            self.outer, self.rounds = outer, 0
+
+        def implement(self, task, feedback, iteration):
+            (outer_root := self.outer.root / "mod.py").write_text(
+                "def f():\n    return 2\n")
+            _ = outer_root
+            return {"status": "done", "summary": "готово"}
+
+        def review(self, *a, **kw):
+            self.rounds += 1
+            return self.outer._verdict(1 if self.rounds == 1 else 2)
+
+        def repo_map(self, task):
+            return None
+
+        def commit_message(self, task, diff):
+            return "c1: правка"
+
+    def _run(self):
+        self.state.save_tasks({"goal": "цель", "tasks": [dict(self.TASK)]})
+        self.reverts = []
+        # confirmations=2: первый approve требует подтверждения, и только
+        # тогда случается второй раунд по ТОМУ ЖЕ диффу — без этого ветка
+        # регресса недостижима, и тест проходил бы вхолостую.
+        loop = lp.Loop(self.state, {"gate_command": ["true"],
+                                    "confirmations": 2}, self.Reviewer(self))
+        real_revert = loop.revert
+        loop.revert = lambda task: (self.reverts.append(task["id"]),
+                                    real_revert(task))[1]
+        return loop.run_task(dict(self.TASK))
+
+    def test_no_revert_on_confirmation_round(self):
+        self._run()
+        self.assertEqual(self.reverts, [],
+                         "откат на неизменном диффе: разброс ревьюера "
+                         "принят за регресс кода")
+
+    def test_task_still_completes(self):
+        self.assertEqual(self._run(), "done")
+
+
+class TestRestoreFailureIsFatal(RepoCase):
+    """Молчаливый провал восстановления — худший исход из возможных."""
+
+    def _loop(self):
+        return lp.Loop(self.state, {}, agents=None)
+
+    def test_empty_patch_is_success(self):
+        self.assertTrue(self._loop()._apply_patch("   "))
+
+    def test_bad_patch_reports_failure(self):
+        self.assertFalse(self._loop()._apply_patch(
+            "diff --git a/нет b/нет\n--- a/нет\n+++ b/нет\n@@ -1 +1 @@\n-нет\n+да\n"))
+
+    def test_bad_patch_is_journalled(self):
+        self._loop()._apply_patch(
+            "diff --git a/нет b/нет\n--- a/нет\n+++ b/нет\n@@ -1 +1 @@\n-нет\n+да\n")
+        kinds = [json.loads(l)["kind"]
+                 for l in self.state.journal_path.read_text().splitlines()]
+        self.assertIn("restore_failed", kinds)
+
+    def test_good_patch_applies(self):
+        (self.root / "mod.py").write_text("def f():\n    return 1\n")
+        patch = ("diff --git a/mod.py b/mod.py\n--- a/mod.py\n+++ b/mod.py\n"
+                 "@@ -1,2 +1,2 @@\n def f():\n-    return 1\n+    return 42\n")
+        self.assertTrue(self._loop()._apply_patch(patch))
+        self.assertIn("42", (self.root / "mod.py").read_text())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

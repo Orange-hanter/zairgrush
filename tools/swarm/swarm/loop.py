@@ -341,11 +341,21 @@ class Loop:
         return label
 
     def _apply_patch(self, diff_text):
-        """Вернуть worktree к сохранённому лучшему состоянию."""
+        """Вернуть worktree к сохранённому лучшему состоянию.
+
+        Код возврата `git apply` обязан проверяться. Здесь работа уже
+        снесена `revert`, и молчаливый провал восстановления означает, что
+        петля пойдёт коммитить ПУСТОТУ, считая, что откатилась к лучшему
+        состоянию. Худший из возможных исходов: работа потеряна, а история
+        утверждает обратное.
+        """
         if not diff_text.strip():
-            return
-        subprocess.run(["git", "apply", "-"], cwd=self.state.root,
-                       input=diff_text, text=True, capture_output=True)
+            return True
+        r = subprocess.run(["git", "apply", "-"], cwd=self.state.root,
+                           input=diff_text, text=True, capture_output=True)
+        if r.returncode != 0:
+            self.state.log("restore_failed", stderr=(r.stderr or "").strip()[:300])
+        return r.returncode == 0
 
     @staticmethod
     def _diagnose(outcome, history):
@@ -418,6 +428,7 @@ class Loop:
             iteration += 1
             # В подтверждающем раунде исполнитель не вызывается: гейт и
             # границы перепроверяются (дёшево), ревью идёт по тому же диффу.
+            was_confirmation = confirming
             if confirming:
                 confirming = False
             else:
@@ -525,11 +536,30 @@ class Loop:
             if best["findings"] is None or len(findings) < best["findings"]:
                 best.update(findings=len(findings), round=iteration,
                             diff=self.state.work_diff())
-            elif len(findings) > best["findings"] and best["diff"]:
+            elif (len(findings) > best["findings"] and best["diff"]
+                    and not was_confirmation):
+                # Подтверждающий раунд ревьюет ТОТ ЖЕ дифф: исполнитель в нём
+                # не вызывался, кода никто не трогал. Рост числа находок там
+                # — разброс ревьюера, а не регресс. На PILOT-1 (g2pf) это
+                # дало ложный «регресс 2 против 1» и совершенно ненужный
+                # цикл revert + git apply поверх неизменного дерева.
                 self.ui(f"    регресс: {len(findings)} находок против "
                         f"{best['findings']} в раунде {best['round']} — откат")
                 self.revert(task)
-                self._apply_patch(best["diff"])
+                if not self._apply_patch(best["diff"]):
+                    # Работа снесена, восстановить не удалось. Коммитить
+                    # тут нечего, и делать вид, что откат состоялся, нельзя.
+                    diagnosis = ("откат к лучшему раунду не состоялся: "
+                                 "git apply отверг сохранённый дифф, работа "
+                                 "раунда потеряна. Смотри restore_failed в "
+                                 "журнале и переоткрой задачу заново")
+                    qid = self.state.ask(tid, "restore_failed", diagnosis,
+                                         round=iteration)
+                    self.state.set_status(tid, "blocked", reason="restore_failed",
+                                          iterations=iteration,
+                                          question_id=qid, diagnosis=diagnosis)
+                    self.ui(f"    ОТКАТ НЕ СОСТОЯЛСЯ [{qid}]")
+                    return "blocked"
 
             if outcome in (DONE, CONFIRM):
                 if outcome == CONFIRM:
