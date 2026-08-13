@@ -26,10 +26,30 @@ METRICS = PLAN / "plan-metrics.jsonl"
 RAW = PLAN / "raw"
 LEGAL_STATUS = {"pending", "blocked", "done"}
 
+# Планировщику нужен тот же запас, что и ревьюеру: на реальном проекте
+# зашитые $1.50 обрубали ОБЕ попытки (PILOT-1: $1.63 и $1.67, ops=0), и
+# роль, объявленная в §3.1, ни разу не отработала.
+DEFAULT_PLAN_BUDGET = 4.0
 
-def metric(**row):
+
+def artifacts_dir(root=None):
+    """Куда складывать сырые ответы и метрики планировщика.
+
+    Раньше — всегда внутрь исходников инструмента (`swarm/raw/`): следы
+    прогона по чужому репозиторию оседали в самом рое, на доске проекта их
+    не было, а два проекта подряд писали в один файл. Место артефактов —
+    рядом с остальным состоянием петли, в `.swarm/` целевого репозитория.
+    """
+    if root is None:
+        return PLAN
+    return pathlib.Path(root) / ".swarm"
+
+
+def metric(root=None, **row):
     row["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-    with METRICS.open("a") as f:
+    path = artifacts_dir(root) / "plan-metrics.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
@@ -116,26 +136,93 @@ acceptance обязательны, deps без циклов, id уникальн
 """
 
 
-def call_planner(prompt, tag, attempt=1):
+def call_planner(prompt, tag, attempt=1, root=None, budget=None):
+    """Вызов планировщика. -> (план-дифф | None, причина отказа | None).
+
+    Причина возвращается отдельно, потому что «модель ответила мусором» и
+    «вызов обрублен по бюджету» лечатся по-разному, а оператор различает их
+    только по тому, что ему сказали. На PILOT-1 обе попытки были обрублены
+    по зашитым $1.50, а в консоль ушло «невалидный JSON» — диагноз, ведущий
+    искать поломку в схеме вместо лимита.
+    """
     t0 = time.time()
     r = subprocess.run(["claude", "-p", prompt, "--output-format", "json",
                         "--json-schema", SCHEMA, "--allowedTools",
                         "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*)",
-                        "--max-budget-usd", "1.50"],
-                       capture_output=True, text=True)
+                        "--max-budget-usd",
+                        str(budget or DEFAULT_PLAN_BUDGET)],
+                       capture_output=True, text=True,
+                       # Без cwd планировщик читает репозиторий по каталогу
+                       # процесса, а не по --root: Read/Grep смотрели бы не
+                       # в тот проект, для которого строится план.
+                       cwd=str(root) if root else None)
     dur = round(time.time() - t0, 1)
-    RAW.mkdir(exist_ok=True)
-    (RAW / f"{tag}-a{attempt}.json").write_text(r.stdout)
-    diff, cost = None, None
+    raw_dir = artifacts_dir(root) / ("raw" if root else "raw")
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / f"{tag}-a{attempt}.json").write_text(r.stdout)
+    diff, cost, reason = None, None, None
     try:
         env = json.loads(r.stdout)
         diff = env.get("structured_output")
         cost = env.get("total_cost_usd")
+        if not isinstance(diff, dict):
+            reason = env.get("terminal_reason") or env.get("subtype") or "no_output"
     except ValueError:
-        pass
-    metric(mode=tag, attempt=attempt, dur_s=dur, cost_usd=cost,
-           ops=len((diff or {}).get("ops", [])))
-    return diff
+        reason = "unparsable_envelope"
+    metric(root=root, mode=tag, attempt=attempt, dur_s=dur, cost_usd=cost,
+           ops=len((diff or {}).get("ops", [])), reason=reason)
+    return diff, reason
+
+
+# Причины, при которых повтор обречён: вызов не «ответил плохо», а был
+# оборван снаружи, и второй такой же оборвётся там же. На PILOT-1 повтор
+# стоил ещё $1.67 и дал тот же ноль.
+TERMINAL_REASONS = {"budget_exhausted", "error_max_budget_usd"}
+
+PLAN_DIAGNOSIS = {
+    "budget_exhausted": (
+        "планировщик обрублен по бюджету, плана нет. Это НЕ ошибка формата: "
+        "ответ модели корректен, в нём просто нет плана. Подними "
+        "plan_budget_usd в swarm.toml или сузь цель"),
+    "error_max_budget_usd": (
+        "планировщик обрублен по бюджету, плана нет. Подними "
+        "plan_budget_usd в swarm.toml или сузь цель"),
+    "unparsable_envelope": (
+        "ответ планировщика не разобран как JSON — смотри сырой ответ в "
+        ".swarm/raw/"),
+    "no_output": (
+        "планировщик завершился без структурированного плана — смотри "
+        "сырой ответ в .swarm/raw/"),
+}
+
+
+def plan_with_retry(prompt, mode, tasks, root=None, budget=None, ui=print):
+    """Не более двух попыток, и вторая — только если она осмысленна.
+
+    -> (diff | None, список ошибок, причина отказа | None).
+
+    Политика повтора живёт здесь одна на всех вызывающих: раньше она была
+    продублирована в CLI петли и в собственном main планировщика, и
+    разошлась — второй экземпляр молча ретраил обрыв по бюджету.
+    """
+    diff, reason = call_planner(prompt, mode, root=root, budget=budget)
+    if reason in TERMINAL_REASONS:
+        return None, [PLAN_DIAGNOSIS[reason]], reason
+    errs = validate_plan_diff(diff, tasks) if diff else [
+        PLAN_DIAGNOSIS.get(reason, "план-дифф не получен")]
+    if not errs:
+        return diff, [], None
+    ui("план-дифф невалиден, повторная попытка:")
+    for e in errs:
+        ui(f"  {e}")
+    diff, reason = call_planner(
+        prompt + "\n\n## Ошибки прошлой попытки\n" + "\n".join(errs),
+        mode, attempt=2, root=root, budget=budget)
+    if reason in TERMINAL_REASONS:
+        return None, [PLAN_DIAGNOSIS[reason]], reason
+    errs = validate_plan_diff(diff, tasks) if diff else [
+        PLAN_DIAGNOSIS.get(reason, "план-дифф не получен")]
+    return (diff, [], None) if not errs else (None, errs, reason)
 
 
 def validate_plan_diff(diff, tasks):
@@ -282,17 +369,11 @@ def main():
         dispute = json.loads(pathlib.Path(args.dispute).read_text())
         prompt = replan_prompt(task, dispute, tasks, files, suite)
 
-    diff = call_planner(prompt, args.mode)
-    errs = validate_plan_diff(diff, tasks) if diff else ["невалидный JSON"]
+    diff, errs, reason = plan_with_retry(prompt, args.mode, tasks)
     if errs:
-        print("ПЛАН-ДИФФ НЕВАЛИДЕН (попытка 1):", *errs, sep="\n  ")
-        diff = call_planner(prompt + "\n\n## Ошибки прошлой попытки\n"
-                            + "\n".join(errs), args.mode, attempt=2)
-        errs = validate_plan_diff(diff, tasks) if diff else ["невалидный JSON"]
-        if errs:
-            print("ЭСКАЛАЦИЯ: дифф невалиден после повтора:", *errs, sep="\n  ")
-            metric(mode=args.mode, result="escalation", errors=errs)
-            raise SystemExit(2)
+        print("ЭСКАЛАЦИЯ:", *errs, sep="\n  ")
+        metric(mode=args.mode, result="escalation", errors=errs, reason=reason)
+        raise SystemExit(2)
 
     print(f"analysis: {diff['analysis'][:400]}\n")
     for op in diff["ops"]:

@@ -370,18 +370,16 @@ def cmd_plan(args):
             dispute = json.loads(pathlib.Path(args.dispute).read_text())
         prompt = planner.replan_prompt(task, dispute, tasks, files, suite)
 
-    diff = planner.call_planner(prompt, args.cmd)
-    errs = planner.validate_plan_diff(diff, tasks) if diff else ["невалидный JSON"]
+    cfg = _config(args.root)
+    diff, errs, reason = planner.plan_with_retry(
+        prompt, args.cmd, tasks, root=args.root,
+        budget=cfg.get("plan_budget_usd"))
     if errs:
-        print("план-дифф невалиден, повторная попытка:", *errs, sep="\n  ")
-        diff = planner.call_planner(
-            prompt + "\n\n## Ошибки прошлой попытки\n" + "\n".join(errs),
-            args.cmd, attempt=2)
-        errs = planner.validate_plan_diff(diff, tasks) if diff else ["невалидный JSON"]
-        if errs:
-            print("ЭСКАЛАЦИЯ: дифф невалиден после повтора:", *errs, sep="\n  ",
-                  file=sys.stderr)
-            return 2
+        print("ЭСКАЛАЦИЯ:", *errs, sep="\n  ", file=sys.stderr)
+        st.log("plan_failed", mode=args.cmd, reason=reason, errors=errs)
+        qid = st.ask("*", "plan_failed", errs[0], mode=args.cmd)
+        print(f"вопрос оператору: {qid}", file=sys.stderr)
+        return 2
 
     print(f"analysis: {diff['analysis'][:400]}\n")
     for op in diff["ops"]:

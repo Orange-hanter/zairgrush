@@ -85,8 +85,11 @@ class TestPlannerIsReachable(RepoCase):
         super().setUp()
         planner = _load("planner")
         self.calls = []
-        planner.call_planner = lambda prompt, tag, attempt=1: (
-            self.calls.append((tag, attempt, prompt)) or json.loads(json.dumps(DIFF)))
+        # call_planner отдаёт (дифф, причина отказа): причина нужна, чтобы
+        # обрыв по бюджету не уходил в обречённый повтор.
+        planner.call_planner = lambda prompt, tag, attempt=1, root=None, budget=None: (
+            self.calls.append((tag, attempt, prompt)),
+            (json.loads(json.dumps(DIFF)), None))[1]
         planner.metric = lambda **k: None
         self._orig_load = cli._load
         cli._load = lambda name: planner if name == "planner" else self._orig_load(name)
@@ -115,7 +118,8 @@ class TestPlannerIsReachable(RepoCase):
 
     def test_invalid_diff_escalates_after_retry(self):
         planner = sys.modules["planner"]
-        planner.call_planner = lambda prompt, tag, attempt=1: {"ops": []}
+        planner.call_planner = (
+            lambda prompt, tag, attempt=1, root=None, budget=None: ({"ops": []}, None))
         code, out = run_cli("--root", str(self.root), "plan", "--goal", "цель")
         self.assertEqual(code, 2)
         self.assertIn("ЭСКАЛАЦИЯ", out)
@@ -429,8 +433,8 @@ class TestGoIsSelfSufficient(RepoCase):
         super().setUp()
         planner = _load("planner")
         self.planned = []
-        planner.call_planner = lambda prompt, tag, attempt=1: (
-            self.planned.append(tag) or json.loads(json.dumps(DIFF)))
+        planner.call_planner = lambda prompt, tag, attempt=1, root=None, budget=None: (
+            self.planned.append(tag), (json.loads(json.dumps(DIFF)), None))[1]
         planner.metric = lambda **k: None
         self._orig_load = cli._load
         cli._load = lambda name: planner if name == "planner" else self._orig_load(name)

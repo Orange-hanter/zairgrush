@@ -474,5 +474,129 @@ class TestRestoreFailureIsFatal(RepoCase):
         self.assertIn("42", (self.root / "mod.py").read_text())
 
 
+pl = _load("planner")
+
+
+class TestPlannerTerminalFailure(RepoCase):
+    """Планировщик — роль §3.1, ни разу не отработавшая на реальном проекте.
+
+    PILOT-1: обе попытки обрублены по зашитым $1.50 ($1.63 и $1.67,
+    ops=0), а оператору сказано «невалидный JSON». Диагноз ведёт искать
+    поломку в схеме вместо лимита — и это ровно тот же дефект, что был
+    вылечен у ревьюера, оставшийся здесь нетронутым.
+    """
+
+    GOOD = {"analysis": "разбор состояния репозитория и декомпозиция цели",
+            "summary": "одна задача",
+            "ops": [{"op": "add", "id": "bbbb", "reason": "нужен модуль",
+                     "task": {"id": "bbbb", "title": "задача", "type": "feature",
+                              "status": "pending", "paths": ["mod.py"],
+                              "acceptance": ["тесты проходят"], "deps": []}}]}
+
+    def _stub(self, *outcomes):
+        """Подменяется только call_planner: политика повтора остаётся живой."""
+        self.calls = []
+
+        def fake(prompt, tag, attempt=1, root=None, budget=None):
+            self.calls.append({"attempt": attempt, "root": root, "budget": budget})
+            return outcomes[min(len(self.calls), len(outcomes)) - 1]
+
+        orig = pl.call_planner
+        pl.call_planner = fake
+        self.addCleanup(lambda: setattr(pl, "call_planner", orig))
+
+    def test_budget_exhausted_is_not_retried(self):
+        self._stub((None, "budget_exhausted"))
+        pl.plan_with_retry("prompt", "plan", [], ui=lambda *a: None)
+        self.assertEqual(len(self.calls), 1,
+                         "повтор обречён: тот же промпт кончится там же")
+
+    def test_budget_diagnosis_names_the_setting(self):
+        self._stub((None, "budget_exhausted"))
+        _, errs, reason = pl.plan_with_retry("p", "plan", [], ui=lambda *a: None)
+        self.assertEqual(reason, "budget_exhausted")
+        self.assertIn("plan_budget_usd", errs[0])
+        self.assertNotIn("невалидный JSON", errs[0],
+                         "ложный диагноз отправляет чинить схему вместо лимита")
+
+    def test_ordinary_invalid_diff_is_still_retried(self):
+        self._stub(({"ops": []}, None), (self.GOOD, None))
+        diff, errs, _ = pl.plan_with_retry("p", "plan", [], ui=lambda *a: None)
+        self.assertEqual(len(self.calls), 2, "повтор при плохом плане потерян")
+        self.assertEqual(errs, [])
+        self.assertIsNotNone(diff)
+
+    def test_second_terminal_failure_stops_too(self):
+        self._stub(({"ops": []}, None), (None, "budget_exhausted"))
+        _, errs, reason = pl.plan_with_retry("p", "plan", [], ui=lambda *a: None)
+        self.assertEqual(reason, "budget_exhausted")
+        self.assertIn("plan_budget_usd", errs[0])
+
+    def test_budget_reaches_the_call(self):
+        self._stub((self.GOOD, None))
+        pl.plan_with_retry("p", "plan", [], root=self.root, budget=7.5,
+                           ui=lambda *a: None)
+        self.assertEqual(self.calls[0]["budget"], 7.5)
+        self.assertEqual(self.calls[0]["root"], self.root)
+
+
+class TestPlannerArtifacts(RepoCase):
+    """Следы прогона по чужому репозиторию не должны оседать в самом рое."""
+
+    def test_artifacts_go_to_project_swarm_dir(self):
+        self.assertEqual(pl.artifacts_dir(self.root), self.root / ".swarm")
+
+    def test_without_root_falls_back_to_module_dir(self):
+        self.assertEqual(pl.artifacts_dir(None), pl.PLAN)
+
+    def test_metric_writes_into_project(self):
+        pl.metric(root=self.root, mode="plan", attempt=1)
+        self.assertTrue((self.root / ".swarm" / "plan-metrics.jsonl").exists())
+        self.assertFalse((pl.PLAN / "plan-metrics.jsonl").exists()
+                         and pl.PLAN.name == self.root.name)
+
+    def test_call_planner_runs_in_the_target_repo(self):
+        """Без cwd планировщик читал бы репозиторий по каталогу процесса."""
+        seen = {}
+        orig_run = subprocess.run
+
+        def fake_run(argv, **kw):
+            if not (argv and argv[0] == "claude"):
+                return orig_run(argv, **kw)
+            seen.update(cwd=kw.get("cwd"), argv=argv)
+            return type("R", (), {"stdout": json.dumps(
+                {"structured_output": {"ops": []}, "total_cost_usd": 0.1}),
+                "stderr": "", "returncode": 0})()
+
+        subprocess.run = fake_run
+        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        pl.call_planner("prompt", "plan", root=self.root, budget=5.0)
+        self.assertEqual(seen["cwd"], str(self.root))
+        self.assertIn("5.0", seen["argv"], "бюджет не доехал до вызова")
+
+    def test_planner_spend_counts_towards_the_run_budget(self):
+        """Целая роль вне счёта — бюджет прогона перестаёт быть потолком."""
+        self.state.metric(task="t1", phase="review", cost_usd=2.0)
+        pl.metric(root=self.root, mode="plan", attempt=1, cost_usd=1.63)
+        pl.metric(root=self.root, mode="plan", attempt=2, cost_usd=1.67)
+        self.assertEqual(self.state.total_spend(), 5.30)
+
+    def test_terminal_reason_is_extracted(self):
+        orig_run = subprocess.run
+
+        def fake_run(argv, **kw):
+            if not (argv and argv[0] == "claude"):
+                return orig_run(argv, **kw)
+            return type("R", (), {"stdout": json.dumps(
+                {"is_error": True, "terminal_reason": "budget_exhausted"}),
+                "stderr": "", "returncode": 0})()
+
+        subprocess.run = fake_run
+        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        diff, reason = pl.call_planner("p", "plan", root=self.root)
+        self.assertIsNone(diff)
+        self.assertEqual(reason, "budget_exhausted")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

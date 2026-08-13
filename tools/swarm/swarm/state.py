@@ -202,14 +202,22 @@ class SwarmState:
         return self._git("diff").stdout
 
     def total_spend(self):
-        """Сколько уже стоил прогон. Считается по факту из метрик."""
+        """Сколько уже стоил прогон. Считается по факту из метрик.
+
+        Считаются ВСЕ дорогие роли. Планировщик пишет в отдельный поток
+        (`plan-metrics.jsonl`), и пока он в счёт не входил, стоп по
+        `total_budget_usd` не видел целой роли: на PILOT-1 две обрубленные
+        попытки планирования за $3.30 остались вне бюджета прогона.
+        """
         total = 0.0
-        for row in self.metrics_path.read_text(encoding="utf-8").splitlines() \
-                if self.metrics_path.exists() else []:
-            try:
-                total += json.loads(row).get("cost_usd") or 0
-            except ValueError:
+        for path in (self.metrics_path, self.dir / "plan-metrics.jsonl"):
+            if not path.exists():
                 continue
+            for row in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    total += json.loads(row).get("cost_usd") or 0
+                except ValueError:
+                    continue
         return round(total, 2)
 
     def metric(self, **payload):
