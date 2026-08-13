@@ -194,5 +194,86 @@ class TestExecutorScopeDiscipline(unittest.TestCase):
         self.assertIn("git для тебя ТОЛЬКО на чтение", h)
 
 
+pl = _load("planner")
+
+
+class TestRoleTuning(unittest.TestCase):
+    """Ручки модели и усилия: без них замерить рычаги нечем.
+
+    Требование к умолчанию жёсткое: БЕЗ настройки в конфиге поведение
+    прогона не меняется ни на байт — роль наследует сессионные параметры.
+    Иначе добавление ручки само становится изменением, и сравнивать
+    прогоны «до» и «после» уже нельзя.
+    """
+
+    def _agents(self, config):
+        a = ag.Agents.__new__(ag.Agents)
+        a.config = config
+        return a
+
+    def test_no_flags_without_config(self):
+        self.assertEqual(self._agents({})._tuning("review"), [])
+
+    def test_model_flag(self):
+        a = self._agents({"review_model": "claude-sonnet-5"})
+        self.assertEqual(a._tuning("review"), ["--model", "claude-sonnet-5"])
+
+    def test_effort_flag(self):
+        a = self._agents({"review_effort": "medium"})
+        self.assertEqual(a._tuning("review"), ["--effort", "medium"])
+
+    def test_both_flags(self):
+        a = self._agents({"review_model": "claude-sonnet-5",
+                          "review_effort": "high"})
+        self.assertEqual(a._tuning("review"),
+                         ["--model", "claude-sonnet-5", "--effort", "high"])
+
+    def test_prefix_isolates_roles(self):
+        """Настройка ревьюера не должна протекать в планировщика."""
+        a = self._agents({"review_model": "claude-sonnet-5"})
+        self.assertEqual(a._tuning("plan"), [])
+
+    def test_planner_helper_matches(self):
+        self.assertEqual(pl.tuning_flags(), [])
+        self.assertEqual(pl.tuning_flags("claude-sonnet-5", "low"),
+                         ["--model", "claude-sonnet-5", "--effort", "low"])
+
+    def test_flags_reach_the_actual_call(self):
+        """Ручка, не доехавшая до argv, — это ручка, которой нет."""
+        import subprocess as sp
+        seen = {}
+        orig = sp.run
+
+        def fake(argv, **kw):
+            if not (argv and argv[0] == "claude"):
+                return orig(argv, **kw)
+            seen["argv"] = argv
+            return type("R", (), {"stdout": "{}", "stderr": "",
+                                  "returncode": 0})()
+
+        sp.run = fake
+        self.addCleanup(lambda: setattr(sp, "run", orig))
+
+        a = ag.Agents.__new__(ag.Agents)
+        a.config = {"review_model": "claude-sonnet-5", "review_effort": "low"}
+        a.loop_mod = _load("loop")
+        a.last_review_failure = None
+        a.state = type("S", (), {
+            "root": ".", "dir": pathlib.Path("/tmp"),
+            "work_diff": staticmethod(lambda: "diff --git a/x b/x\n+1"),
+            "metric": staticmethod(lambda **k: None),
+            "log": staticmethod(lambda *a, **k: None),
+        })()
+        a.work_diff = lambda: "diff --git a/x b/x\n+1"
+        try:
+            a.review({"id": "t1", "title": "t", "spec": "s",
+                      "acceptance": ["ок"]}, "OK", 1)
+        except Exception:                                   # noqa: BLE001
+            pass                                            # интересует argv
+        self.assertIn("--model", seen.get("argv", []))
+        self.assertIn("claude-sonnet-5", seen["argv"])
+        self.assertIn("--effort", seen["argv"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

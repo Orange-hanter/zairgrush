@@ -327,6 +327,24 @@ Acceptance:
             return False
         return bool(task.get("milestone_close") or task.get("verify"))
 
+    def _tuning(self, prefix):
+        """Флаги модели и уровня усилия — только если заданы в конфиге.
+
+        Пустой список по умолчанию: без явной настройки роль наследует
+        сессионные параметры, и поведение не меняется. Ручки нужны для
+        замера, а не для угадывания: по разложению трат PILOT-1 глубина
+        обхода инструментами даёт 94 % записи в кэш, а управляет ею
+        именно уровень усилия — но насколько, без прогона неизвестно.
+        """
+        flags = []
+        model = self.config.get(f"{prefix}_model")
+        effort = self.config.get(f"{prefix}_effort")
+        if model:
+            flags += ["--model", str(model)]
+        if effort:
+            flags += ["--effort", str(effort)]
+        return flags
+
     def review(self, task, gate_tail, iteration, attempt=1, verify_results=None):
         # Голый `git diff` не показывает созданные файлы: ревьюер получал
         # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
@@ -342,7 +360,8 @@ Acceptance:
                 verify_results=verify_results),
              "--output-format", "json", "--json-schema", schema,
              "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
-             "--max-budget-usd", str(self.config.get("review_budget_usd", 1.0))],
+             "--max-budget-usd", str(self.config.get("review_budget_usd", 1.0)),
+             *self._tuning("review")],
             capture_output=True, text=True, cwd=self.state.root, timeout=900)
         # Фаза входит в имя: второй проход (после верификации) писал в тот
         # же файл и затирал первый вердикт — на пилоте так потерялся

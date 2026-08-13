@@ -373,7 +373,8 @@ def cmd_plan(args):
     cfg = _config(args.root)
     diff, errs, reason = planner.plan_with_retry(
         prompt, args.cmd, tasks, root=args.root,
-        budget=cfg.get("plan_budget_usd"))
+        budget=cfg.get("plan_budget_usd"),
+        model=cfg.get("plan_model"), effort=cfg.get("plan_effort"))
     if errs:
         print("ЭСКАЛАЦИЯ:", *errs, sep="\n  ", file=sys.stderr)
         st.log("plan_failed", mode=args.cmd, reason=reason, errors=errs)

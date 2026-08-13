@@ -497,7 +497,8 @@ class TestPlannerTerminalFailure(RepoCase):
         """Подменяется только call_planner: политика повтора остаётся живой."""
         self.calls = []
 
-        def fake(prompt, tag, attempt=1, root=None, budget=None):
+        def fake(prompt, tag, attempt=1, root=None, budget=None,
+                 model=None, effort=None):
             self.calls.append({"attempt": attempt, "root": root, "budget": budget})
             return outcomes[min(len(self.calls), len(outcomes)) - 1]
 

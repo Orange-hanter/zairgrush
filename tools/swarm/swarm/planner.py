@@ -136,7 +136,22 @@ acceptance обязательны, deps без циклов, id уникальн
 """
 
 
-def call_planner(prompt, tag, attempt=1, root=None, budget=None):
+def tuning_flags(model=None, effort=None):
+    """Флаги модели и уровня усилия — только если заданы.
+
+    Пустой список по умолчанию: без явной настройки роль наследует
+    сессионные параметры, и поведение прогона не меняется.
+    """
+    flags = []
+    if model:
+        flags += ["--model", str(model)]
+    if effort:
+        flags += ["--effort", str(effort)]
+    return flags
+
+
+def call_planner(prompt, tag, attempt=1, root=None, budget=None,
+                 model=None, effort=None):
     """Вызов планировщика. -> (план-дифф | None, причина отказа | None).
 
     Причина возвращается отдельно, потому что «модель ответила мусором» и
@@ -150,7 +165,8 @@ def call_planner(prompt, tag, attempt=1, root=None, budget=None):
                         "--json-schema", SCHEMA, "--allowedTools",
                         "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*)",
                         "--max-budget-usd",
-                        str(budget or DEFAULT_PLAN_BUDGET)],
+                        str(budget or DEFAULT_PLAN_BUDGET),
+                        *tuning_flags(model, effort)],
                        capture_output=True, text=True,
                        # Без cwd планировщик читает репозиторий по каталогу
                        # процесса, а не по --root: Read/Grep смотрели бы не
@@ -196,7 +212,8 @@ PLAN_DIAGNOSIS = {
 }
 
 
-def plan_with_retry(prompt, mode, tasks, root=None, budget=None, ui=print):
+def plan_with_retry(prompt, mode, tasks, root=None, budget=None, ui=print,
+                    model=None, effort=None):
     """Не более двух попыток, и вторая — только если она осмысленна.
 
     -> (diff | None, список ошибок, причина отказа | None).
@@ -205,7 +222,8 @@ def plan_with_retry(prompt, mode, tasks, root=None, budget=None, ui=print):
     продублирована в CLI петли и в собственном main планировщика, и
     разошлась — второй экземпляр молча ретраил обрыв по бюджету.
     """
-    diff, reason = call_planner(prompt, mode, root=root, budget=budget)
+    diff, reason = call_planner(prompt, mode, root=root, budget=budget,
+                                model=model, effort=effort)
     if reason in TERMINAL_REASONS:
         return None, [PLAN_DIAGNOSIS[reason]], reason
     errs = validate_plan_diff(diff, tasks) if diff else [
@@ -217,7 +235,7 @@ def plan_with_retry(prompt, mode, tasks, root=None, budget=None, ui=print):
         ui(f"  {e}")
     diff, reason = call_planner(
         prompt + "\n\n## Ошибки прошлой попытки\n" + "\n".join(errs),
-        mode, attempt=2, root=root, budget=budget)
+        mode, attempt=2, root=root, budget=budget, model=model, effort=effort)
     if reason in TERMINAL_REASONS:
         return None, [PLAN_DIAGNOSIS[reason]], reason
     errs = validate_plan_diff(diff, tasks) if diff else [
