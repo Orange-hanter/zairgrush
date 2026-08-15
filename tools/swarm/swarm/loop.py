@@ -478,7 +478,8 @@ class Loop:
                             "protected_tests": tests_touched}
                 continue
 
-            verdict = self.agents.review(task, tail, iteration)
+            verdict = self.agents.review(task, tail, iteration,
+                                         confirming=was_confirmation)
             if verdict is None:
                 # Работа могла быть готовой и зелёной — сорвалось РЕВЬЮ.
                 # Молчаливый blocked оставлял оператора без единого слова

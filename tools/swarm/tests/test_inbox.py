@@ -239,7 +239,7 @@ class TestAnswerPersists(unittest.TestCase):
                 outer.prompts.append(feedback)
                 return {"status": "done"}
 
-            def review(self, task, tail, iteration):
+            def review(self, task, tail, iteration, **kw):
                 return verdicts[min(iteration, len(verdicts)) - 1]
 
             def commit_message(self, task, diff):

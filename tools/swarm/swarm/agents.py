@@ -327,25 +327,40 @@ Acceptance:
             return False
         return bool(task.get("milestone_close") or task.get("verify"))
 
-    def _tuning(self, prefix):
+    def _tuning(self, prefix, confirming=False):
         """Флаги модели и уровня усилия — только если заданы в конфиге.
 
         Пустой список по умолчанию: без явной настройки роль наследует
         сессионные параметры, и поведение не меняется. Ручки нужны для
         замера, а не для угадывания: по разложению трат PILOT-1 глубина
         обхода инструментами даёт 94 % записи в кэш, а управляет ею
-        именно уровень усилия — но насколько, без прогона неизвестно.
+        именно уровень усилия.
+
+        Подтверждающий раунд ревьюит ТОТ ЖЕ дифф, поэтому повторять его
+        теми же параметрами — значит платить за повтор одного и того же
+        взгляда. Замер на e4kb (один дифф, одно отличие — усилие) дал по
+        три находки на каждом уровне, из которых совпала ОДНА: `xhigh`
+        нашёл дыры в покрытии тестами, `medium` — два дефекта поведения
+        (мёртвая запись severity и двойная диагностика на одноимённых
+        клеммах). Разведение раундов по усилию превращает подтверждение
+        из формальности во второй угол зрения — и дешевле: $0.88
+        против $1.17. `confirm_*` без явной настройки падает обратно на
+        `review_*`, то есть умолчание остаётся прежним.
         """
         flags = []
         model = self.config.get(f"{prefix}_model")
         effort = self.config.get(f"{prefix}_effort")
+        if confirming:
+            model = self.config.get("confirm_model", model)
+            effort = self.config.get("confirm_effort", effort)
         if model:
             flags += ["--model", str(model)]
         if effort:
             flags += ["--effort", str(effort)]
         return flags
 
-    def review(self, task, gate_tail, iteration, attempt=1, verify_results=None):
+    def review(self, task, gate_tail, iteration, attempt=1, verify_results=None,
+               confirming=False):
         # Голый `git diff` не показывает созданные файлы: ревьюер получал
         # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
         # в историю. Единый источник — state.work_diff (intent-to-add).
@@ -361,7 +376,7 @@ Acceptance:
              "--output-format", "json", "--json-schema", schema,
              "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
              "--max-budget-usd", str(self.config.get("review_budget_usd", 1.0)),
-             *self._tuning("review")],
+             *self._tuning("review", confirming)],
             capture_output=True, text=True, cwd=self.state.root, timeout=900)
         # Фаза входит в имя: второй проход (после верификации) писал в тот
         # же файл и затирал первый вердикт — на пилоте так потерялся
@@ -400,7 +415,8 @@ Acceptance:
             return None
         if not valid and attempt == 1:
             return self.review(task, gate_tail, iteration, attempt=2,
-                               verify_results=verify_results)
+                               verify_results=verify_results,
+                               confirming=confirming)
         if not valid:
             self.last_review_failure = "invalid"
             return None
@@ -430,7 +446,8 @@ Acceptance:
                               rejected=sum(1 for r in results
                                            if r.get("status") == "rejected"))
             confirmed = self.review(task, gate_tail, iteration,
-                                    verify_results=vf.format_results(results))
+                                    verify_results=vf.format_results(results),
+                                    confirming=confirming)
             # Верификация — УЛУЧШЕНИЕ вердикта, а не условие его силы. Если
             # второй проход не удался (бюджет, квота, невалидный ответ),
             # возвращаем первый — он был полноценным и за него уплачено.

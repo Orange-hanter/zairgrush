@@ -27,6 +27,7 @@
 import importlib.util
 import os
 import pathlib
+import subprocess
 import sys
 import unittest
 
@@ -273,6 +274,98 @@ class TestRoleTuning(unittest.TestCase):
         self.assertIn("--model", seen.get("argv", []))
         self.assertIn("claude-sonnet-5", seen["argv"])
         self.assertIn("--effort", seen["argv"])
+
+
+class TestConfirmationRoundAngle(unittest.TestCase):
+    """Подтверждающий раунд как второй угол зрения, а не повтор.
+
+    Замер на e4kb — один и тот же дифф, одно отличие (уровень усилия):
+    `xhigh` и `medium` дали по три находки, совпала ОДНА. `xhigh` нашёл
+    дыры в покрытии тестами, `medium` — два дефекта поведения: мёртвую
+    запись severity (правило пишет своё значение, движок безусловно
+    перезаписывает) и двойную диагностику на клеммах с одинаковым именем
+    в одном УГО. Значит подтверждающий раунд, идущий теми же
+    параметрами, покупает повтор одного взгляда; разведённый по усилию —
+    второй взгляд, и на 25 % дешевле.
+    """
+
+    def _agents(self, config):
+        a = ag.Agents.__new__(ag.Agents)
+        a.config = config
+        return a
+
+    def test_confirm_effort_applies_only_on_confirmation(self):
+        a = self._agents({"review_effort": "xhigh", "confirm_effort": "medium"})
+        self.assertEqual(a._tuning("review"), ["--effort", "xhigh"])
+        self.assertEqual(a._tuning("review", confirming=True),
+                         ["--effort", "medium"])
+
+    def test_confirm_falls_back_to_review(self):
+        """Без confirm_* умолчание обязано остаться прежним."""
+        a = self._agents({"review_effort": "xhigh"})
+        self.assertEqual(a._tuning("review", confirming=True),
+                         ["--effort", "xhigh"])
+
+    def test_confirm_model_is_independent(self):
+        a = self._agents({"review_model": "claude-opus-5",
+                          "confirm_model": "claude-sonnet-5"})
+        self.assertEqual(a._tuning("review"), ["--model", "claude-opus-5"])
+        self.assertEqual(a._tuning("review", confirming=True),
+                         ["--model", "claude-sonnet-5"])
+
+    def test_no_config_still_means_no_flags(self):
+        a = self._agents({})
+        self.assertEqual(a._tuning("review", confirming=True), [])
+
+    def test_loop_marks_the_confirmation_round(self):
+        """Флаг обязан доехать из петли до вызова, иначе ручка мертва.
+
+        Ревьюер-заглушка одобряет с первого раза; при confirmations=2
+        второй раунд — подтверждающий, и он обязан прийти с confirming=True.
+        """
+        import tempfile
+        seen = []
+        st = _load("state"); lp = _load("loop")
+
+        class Reviewer:
+            last_review_failure = None
+
+            def implement(self, task, feedback, iteration):
+                (root / "mod.py").write_text("def f():\n    return 2\n")
+                return {"status": "done", "summary": "готово"}
+
+            def review(self, task, gate_tail, iteration, attempt=1,
+                       verify_results=None, confirming=False):
+                seen.append(confirming)
+                return {"verdict": "approve", "findings": [],
+                        "analysis": "разобрал дифф и сверился со спецификацией",
+                        "summary": "работа соответствует требованиям"}
+
+            def repo_map(self, task):
+                return None
+
+            def commit_message(self, task, diff):
+                return "c1: правка"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for args in (["init", "-q"], ["config", "user.name", "t"],
+                         ["config", "user.email", "t@t"]):
+                subprocess.run(["git", *args], cwd=root, check=True)
+            (root / "mod.py").write_text("def f():\n    return 1\n")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True)
+            state = st.SwarmState(root)
+            task = {"id": "c1", "title": "t", "spec": "s", "acceptance": ["ок"],
+                    "paths": ["mod.py"], "type": "feature", "status": "pending",
+                    "deps": []}
+            state.save_tasks({"goal": "цель", "tasks": [dict(task)]})
+            loop = lp.Loop(state, {"gate_command": ["true"], "confirmations": 2},
+                           Reviewer())
+            loop.run_task(dict(task))
+
+        self.assertEqual(seen, [False, True],
+                         "признак подтверждающего раунда не доехал до ревьюера")
 
 
 if __name__ == "__main__":

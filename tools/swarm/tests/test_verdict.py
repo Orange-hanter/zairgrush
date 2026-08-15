@@ -201,7 +201,7 @@ class TestLoopBranches(unittest.TestCase):
                 idx = min(self.calls["implement"], len(seq)) - 1
                 return seq[idx] if seq else {"status": "done"}
 
-            def review(self, task, tail, iteration):
+            def review(self, task, tail, iteration, **kw):
                 self.calls["review"] += 1
                 seq = review or []
                 idx = min(self.calls["review"], len(seq)) - 1

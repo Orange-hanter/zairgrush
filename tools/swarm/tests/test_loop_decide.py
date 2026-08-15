@@ -276,7 +276,7 @@ class TestConfirmDoesNotConsumeBudget(unittest.TestCase):
                 calls["implement"] += 1
                 return {"status": "done"}
 
-            def review(self, task, tail, iteration):
+            def review(self, task, tail, iteration, **kw):
                 idx = min(calls["implement"], len(verdicts)) - 1
                 return verdicts[idx]
 
