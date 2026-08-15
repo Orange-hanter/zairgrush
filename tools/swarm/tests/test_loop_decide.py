@@ -135,6 +135,165 @@ class TestNonConvergence(unittest.TestCase):
         self.assertEqual(lp.decide(1, v, [])[1], lp.EXIT_ESCALATE)
 
 
+class _FakeState:
+    """Минимальное состояние для сквозных прогонов run_task."""
+
+    root = "."
+
+    def changed_files(self):
+        return []
+
+    def work_diff(self):
+        return ""
+
+    def set_status(self, *a, **k):
+        self.last = (a, k)
+
+    def log(self, *a, **k):
+        pass
+
+    def metric(self, **k):
+        pass
+
+    def policies(self):
+        return []
+
+    def ask(self, *a, **k):
+        return "q001"
+
+    def step(self, *a, **k):
+        import contextlib
+
+        @contextlib.contextmanager
+        def noop():
+            class S:
+                def result(self, **kw):
+                    pass
+            yield S()
+        return noop()
+
+
+class TestRoundBudgetIsOneNumber(unittest.TestCase):
+    """Найдено на пилоте (e7in), стоило задаче эскалации.
+
+    Цикл выдаёт подтверждающим раундам добавку к лимиту
+    (`while iteration < max_iter + confirm_rounds`), а решение принимала
+    функция, считавшая по голому `max_iter`. Две записи одного лимита
+    расходились ровно на число выданных подтверждений.
+    """
+
+    def _run(self, verdicts, max_iterations=3):
+        """Вердикты выдаются по счётчику РЕВЬЮ, а не исполнений: именно это
+        и позволяет описать подтверждающий раунд, где исполнителя нет."""
+        calls = {"implement": 0, "review": 0}
+        state = _FakeState()
+
+        class FakeAgents:
+            def implement(self, task, feedback, iteration):
+                calls["implement"] += 1
+                return {"status": "done"}
+
+            def review(self, task, tail, iteration, **kw):
+                idx = min(calls["review"], len(verdicts) - 1)
+                calls["review"] += 1
+                return verdicts[idx]
+
+            def commit_message(self, task, diff):
+                return "msg"
+
+        loop = lp.Loop(state, {"max_iterations": max_iterations,
+                               "confirmations": 2}, FakeAgents())
+        loop.gate = lambda task: (True, "OK")
+        loop.scope_check = lambda task: (True, [], [])
+        loop.commit = lambda task: "abc123"
+        loop.cleanup = lambda task, reason: None
+        loop._sh = lambda cmd, timeout=900: type(
+            "R", (), {"stdout": "", "returncode": 0})()
+        result = loop.run_task({"id": "e7in", "title": "t", "paths": ["a.py"],
+                                "type": "feature"})
+        return result, calls
+
+    def test_flip_in_confirmation_does_not_burn_the_last_round(self):
+        """Ровно сценарий e7in: request_changes -> approve -> подтверждающий
+        раунд сменил вердикт. Цикл выдал добавку под подтверждение, значит
+        раунд исправлений ещё есть — исполнитель обязан быть вызван снова,
+        а не получить «раунды исчерпаны»."""
+        v = self._v
+        result, calls = self._run([v("request_changes", 2),
+                                   v("approve"),
+                                   v("request_changes", 4),
+                                   v("approve"), v("approve")])
+        self.assertEqual(calls["implement"], 3,
+                         "после расхождения обязан быть раунд исправлений")
+        self.assertNotEqual(result, "blocked",
+                            "задачу нельзя эскалировать по лимиту, который "
+                            "цикл сам же и расширил")
+
+    def _v(self, kind, n_findings=0, category="correctness"):
+        return {"analysis": "подробный разбор диффа по критериям приёмки",
+                "verdict": kind, "summary": "итоговая оценка изменений",
+                "findings": [finding(category) for _ in range(n_findings)]}
+
+    def test_real_exhaustion_still_escalates(self):
+        """Обратная сторона: добавка не должна превращаться в бесконечность."""
+        v = verdict(findings=[finding("style")])
+        self.assertEqual(lp.decide(4, v, [], max_rounds=4)[0], lp.ESCALATE_MAX)
+
+
+class TestDisagreementIsNotTaskSize(unittest.TestCase):
+    """Диагноз обязан называть только то, что диагност может знать.
+
+    Подтверждающий раунд ревьюет ТОТ ЖЕ дифф: исполнитель не вызывался,
+    код не менялся. Смена вердикта там — свойство ревьюеров. Пока это
+    объявлялось «задача слишком крупная — расщепить», человека посылали
+    резать задачу, одобренную раундом раньше.
+    """
+
+    @staticmethod
+    def _confirming(n, findings, kind, model=None, effort=None):
+        row = round_record(n, findings, ["correctness"], kind=kind)
+        row["confirming"] = True
+        if model:
+            row["model"], row["effort"] = model, effort
+        return row
+
+    def test_flip_on_the_same_diff_is_named_as_such(self):
+        history = [round_record(2, 2, ["tests"], kind="approve"),
+                   self._confirming(3, 4, "request_changes")]
+        text = lp.Loop._diagnose(lp.ESCALATE_MAX, history)
+        self.assertIn("разошлись", text)
+        self.assertNotIn("расщепить", text,
+                         "нельзя предлагать резать одобренную задачу")
+
+    def test_diagnosis_names_both_arms(self):
+        """Расхождение без указания рук нечем проверить: замер по моделям
+        (§8.1) живёт ровно в этих двух строках."""
+        history = [
+            round_record(2, 2, ["tests"], kind="approve")
+            | {"model": "claude-sonnet-5", "effort": "xhigh"},
+            self._confirming(3, 4, "request_changes",
+                             "claude-opus-5", "medium"),
+        ]
+        text = lp.Loop._diagnose(lp.ESCALATE_MAX, history)
+        self.assertIn("claude-sonnet-5/xhigh", text)
+        self.assertIn("claude-opus-5/medium", text)
+
+    def test_same_verdict_twice_is_not_a_disagreement(self):
+        history = [round_record(2, 2, ["tests"]),
+                   self._confirming(3, 2, "request_changes")]
+        self.assertIn("расщепить", lp.Loop._diagnose(lp.ESCALATE_MAX, history))
+
+    def test_non_confirming_round_is_not_a_disagreement(self):
+        """Между обычными раундами работает исполнитель: дифф ДРУГОЙ, и
+        смена вердикта ничего не говорит о ревьюерах."""
+        history = [round_record(2, 2, ["tests"], kind="approve"),
+                   round_record(3, 4, ["correctness"])]
+        self.assertIn("расщепить", lp.Loop._diagnose(lp.ESCALATE_MAX, history))
+
+    def test_empty_history_keeps_the_old_hypothesis(self):
+        self.assertIn("расщепить", lp.Loop._diagnose(lp.ESCALATE_MAX, []))
+
+
 class TestExitCodes(unittest.TestCase):
     """Коды возврата — машинный контракт для внешнего скрипта."""
 

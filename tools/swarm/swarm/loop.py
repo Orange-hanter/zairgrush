@@ -401,13 +401,58 @@ class Loop:
         return r.returncode == 0
 
     @staticmethod
+    def _reviewers_disagreed(history: list[dict[str, Any]]
+                             ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Последний раунд был подтверждающим и сменил вердикт?
+
+        Подтверждающий раунд ревьюет ТОТ ЖЕ дифф: исполнитель в нём не
+        вызывается, код между раундами не менялся. Значит, смена вердикта
+        — свойство ревьюеров, а не работы. Отличить это от несходимости
+        задачи можно только здесь: дальше по тексту диагноза информации
+        уже нет.
+        """
+        if len(history) < 2 or not history[-1].get("confirming"):
+            return None
+        prev, last = history[-2], history[-1]
+        if prev.get("verdict") == last.get("verdict"):
+            return None
+        return prev, last
+
+    @staticmethod
+    def _arm(row: dict[str, Any]) -> str:
+        """Рука замера словами: без неё «разошлись» нечем проверить."""
+        model = row.get("model") or "сессионная модель"
+        effort = row.get("effort")
+        return f"{model}/{effort}" if effort else str(model)
+
+    @staticmethod
     def _diagnose(outcome: str, history: list[dict[str, Any]]) -> str:
         """Несходимость требует ДИАГНОЗА, а не очередного повтора.
 
         Закрытый список гипотез (FuguNano): человеку эскалируется не голый
         факт «три раунда подряд», а версия о причине.
+
+        Диагноз обязан называть только то, что диагност МОЖЕТ знать. Пока
+        любое исчерпание раундов объявлялось «задача слишком крупная»,
+        петля посылала человека расщеплять задачу, которую сама же
+        одобрила раундом раньше (пилот, e7in), и заодно прятала главное
+        наблюдение прогона — расхождение двух рук на одном диффе. Это
+        третий случай того же класса после проверки целостности и стража
+        путей: предохранитель, называющий причину, которой не знает.
         """
         if outcome == ESCALATE_MAX:
+            flip = Loop._reviewers_disagreed(history)
+            if flip:
+                prev, last = flip
+                return (
+                    f"ревьюеры разошлись на ОДНОМ И ТОМ ЖЕ диффе: раунд "
+                    f"{prev['round']} ({Loop._arm(prev)}) — {prev['verdict']}, "
+                    f"находок {prev['findings']}; подтверждающий раунд "
+                    f"{last['round']} ({Loop._arm(last)}) — {last['verdict']}, "
+                    f"находок {last['findings']}. Исполнитель между раундами "
+                    f"не вызывался, код не менялся. Расщеплять задачу не "
+                    f"нужно — прочтите оба вердикта в .swarm/log и решите, "
+                    f"чья правда")
             return "исчерпаны раунды: задача, вероятно, слишком крупная — расщепить"
         counts = [h["findings"] for h in history]
         cats = [tuple(h["categories"]) for h in history]
@@ -567,11 +612,23 @@ class Loop:
             if raw_findings and not findings and verdict["verdict"] != "blocked":
                 verdict["verdict"] = "approve"
             intent, mechanical = classify_findings(findings)
+            # Тот же бюджет, что и у цикла выше. Пока `decide` считал по
+            # голому max_iter, а цикл — по max_iter + confirm_rounds, они
+            # расходились ровно на число выданных подтверждений: на
+            # пилоте задача e7in получила approve на 2-м раунде, на 3-м
+            # (подтверждающем) вердикт сменился — и вместо разрешённого
+            # 4-го раунда исправлений ушла в эскалацию «раунды
+            # исчерпаны». Две записи одного лимита обязаны быть одной.
             outcome, code = decide(iteration, verdict, history,
-                                   max_rounds=self.max_iter,
+                                   max_rounds=self.max_iter + confirm_rounds,
                                    confirmations=self.config.get("confirmations", 2))
             history.append({"round": iteration, "verdict": verdict["verdict"],
                             "findings": len(findings),
+                            # Без этих двух полей диагност не может
+                            # отличить «задача не сходится» от
+                            # «ревьюеры разошлись на одном диффе».
+                            "confirming": was_confirmation,
+                            **getattr(self.agents, "last_tuning", {}),
                             "categories": sorted({str(f.get("category") or "")
                                                   for f in findings})})
             self.state.log("round", task=tid, round=iteration,
