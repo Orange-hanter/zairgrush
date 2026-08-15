@@ -25,6 +25,7 @@
 валидацию, обработку ошибок и безопасность.
 """
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
@@ -366,6 +367,190 @@ class TestConfirmationRoundAngle(unittest.TestCase):
 
         self.assertEqual(seen, [False, True],
                          "признак подтверждающего раунда не доехал до ревьюера")
+
+
+class TestTuningPools(unittest.TestCase):
+    """Жребий на КАЖДЫЙ вызов ревью — и запись выбора в журнал.
+
+    Вывод по единственному замеру — сквозная ошибка всей сессии: сначала
+    «разведённые раунды дают второй угол» по одной паре, потом «гипотеза
+    не подтвердилась» по одному нулю, потом «Sonnet дешевле на 40 %» по
+    ставкам без замера. Лечится не аккуратностью, а дизайном: жребий и
+    накопление.
+
+    Ключевой выбор дизайна — жребий на ВЫЗОВ, а не на задачу. Каждую
+    задачу мы ревьюим дважды по одному диффу, поэтому независимый жребий
+    сам рождает пары «две руки на одном диффе». Жребий на задачу дал бы
+    сравнение между разными диффами, где число находок зависит от
+    сложности кода сильнее, чем от модели.
+    """
+
+    def _agents(self, config, seed=0):
+        a = ag.Agents.__new__(ag.Agents)
+        a.config = config
+        a._rng = __import__("random").Random(seed)
+        a.last_tuning = {}
+        return a
+
+    def test_fixed_value_without_pool(self):
+        a = self._agents({"review_model": "claude-opus-5"})
+        self.assertEqual(a._tuning("review"), ["--model", "claude-opus-5"])
+
+    def test_pool_is_drawn(self):
+        pool = ["claude-opus-5", "claude-sonnet-5"]
+        a = self._agents({"review_model_pool": pool})
+        flags = a._tuning("review")
+        self.assertEqual(flags[0], "--model")
+        self.assertIn(flags[1], pool)
+
+    def test_pool_outranks_fixed_value(self):
+        """Иначе настройка и пул тихо конфликтуют, и замер невоспроизводим."""
+        a = self._agents({"review_model": "claude-opus-5",
+                          "review_model_pool": ["claude-sonnet-5"]})
+        self.assertEqual(a._tuning("review"), ["--model", "claude-sonnet-5"])
+
+    def test_draw_varies_across_calls(self):
+        """Жребий на КАЖДЫЙ вызов: иначе пары на одном диффе не возникнут."""
+        a = self._agents({"review_model_pool": ["a", "b"]}, seed=1)
+        drawn = {a._draw("review_model", False) for _ in range(40)}
+        self.assertEqual(drawn, {"a", "b"}, "жребий выродился в константу")
+
+    def test_seed_makes_the_draw_reproducible(self):
+        cfg = {"review_model_pool": ["a", "b", "c"], "tuning_seed": 7}
+        first = [ag.Agents.__new__(ag.Agents) for _ in range(2)]
+        seqs = []
+        for inst in first:
+            inst.config = cfg
+            inst._rng = __import__("random").Random(cfg["tuning_seed"])
+            inst.last_tuning = {}
+            seqs.append([inst._draw("review_model", False) for _ in range(10)])
+        self.assertEqual(seqs[0], seqs[1])
+
+    def test_confirm_pool_overrides(self):
+        a = self._agents({"review_model_pool": ["opus"],
+                          "confirm_model_pool": ["sonnet"]})
+        self.assertEqual(a._tuning("review"), ["--model", "opus"])
+        self.assertEqual(a._tuning("review", confirming=True),
+                         ["--model", "sonnet"])
+
+    def test_confirm_falls_back_to_review_pool(self):
+        a = self._agents({"review_model_pool": ["opus"]})
+        self.assertEqual(a._tuning("review", confirming=True),
+                         ["--model", "opus"])
+
+    def test_choice_is_remembered_for_the_journal(self):
+        a = self._agents({"review_model_pool": ["claude-sonnet-5"],
+                          "review_effort_pool": ["medium"]})
+        a._tuning("review")
+        self.assertEqual(a.last_tuning,
+                         {"model": "claude-sonnet-5", "effort": "medium"})
+
+    def test_metric_carries_the_draw(self):
+        """Жребий, не попавший в журнал, — это шум, а не замер."""
+        import subprocess as sp
+        rows = []
+        orig = sp.run
+
+        def fake(argv, **kw):
+            if not (argv and argv[0] == "claude"):
+                return orig(argv, **kw)
+            return type("R", (), {"stdout": json.dumps({
+                "structured_output": {
+                    "verdict": "approve", "findings": [],
+                    "analysis": "разобрал дифф и сверился со спецификацией",
+                    "summary": "работа соответствует требованиям"},
+                "total_cost_usd": 0.5}), "stderr": "", "returncode": 0})()
+
+        sp.run = fake
+        self.addCleanup(lambda: setattr(sp, "run", orig))
+
+        a = self._agents({"review_model_pool": ["claude-sonnet-5"],
+                          "review_effort_pool": ["low"]})
+        a.loop_mod = _load("loop")
+        a.last_review_failure = None
+        a.work_diff = lambda: "diff --git a/x b/x\n+1"
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        (pathlib.Path(tmp.name) / "log").mkdir()
+        a.state = type("S", (), {
+            "root": ".", "dir": pathlib.Path(tmp.name),
+            "metric": staticmethod(lambda **k: rows.append(k)),
+            "log": staticmethod(lambda *x, **k: None),
+        })()
+        a.review({"id": "t1", "title": "t", "spec": "s",
+                  "acceptance": ["ок"]}, "OK", 1, confirming=True)
+        row = [r for r in rows if r.get("phase") == "review"][0]
+        self.assertEqual(row["model"], "claude-sonnet-5")
+        self.assertEqual(row["effort"], "low")
+        self.assertTrue(row["confirming"])
+
+
+class TestAbSummary(unittest.TestCase):
+    """Сводка обязана отличать пары на одном диффе от общей статистики."""
+
+    def _root(self, rows):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name)
+        (root / ".swarm").mkdir()
+        with (root / ".swarm" / "metrics.jsonl").open("w") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        return root
+
+    def _run(self, rows):
+        import contextlib, io
+        cli = _load("cli")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cli.cmd_ab(type("A", (), {"root": str(self._root(rows))})())
+        return buf.getvalue()
+
+    ROW = {"phase": "review", "valid": True, "verdict": "approve"}
+
+    def test_pair_on_the_same_diff_is_found(self):
+        out = self._run([
+            dict(self.ROW, task="t1", iter=1, model="opus", effort="xhigh",
+                 cost_usd=1.8, findings=6),
+            dict(self.ROW, task="t1", iter=1, model="sonnet", effort="xhigh",
+                 cost_usd=1.2, findings=2),
+        ])
+        self.assertIn("пары на одном диффе: 1", out)
+        self.assertIn("opus", out)
+        self.assertIn("sonnet", out)
+
+    def test_same_arm_twice_is_not_a_pair(self):
+        """Два вызова одной рукой сравнивать не с чем."""
+        out = self._run([
+            dict(self.ROW, task="t1", iter=1, model="opus", effort="xhigh",
+                 cost_usd=1.8, findings=6),
+            dict(self.ROW, task="t1", iter=1, model="opus", effort="xhigh",
+                 cost_usd=1.7, findings=5),
+        ])
+        self.assertIn("пары на одном диффе: 0", out)
+
+    def test_different_tasks_are_not_a_pair(self):
+        """Разные диффы — не пара: число находок зависит от сложности кода."""
+        out = self._run([
+            dict(self.ROW, task="t1", iter=1, model="opus", effort="xhigh",
+                 cost_usd=1.8, findings=6),
+            dict(self.ROW, task="t2", iter=1, model="sonnet", effort="xhigh",
+                 cost_usd=1.2, findings=2),
+        ])
+        self.assertIn("пары на одном диффе: 0", out)
+
+    def test_invalid_reviews_are_excluded(self):
+        """Обрубленный вызов вердикта не дал — в статистику он не идёт."""
+        out = self._run([
+            dict(self.ROW, task="t1", iter=1, model="opus", effort="xhigh",
+                 cost_usd=1.8, findings=6),
+            {"phase": "review", "valid": False, "task": "t1", "iter": 1,
+             "model": "sonnet", "effort": "xhigh", "cost_usd": 3.2},
+        ])
+        self.assertIn("(1 валидных ревью)", out)
+        self.assertIn("пары на одном диффе: 0", out)
 
 
 if __name__ == "__main__":

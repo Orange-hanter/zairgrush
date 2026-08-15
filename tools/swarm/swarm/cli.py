@@ -200,6 +200,84 @@ def cmd_impact(args):
     return 0
 
 
+def cmd_ab(args):
+    """Сводка по рукам замера: что дал жребий за все прогоны.
+
+    Отвечает на два разных вопроса, и путать их нельзя.
+
+    СВОДКА ПО РУКАМ — сравнение между разными диффами. Быстро считается,
+    но число находок зависит от сложности кода сильнее, чем от модели:
+    на PILOT-1 один дифф дал 5 находок, другой 2, и разница была про код.
+    Такому сравнению нужны десятки задач.
+
+    ПАРЫ — два вызова с РАЗНЫМИ параметрами по одному и тому же диффу.
+    Это и есть ценность парного дизайна: дифф одинаков, значит разница в
+    находках относится к руке, а не к задаче. Пары рождаются сами, потому
+    что каждую задачу мы ревьюим дважды.
+
+    Ни то, ни другое не измеряет СУЩЕСТВО находок: «шесть против двух»
+    может значить и «нашёл больше», и «нашумел». Счёт — повод прочитать
+    сырые вердикты в .swarm/log, а не замена чтению.
+    """
+    st = state_mod.SwarmState(args.root)
+    if not st.metrics_path.exists():
+        print("метрик нет")
+        return 0
+    rows = []
+    for line in st.metrics_path.read_text(encoding="utf-8").splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("phase") != "review" or not e.get("valid"):
+            continue
+        rows.append(e)
+    if not rows:
+        print("нет валидных ревью в метриках")
+        return 0
+
+    def arm(e):
+        return (e.get("model") or "(сессионная)", e.get("effort") or "(сессионный)")
+
+    groups = {}
+    for e in rows:
+        groups.setdefault(arm(e), []).append(e)
+
+    print(f"=== руки замера ({len(rows)} валидных ревью) ===")
+    print(f"{'модель':<20}{'усилие':<14}{'n':>4}{'$/вызов':>10}"
+          f"{'находок':>10}{'approve':>9}")
+    for key in sorted(groups):
+        g = groups[key]
+        cost = sum(e.get("cost_usd") or 0 for e in g) / len(g)
+        find = sum(e.get("findings") or 0 for e in g) / len(g)
+        appr = sum(1 for e in g if e.get("verdict") == "approve")
+        print(f"{key[0]:<20}{key[1]:<14}{len(g):>4}{cost:>10.2f}"
+              f"{find:>10.1f}{appr:>6}/{len(g)}")
+
+    # Пары: один и тот же дифф (задача + итерация) двумя разными руками.
+    # Итерация — правильный ключ диффа: внутри неё исполнитель не
+    # вызывался, значит код тот же.
+    by_diff = {}
+    for e in rows:
+        by_diff.setdefault((e.get("task"), e.get("iter")), []).append(e)
+    pairs = [(k, v) for k, v in by_diff.items()
+             if len({arm(e) for e in v}) > 1]
+    print(f"\n=== пары на одном диффе: {len(pairs)} ===")
+    if not pairs:
+        print("  пока нет. Пара возникает, когда жребий на двух вызовах")
+        print("  одной итерации выпал разным — задайте пул в swarm.toml:")
+        print('  review_model_pool = ["claude-opus-5", "claude-sonnet-5"]')
+        return 0
+    for (task, it), g in sorted(pairs):
+        print(f"  {task} итерация {it}:")
+        for e in g:
+            m, ef = arm(e)
+            print(f"    {m} / {ef}: ${e.get('cost_usd') or 0:.2f}, "
+                  f"находок {e.get('findings')}, {e.get('verdict')}")
+    print("\nСчёт находок — повод прочитать вердикты в .swarm/log, а не вывод.")
+    return 0
+
+
 def cmd_report(args):
     """Человекочитаемый рендер из jsonl (ADR-001: журнал первичен)."""
     st = state_mod.SwarmState(args.root)
@@ -672,6 +750,8 @@ def main(argv=None):
     p.add_argument("--add-path", action="append", default=[])
     p.set_defaults(func=cmd_retry)
 
+    p = sub.add_parser("ab", help="сводка по рукам замера (модель/усилие)")
+    p.set_defaults(func=cmd_ab)
     p = sub.add_parser("report", help="отчёт из журнала")
     p.add_argument("--task")
     p.set_defaults(func=cmd_report)

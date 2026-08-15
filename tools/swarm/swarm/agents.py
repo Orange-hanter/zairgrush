@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 import pathlib
+import random
 import re
 import subprocess
 import sys
@@ -99,6 +100,11 @@ class Agents:
         # голое None. «Кончился бюджет» и «модель ответила мусором» —
         # разные болезни с разным лечением.
         self.last_review_failure = None
+        # Жребий для пулов моделей и усилий. Отдельный экземпляр, а не
+        # глобальный random: тесты подменяют его сидом, не трогая
+        # состояние процесса.
+        self._rng = random.Random(config.get("tuning_seed"))
+        self.last_tuning = {}
 
     # --- контекст ---------------------------------------------------------
 
@@ -347,17 +353,44 @@ Acceptance:
         против $1.17. `confirm_*` без явной настройки падает обратно на
         `review_*`, то есть умолчание остаётся прежним.
         """
+        model = self._draw(f"{prefix}_model", confirming)
+        effort = self._draw(f"{prefix}_effort", confirming)
+        self.last_tuning = {"model": model, "effort": effort}
         flags = []
-        model = self.config.get(f"{prefix}_model")
-        effort = self.config.get(f"{prefix}_effort")
-        if confirming:
-            model = self.config.get("confirm_model", model)
-            effort = self.config.get("confirm_effort", effort)
         if model:
             flags += ["--model", str(model)]
         if effort:
             flags += ["--effort", str(effort)]
         return flags
+
+    def _draw(self, key, confirming):
+        """Значение параметра: пул со жребием, иначе фиксированная настройка.
+
+        Пул (`<key>_pool`) старше одиночного значения и применяется к
+        КАЖДОМУ вызову ревью, включая подтверждающий. Это не небрежность,
+        а суть дизайна замера: каждую задачу мы и так ревьюим дважды по
+        ОДНОМУ И ТОМУ ЖЕ диффу, поэтому независимый жребий на каждый вызов
+        сам собой рождает пары «две руки на одном диффе» — без единого
+        лишнего прогона.
+
+        Почему это важнее, чем кажется. Жребий на ЗАДАЧУ дал бы сравнение
+        между разными диффами, а число находок зависит от сложности кода
+        сильнее, чем от модели: на PILOT-1 один дифф дал 5 находок, другой
+        2, и разница была про код, а не про ревьюера. Такой дизайн требует
+        десятков задач, чтобы шум усреднился. Парный — единиц.
+
+        Выбор записывается в метрики вызывающим (`review`): жребий, не
+        попавший в журнал, превращает прогон в невоспроизводимый шум.
+        """
+        pool = self.config.get(f"{key}_pool")
+        if confirming:
+            pool = self.config.get(f"confirm_{key.split('_')[-1]}_pool", pool)
+        if pool:
+            return self._rng.choice(list(pool))
+        value = self.config.get(key)
+        if confirming:
+            value = self.config.get(f"confirm_{key.split('_')[-1]}", value)
+        return value
 
     def review(self, task, gate_tail, iteration, attempt=1, verify_results=None,
                confirming=False):
@@ -399,11 +432,14 @@ Acceptance:
         except ValueError:
             pass
         valid = self.loop_mod.validate_verdict(verdict)
+        # Выбор руки — часть замера, а не деталь запуска: жребий, не
+        # попавший в журнал, делает прогон невоспроизводимым шумом.
         self.state.metric(task=task["id"], iter=iteration, phase="review",
                           attempt=attempt, dur_s=round(time.time() - t0, 1),
                           cost_usd=cost, verdict=(verdict or {}).get("verdict"),
                           findings=len((verdict or {}).get("findings", [])),
-                          valid=valid, terminal_reason=terminal)
+                          valid=valid, terminal_reason=terminal,
+                          confirming=confirming, **self.last_tuning)
         if not valid and terminal == "budget_exhausted":
             # Повтор обречён: тот же промпт кончится на том же месте.
             # На пилоте вторая попытка стоила ещё $3.23 и дала то же
