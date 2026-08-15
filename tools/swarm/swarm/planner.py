@@ -18,9 +18,17 @@ import copy
 import json
 import pathlib
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from typing import Any
+
+# Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
+_HERE = str(pathlib.Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import obs  # noqa: E402 — каталог добавлен строкой выше
 
 PLAN = pathlib.Path(__file__).resolve().parent
 SCHEMA = (PLAN.parent / "schemas" / "plan-diff.schema.json").read_text()
@@ -48,7 +56,7 @@ def artifacts_dir(root: str | pathlib.Path | None = None) -> pathlib.Path:
 
 
 def metric(root: str | pathlib.Path | None = None, **row: Any) -> None:
-    row["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    obs.stamp(row)
     path = artifacts_dir(root) / "plan-metrics.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
@@ -61,9 +69,11 @@ def repo_map(stand: str | pathlib.Path) -> tuple[str, str]:
     files = sorted(p.relative_to(stand).as_posix()
                    for p in stand.rglob("*.py")
                    if "__pycache__" not in p.parts and ".git" not in p.parts)
+    # Красный сьют — не ошибка вызова, а факт о стенде, который
+    # планировщику как раз и нужно знать: он идёт в промпт.
     r = subprocess.run(["python3", "-m", "unittest", "discover",
                         "-s", "tests", "-t", "."],
-                       capture_output=True, text=True, cwd=stand)
+                       capture_output=True, text=True, cwd=stand, check=False)
     tail = (r.stdout + r.stderr).strip().splitlines()[-2:]
     return "\n".join(files), " ".join(tail)
 
@@ -183,7 +193,7 @@ def call_planner(prompt: str, tag: str, attempt: int = 1,
                        # Без cwd планировщик читает репозиторий по каталогу
                        # процесса, а не по --root: Read/Grep смотрели бы не
                        # в тот проект, для которого строится план.
-                       cwd=str(root) if root else None)
+                       cwd=str(root) if root else None, check=False)
     dur = round(time.time() - t0, 1)
     raw_dir = artifacts_dir(root) / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -340,10 +350,9 @@ def validate_plan_diff(diff: dict[str, Any] | None,
                 graph[tid] = list(t.get("deps") or [])
             else:
                 graph.setdefault(tid, [])
-    for tid, deps in graph.items():
-        for d in deps:
-            if d not in universe:
-                errs.append(f"deps {tid} -> {d}: задача не существует")
+    errs.extend(f"deps {tid} -> {d}: задача не существует"
+                for tid, deps in graph.items()
+                for d in deps if d not in universe)
     color: dict[str, int] = {}
 
     def cyclic(node: str) -> bool:
@@ -392,6 +401,7 @@ def main() -> int:
     ap.add_argument("--task")
     ap.add_argument("--dispute")
     args = ap.parse_args()
+    obs.setup(artifacts_dir(args.stand))
 
     stand = pathlib.Path(args.stand)
     data = json.loads(pathlib.Path(args.tasks).read_text())

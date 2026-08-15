@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Индекс на tree-sitter: проверка, даёт ли он value поверх stdlib `ast`.
 
 Вопрос стоял так: индустрия не зря пользуется ctags/tree-sitter/SCIP —
@@ -84,10 +83,9 @@ def index_file(
         defs.append({"name": _text(name_node, src), "line": node.start_point[0] + 1,
                      "sig": first_line.rstrip("{:").strip(), "lang": kind})
 
-    calls = []
     call_caps = QueryCursor(Query(lang, CALL_QUERIES[kind])).captures(tree.root_node)
-    for node in call_caps.get("callee", []):
-        calls.append({"name": _text(node, src), "line": node.start_point[0] + 1})
+    calls = [{"name": _text(node, src), "line": node.start_point[0] + 1}
+             for node in call_caps.get("callee", [])]
     return defs, calls
 
 
@@ -105,8 +103,7 @@ def index_project(root: str | pathlib.Path,
         rel = path.relative_to(root).as_posix()
         for d in defs:
             symbols[f"{rel}::{d['name']}"] = dict(d, file=rel)
-        for c in cs:
-            calls.append(dict(c, file=rel))
+        calls.extend(dict(c, file=rel) for c in cs)
     return symbols, calls
 
 

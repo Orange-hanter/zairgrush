@@ -24,8 +24,8 @@ HAVE_CTAGS = hi.have_ctags() is not None
 PY_CORE = 'def helper(x):\n    """Ядро."""\n    return x * 2\n'
 PY_UTIL = ('from py.core import helper\n\n\n'
            'def wrapper(x):\n    """Обёртка."""\n    return helper(x)\n')
-RUST = ('fn normalize(s: &str) -> String { s.trim().to_lowercase() }\n\n'
-        'pub fn run(t: &str) -> String { normalize(t) }\n')
+RUST = ("fn normalize(s: &str) -> String { s.trim().to_lowercase() }\n\n"
+        "pub fn run(t: &str) -> String { normalize(t) }\n")
 
 
 class HybridCase(unittest.TestCase):

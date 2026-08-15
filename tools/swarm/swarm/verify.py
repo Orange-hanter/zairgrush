@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Этап 2: verification-запросы ревьюера (предложение №21 аудита).
 
 Мотив измерен, а не придуман: в BENCH-1 ревьюер в 4 задачах из 6 писал в
@@ -173,13 +172,16 @@ def run_requests(requests: list[dict[str, Any]] | None, cwd: str,
         t0 = time.time()
         try:
             proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
-                                  timeout=CMD_TIMEOUT)
+                                  timeout=CMD_TIMEOUT, check=False)
             out = sanitize_output((proc.stdout or "") + (proc.stderr or "")).strip()
             entry.update(status="ok", exit_code=proc.returncode,
                          output=out[-2000:], dur_s=round(time.time() - t0, 1))
         except subprocess.TimeoutExpired:
             entry.update(status="timeout", output=f"превышен лимит {CMD_TIMEOUT}s")
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            # Не blind: сюда попадают отказ запуска (OSError) и мусор в
+            # аргументах (ValueError). Всё прочее — дефект оркестратора,
+            # и глотать его значит скрывать собственную поломку.
             entry.update(status="error", output=f"{type(e).__name__}: {e}")
         results.append(entry)
     return results
@@ -200,7 +202,17 @@ def format_results(results: list[dict[str, Any]]) -> str:
 
 def worktree_dirty(cwd: str) -> list[str]:
     """Проверки не должны менять рабочее дерево (§5.1). Если изменили —
-    это дефект самой проверки, а не работы исполнителя."""
+    это дефект самой проверки, а не работы исполнителя.
+
+    Код возврата git проверяется, и это не педантизм. Функция вызывается
+    дважды — до и после проверок, — а разница множеств говорит «проверки
+    ничего не тронули». Если git не отработал, обе выдачи пусты, разница
+    пуста, и сбой читается как ЧИСТОЕ ДЕРЕВО: свойство безопасности
+    подтверждается тем, что его не смогли проверить. Поэтому — ошибка.
+    """
     r = subprocess.run(["git", "status", "--porcelain"], cwd=cwd,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        raise OSError(f"git status не отработал в {cwd}: "
+                      f"{(r.stderr or '').strip()[:200]}")
     return [line[3:].strip() for line in r.stdout.splitlines()]

@@ -26,6 +26,12 @@ Kimi Code (исполнитель, модель K3) и Claude Code (ревьюе
 `.venv` (`uv venv .venv && uv pip install --python .venv ruff mypy`);
 в git `.venv` не попадает.
 
+Наблюдаемость — `tools/swarm/swarm/obs.py`: журнал фактов (`run.jsonl`,
+`metrics.jsonl`) и диагностика (`diag.jsonl`) — разные потоки; время в
+UTC со смещением, `run_id` в каждой строке. Уровень — `SWARM_LOG_LEVEL`.
+`except Exception` допустим только на границах деградации и обязан
+оставлять запись с трассировкой (правило `BLE001` включено).
+
 Код оркестратора аннотирован полностью и проходит `mypy --strict`.
 Правило ужесточения зафиксировано в `tools/swarm/pyproject.toml`: список
 `ignore` только сокращается, каждая строка в нём — долг с объяснением, а

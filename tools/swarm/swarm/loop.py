@@ -16,8 +16,18 @@ import fnmatch
 import os
 import pathlib
 import subprocess
+import sys
 from collections.abc import Callable
 from typing import Any
+
+# Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
+_HERE = str(pathlib.Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import obs  # noqa: E402 — каталог добавлен строкой выше
+
+log = obs.get_logger("loop")
 
 MAX_ITER = 3
 SEVERITIES = {"blocker", "major", "minor"}
@@ -197,8 +207,12 @@ class Loop:
 
     def _sh(self, cmd: list[str],
             timeout: float = 900) -> subprocess.CompletedProcess[str]:
+        # check=False намеренно: `_sh` — общий раннер, и КАЖДЫЙ вызывающий
+        # смотрит returncode сам (ветвление по коду — суть половины
+        # проверок петли). Исключение здесь лишило бы их этой ветки.
         return subprocess.run(cmd, capture_output=True, text=True,
-                              cwd=self.state.root, timeout=timeout)
+                              cwd=self.state.root, timeout=timeout,
+                              check=False)
 
     @property
     def max_iter(self) -> int:
@@ -326,8 +340,10 @@ class Loop:
                "GIT_COMMITTER_NAME": "swarm-orchestrator",
                "GIT_COMMITTER_EMAIL": "orchestrator@swarm.local"}
         subprocess.run(["git", "add", "-A"], cwd=self.state.root, check=True)
+        # Здесь код возврата — ОТВЕТ, а не ошибка: 0 значит «нечего
+        # коммитить», 1 — «есть изменения». check=True сломал бы логику.
         staged = subprocess.run(["git", "diff", "--cached", "--quiet"],
-                                cwd=self.state.root)
+                                cwd=self.state.root, check=False)
         if staged.returncode == 0:
             return None
         message = self.agents.commit_message(task, self._sh(["git", "diff",
@@ -378,7 +394,8 @@ class Loop:
         if not diff_text.strip():
             return True
         r = subprocess.run(["git", "apply", "-"], cwd=self.state.root,
-                           input=diff_text, text=True, capture_output=True)
+                           input=diff_text, text=True, capture_output=True,
+                           check=False)
         if r.returncode != 0:
             self.state.log("restore_failed", stderr=(r.stderr or "").strip()[:300])
         return r.returncode == 0
@@ -692,6 +709,8 @@ class Loop:
                 self._rescue(task, "прервано человеком")
                 raise
             except Exception as e:
+                # убивать очередь; задача обязана остаться разбираемой
+                log.exception("задача упала", extra={"swarm_task": task["id"]})
                 results[task["id"]] = self._rescue(task, f"{type(e).__name__}: {e}")
                 break
             if limit and len(results) >= limit:
@@ -705,6 +724,8 @@ class Loop:
         try:
             stash = self.cleanup(task, "crash")
         except Exception:
+            log.exception("stash при аварии не создан",
+                          extra={"swarm_task": tid})
             stash = None
         try:
             qid = self.state.ask(tid, ASK_USER,
@@ -714,6 +735,7 @@ class Loop:
         except Exception as e:
             # Отказ самого регистратора аварии нельзя терять: иначе задача
             # молча остаётся в work и оператор не узнает почему.
+            log.exception("авария не записана", extra={"swarm_task": tid})
             self.ui(f"    не записана авария {tid}: {type(e).__name__}: {e}")
         self.ui(f"    АВАРИЯ на {tid}: {reason}")
         return "blocked"

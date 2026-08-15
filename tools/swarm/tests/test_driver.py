@@ -24,7 +24,7 @@ def fake_agent(script):
     return [sys.executable, "-c", script]
 
 
-NORMAL = r'''
+NORMAL = r"""
 import json, sys, time
 print(json.dumps({"role": "meta", "type": "start"}), flush=True)
 print(json.dumps({"role": "assistant",
@@ -34,32 +34,32 @@ print(json.dumps({"role": "assistant",
                   "content": json.dumps({"status": "done",
                                          "summary": "s"})}), flush=True)
 print(json.dumps({"role": "meta", "session_id": "sess-1"}), flush=True)
-'''
+"""
 
-SILENT = r'''
+SILENT = r"""
 import json, sys, time
 print(json.dumps({"role": "assistant", "content": "начал работу"}), flush=True)
 time.sleep(30)
-'''
+"""
 
-CRASH = r'''
+CRASH = r"""
 import json, sys
 print(json.dumps({"role": "assistant", "content": "начал"}), flush=True)
 sys.exit(3)
-'''
+"""
 
-CHATTY = r'''
+CHATTY = r"""
 import json, time
 while True:
     print(json.dumps({"role": "tool", "content": "тик"}), flush=True)
     time.sleep(0.05)
-'''
+"""
 
-PROSE_ONLY = r'''
+PROSE_ONLY = r"""
 import json
 print(json.dumps({"role": "assistant",
                   "content": "Готово, но JSON я не верну"}), flush=True)
-'''
+"""
 
 
 def extract(stream):
@@ -194,14 +194,14 @@ class TestStderrDoesNotDeadlock(unittest.TestCase):
     проявлялся, на реальных это отказ по расписанию.
     """
 
-    NOISY = r'''
+    NOISY = r"""
 import json, sys
 sys.stderr.write("t" * %d * 1024)
 sys.stderr.flush()
 print(json.dumps({"role": "assistant",
                   "content": json.dumps({"status": "done",
                                          "summary": "s"})}), flush=True)
-'''
+"""
 
     def _run(self, kb):
         # Короткие лимиты специально: при регрессе (stderr не осушается)

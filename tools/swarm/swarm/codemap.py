@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Гибридный индекс: каждый инструмент делает то, в чём он сильнее.
 
 Замеры показали, что «лучшего» индексатора нет — есть три разные задачи:
@@ -48,14 +47,19 @@ def _load(name: str, filename: str) -> ModuleType:
     return mod
 
 
+obs = _load("obs", "obs.py")
+log = obs.get_logger("codemap")
+
+
 def have_ctags() -> str | None:
     exe = shutil.which("ctags")
     if not exe:
         return None
     try:
         out = subprocess.run([exe, "--version"], capture_output=True, text=True,
-                             timeout=10).stdout
+                             timeout=10, check=False).stdout
     except Exception:
+        log.warning("ctags не опрошен: %s", exe, exc_info=True)
         return None
     # Exuberant 5.8 (2009) не умеет ни JSON, ни ролей, а `brew install ctags`
     # ставит именно его под тем же именем. Принять его за universal — значит
@@ -92,8 +96,9 @@ class HybridIndex:
                "-R", "-f", "-", "."]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True,
-                                 cwd=self.root, timeout=120).stdout
+                                 cwd=self.root, timeout=120, check=False).stdout
         except Exception:
+            log.warning("слой ctags не отработал", exc_info=True)
             return
         count = 0
         for line in out.splitlines():
@@ -135,6 +140,7 @@ class HybridIndex:
             sc = _load("pyindex", "pyindex.py")
             idx = sc.Index(self.root)
         except Exception:
+            log.warning("точный слой (ast) не отработал", exc_info=True)
             return
         for sid, sym in idx.symbols.items():
             key = f"{sym.file}::{sym.name}"
@@ -160,6 +166,7 @@ class HybridIndex:
             ts = _load("tsindex", "tsindex.py")
             symbols, calls = ts.index_project(self.root)
         except Exception:
+            log.warning("слой tree-sitter не отработал", exc_info=True)
             return
         for s in symbols.values():
             self.symbols.setdefault(f"{s['file']}::{s['name']}", {

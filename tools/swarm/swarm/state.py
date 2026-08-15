@@ -20,9 +20,19 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import time
 from types import TracebackType
 from typing import IO, Any
+
+# Каталог модуля — в путь поиска: рой не устанавливается пакетом, и
+# межмодульный импорт по имени иначе не работает. Вставка защищена от
+# повтора; альтернатива — шестая копия importlib-обвязки из cli.py.
+_HERE = str(pathlib.Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import obs  # noqa: E402 — каталог добавлен строкой выше
 
 LEGAL_STATUS = {"pending", "in_progress", "in_review", "done", "blocked"}
 TERMINAL = {"done", "blocked"}
@@ -166,7 +176,7 @@ class SwarmState:
 
     def log(self, kind: str, **payload: Any) -> dict[str, Any]:
         """Append-only журнал событий (ADR-001: jsonl первичен, md — рендер)."""
-        row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "kind": kind}
+        row: dict[str, Any] = obs.stamp({"kind": kind})
         row.update(payload)
         with self.journal_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -180,9 +190,11 @@ class SwarmState:
     # но НЕ второму — ревьюер получал пустой дифф и мог одобрить пустоту,
     # которую коммит затем вносил в историю. Теперь источник один.
 
-    def _git(self, *args: str, **kw: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["git", *args], cwd=self.root, capture_output=True,
-                              text=True, **kw)
+    def git(self, *args: str, **kw: Any) -> subprocess.CompletedProcess[str]:
+        # check=False намеренно: вызывающие ветвятся по returncode
+        # (`ls-files --error-unmatch` тем и работает, что падает).
+        return subprocess.run(["git", *args], cwd=self.root,
+                              capture_output=True, text=True, check=False, **kw)
 
     def changed_files(self) -> list[str]:
         """Пути, изменённые в рабочем дереве, ПОИМЁННО.
@@ -192,7 +204,7 @@ class SwarmState:
         модуль» гарантированно выжигала лимит итераций с ложным диагнозом
         «слишком крупная».
         """
-        out = self._git("status", "--porcelain", "-uall").stdout
+        out = self.git("status", "--porcelain", "-uall").stdout
         return [line[3:].strip().strip('"') for line in out.splitlines()
                 if line[3:].strip()]
 
@@ -203,8 +215,8 @@ class SwarmState:
         добавляя их содержимое, — после этого обычный `git diff` показывает
         их как добавления. Историю это не меняет.
         """
-        self._git("add", "-A", "-N")
-        return self._git("diff").stdout
+        self.git("add", "-A", "-N")
+        return self.git("diff").stdout
 
     def total_spend(self) -> float:
         """Сколько уже стоил прогон. Считается по факту из метрик.
@@ -226,7 +238,7 @@ class SwarmState:
         return round(total, 2)
 
     def metric(self, **payload: Any) -> None:
-        payload["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        obs.stamp(payload)
         with self.metrics_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 

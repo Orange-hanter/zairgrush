@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Слой запуска агентов (§6.0): AgentDriver с heartbeat и рестартом.
 
 Заменяет `subprocess.run(...)` раннера, который не умел ничего из §5.2:
@@ -219,6 +218,16 @@ class Run:
             reason = "no_report"
         return RunResult(reason, report, count, time.time() - self._started,
                          self.proc.returncode)
+
+    def raw_stream(self) -> str:
+        """Сырой поток агента целиком — для журнала прогона.
+
+        Публичный метод, а не чтение `_lines` снаружи: буфер копится
+        фоновым потоком, и внешнее обращение к нему было обращением к
+        чужому изменяемому состоянию без всякого договора о том, когда
+        оно полно.
+        """
+        return "".join(self._lines)
 
     def stderr_tail(self, limit: int = 2000) -> str:
         """Kimi шлёт thinking/прогресс в stderr — в журнал для человека.

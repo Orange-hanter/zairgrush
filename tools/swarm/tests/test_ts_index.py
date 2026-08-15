@@ -22,7 +22,7 @@ try:
     sys.modules["ts_index"] = ts
     _spec.loader.exec_module(ts)
     HAVE_TS = True
-except Exception:
+except Exception:  # noqa: BLE001 — tree-sitter опционален, тесты пропускаются
     HAVE_TS = False
 
 RUST = """

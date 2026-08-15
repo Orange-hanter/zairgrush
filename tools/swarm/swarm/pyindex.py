@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Точный индекс кода в духе SCIP/LSP — на stdlib `ast`.
 
 Чем отличается от наивной карты (`repo_map.py`):
@@ -81,7 +80,9 @@ def _sig(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     if node.returns is not None:
         try:
             ret = " -> " + ast.unparse(node.returns)
-        except Exception:
+        except (ValueError, AttributeError, RecursionError):
+            # ast.unparse спотыкается на экзотических аннотациях; сигнатура
+            # без возвращаемого типа лучше, чем упавший индекс.
             ret = ""
     return f"{node.name}({', '.join(names)}){ret}"
 
@@ -270,8 +271,8 @@ class Index:
                 lines.append(f"{head}: вызовов в проекте нет")
                 continue
             lines.append(f"{head} вызывается из:")
-            for r in sorted(prod, key=lambda r: (r.file, r.line)):
-                lines.append(f"  {r.file}:{r.line} ({r.from_symbol}, {r.how})")
+            lines.extend(f"  {r.file}:{r.line} ({r.from_symbol}, {r.how})"
+                         for r in sorted(prod, key=lambda r: (r.file, r.line)))
             if tests:
                 files = len({r.file for r in tests})
                 lines.append(f"  + тесты: {len(tests)} вызов(ов) в {files} файл(ах)")

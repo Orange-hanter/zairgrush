@@ -509,7 +509,8 @@ class TestAbSummary(unittest.TestCase):
         cli = _load("cli")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            cli.cmd_ab(type("A", (), {"root": str(self._root(rows))})())
+            cli.cmd_ab(type("A", (), {"root": str(self._root(rows)),
+                                      "run": None})())
         return buf.getvalue()
 
     ROW = {"phase": "review", "valid": True, "verdict": "approve"}

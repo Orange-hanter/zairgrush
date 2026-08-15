@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Третий контур петли: хелперы на дешёвых моделях (§7 дизайн-дока).
 
 Принципы, зашитые в код:
@@ -19,11 +18,19 @@ import json
 import os
 import pathlib
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
+
+# Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
+_HERE = str(pathlib.Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import obs  # noqa: E402 — каталог добавлен строкой выше
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -91,8 +98,11 @@ def clean_markup(line: str) -> str:
     return out.strip()
 
 
+log = obs.get_logger("helpers")
+
+
 def _metric(**row: Any) -> None:
-    row["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    obs.stamp(row)
     try:
         with METRICS.open("a") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -172,6 +182,7 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
                 http_error=e.code, retryable=e.code in (429, 502))
         return None
     except Exception as e:
+        log.warning("хелпер %s не ответил", name, exc_info=True)
         _metric(helper=name, model=MODEL, dur_s=round(time.time() - t0, 1),
                 error=type(e).__name__)
         return None
@@ -190,11 +201,12 @@ def fail_open(default: Any) -> Callable[[F], F]:
             try:
                 return fn(*args, **kwargs)
             except Exception as e:
+                log.warning("хелпер %s погашен", fn.__name__, exc_info=True)
                 _metric(helper=fn.__name__, error=type(e).__name__, failed_open=True)
                 return default(*args, **kwargs) if callable(default) else default
         wrapper.__name__ = fn.__name__
         wrapper.__doc__ = fn.__doc__
-        return cast(F, wrapper)
+        return cast("F", wrapper)
     return deco
 
 
@@ -246,7 +258,7 @@ def dedup_findings(prev_findings: list[dict[str, Any]],
         "Ниже замечания ревьюера с ПРОШЛОЙ итерации и с ТЕКУЩЕЙ.\n"
         "Определи, какие текущие замечания повторяют прошлые ПО СМЫСЛУ "
         "(та же проблема другими словами), даже если файл другой.\n"
-        "Ответь только JSON: {\"repeated\": [<индексы текущих>]} без пояснений.\n\n"
+        'Ответь только JSON: {"repeated": [<индексы текущих>]} без пояснений.\n\n'
         f"ПРОШЛЫЕ:\n{_issues(prev_findings)}\n\n"
         f"ТЕКУЩИЕ:\n{_issues(rest)}"
     )
@@ -256,11 +268,12 @@ def dedup_findings(prev_findings: list[dict[str, Any]],
         try:
             # Ответ модели может не содержать JSON вовсе — тогда `search`
             # вернёт None, и это НЕ ошибка петли: хелпер опционален.
-            found = re.search(r"\{.*\}", strip_fences(text), re.S)
+            found = re.search(r"\{.*\}", strip_fences(text), re.DOTALL)
             idx = json.loads(found.group(0)).get("repeated", []) if found else []
             semantic = [rest[i] for i in idx
                         if isinstance(i, int) and 0 <= i < len(rest)]
         except Exception:
+            log.debug("ответ dedup_findings не разобран", exc_info=True)
             semantic = []
     return {"mechanical": mechanical, "semantic": semantic}
 

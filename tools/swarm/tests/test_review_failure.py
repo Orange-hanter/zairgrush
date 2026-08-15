@@ -165,7 +165,8 @@ class RepoCase(unittest.TestCase):
 
     def _stashes(self):
         out = subprocess.run(["git", "stash", "list"], cwd=self.root,
-                             capture_output=True, text=True).stdout
+                             capture_output=True, text=True,
+                             check=True).stdout
         return [line for line in out.splitlines() if line.strip()]
 
 
@@ -193,7 +194,7 @@ class TestCleanupStash(RepoCase):
         self.assertEqual(len(self._stashes()), 1, "стеш не создан")
         dirty = subprocess.run(["git", "status", "--porcelain", "-uall"],
                                cwd=self.root, capture_output=True,
-                               text=True).stdout.strip()
+                               text=True, check=True).stdout.strip()
         self.assertEqual(dirty, "", "дерево осталось грязным")
 
     def test_stashed_work_is_recoverable(self):
@@ -201,8 +202,10 @@ class TestCleanupStash(RepoCase):
         (self.root / "new_file.txt").write_text("создано исполнителем\n")
         self.state.work_diff()
         self._loop().cleanup({"id": "g1nt"}, "invalid-verdict")
+        # check=True: если стеша нет, тест обязан упасть здесь и назвать
+        # причину, а не молча проверять несуществующий файл ниже.
         subprocess.run(["git", "stash", "pop"], cwd=self.root,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, check=True)
         self.assertEqual((self.root / "new_file.txt").read_text(),
                          "создано исполнителем\n")
 

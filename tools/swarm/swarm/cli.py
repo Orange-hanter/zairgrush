@@ -26,9 +26,11 @@ import contextlib
 import importlib.util
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from types import ModuleType
 from typing import Any
 
@@ -53,7 +55,6 @@ def _config(root: str | pathlib.Path) -> dict[str, Any]:
     path = pathlib.Path(root) / "swarm.toml"
     cfg = {"gate_command": None, "protected_paths": ["tests/*", "tests/**"]}
     if path.exists():
-        import tomllib
         try:
             cfg.update(tomllib.loads(path.read_text(encoding="utf-8")))
         except (tomllib.TOMLDecodeError, OSError) as e:
@@ -143,9 +144,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             continue
         try:
             out = subprocess.run(probe, capture_output=True, text=True,
-                                 timeout=30).stdout.strip().splitlines()
+                                 timeout=30,
+                                 check=False).stdout.strip().splitlines()
             checks.append((True, name, out[0] if out else exe))
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
+            # Доктор проверяет ЗАПУСКАЕМОСТЬ: сюда попадают отсутствие
+            # прав, битый бинарь и таймаут. Прочее — дефект самого
+            # доктора, и он должен быть виден, а не превращён в строку
+            # отчёта о чужом инструменте.
             checks.append((False, name, f"ошибка запуска: {e}"))
 
     # ctags: важно отличить Universal от Exuberant — под именем `ctags`
@@ -153,20 +159,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     ctags = shutil.which("ctags")
     if ctags:
         ver = subprocess.run([ctags, "--version"], capture_output=True,
-                             text=True).stdout
+                             text=True, check=False).stdout
         if "Universal Ctags" in ver:
             checks.append((True, "ctags", ver.splitlines()[0]))
         else:
             checks.append((False, "ctags",
-                           "Exuberant/BSD — нужен universal-ctags "
-                           "(brew unlink ctags && brew install universal-ctags)"))
+                           ("Exuberant/BSD — нужен universal-ctags "
+                            "(brew unlink ctags && brew install "
+                            "universal-ctags)")))
     else:
         checks.append((None, "ctags", "не установлен (опционально)"))
 
     try:
         importlib.util.find_spec("tree_sitter")
         checks.append((True, "tree-sitter", "доступен"))
-    except Exception:
+    except Exception:  # noqa: BLE001 — доктор обязан досказать список до конца
         checks.append((None, "tree-sitter", "не установлен (опционально)"))
 
     for ok, name, note in checks:
@@ -175,7 +182,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     print("\n=== репозиторий ===")
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root,
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=False)
     if dirty.returncode != 0:
         print("[ПРОБЛ] это не git-репозиторий")
     else:
@@ -237,10 +244,19 @@ def cmd_ab(args: argparse.Namespace) -> int:
             continue
         if e.get("phase") != "review" or not e.get("valid"):
             continue
+        if args.run and e.get("run_id") != args.run:
+            continue
         rows.append(e)
     if not rows:
         print("нет валидных ревью в метриках")
         return 0
+    # Метрики дописываются в ОДИН файл прогон за прогоном. Пока сводка их
+    # не различала, «пул моделей» и «одна модель на весь прогон» ложились
+    # в одну кучу и давали сравнение, которого никто не ставил.
+    runs = sorted({str(e.get("run_id") or "(без прогона)") for e in rows})
+    if len(runs) > 1 and not args.run:
+        print(f"в выборке {len(runs)} прогонов; отдельно — `swarm ab "
+              f"--run {runs[-1]}`\n")
 
     def arm(e: dict[str, Any]) -> tuple[str, str]:
         return (e.get("model") or "(сессионная)", e.get("effort") or "(сессионный)")
@@ -330,7 +346,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     open_count = sum(1 for q in questions if q["status"] == "open")
     if open_count:
         print(f"открытых: {open_count} — ответить: "
-              f"swarm answer <id> \"текст\"")
+              f'swarm answer <id> "текст"')
     return 0
 
 
@@ -341,7 +357,6 @@ def _paths_mentioned(text: str, allowed: list[str]) -> list[str]:
     `paths`: исполнитель попробует, SCOPE-CHECK откатит, раунд сгорит.
     Дешевле предупредить человека сразу.
     """
-    import re
     found = set(re.findall(r"[\w/.-]+\.(?:py|rs|ts|js|go|toml|md)", text))
     return sorted(f for f in found
                   if not any(f.endswith(a.lstrip("*")) or a.endswith(f)
@@ -363,7 +378,7 @@ def cmd_answer(args: argparse.Namespace) -> int:
             print(f"границы задачи {task_id}: {task.get('paths')}")
             print("исполнитель не сможет их тронуть — SCOPE-CHECK откатит правки.")
             print(f"если это УКАЗАНИЕ править файл: swarm answer {args.qid} "
-                  f"\"...\" --add-path {outside[0]}")
+                  f'"..." --add-path {outside[0]}')
             # Упоминание файла в объяснении — не указание его править.
             # На PILOT-1 ответ объяснял, что оператор закоммитил swarm.toml
             # пока задача шла в фоне; страж прочёл это как задание и
@@ -371,7 +386,7 @@ def cmd_answer(args: argparse.Namespace) -> int:
             # то, от чего защищает. Отсюда второй выход, а не только
             # расширение границ.
             print(f"если это лишь УПОМЯНУТО в объяснении: swarm answer "
-                  f"{args.qid} \"...\" --force")
+                  f'{args.qid} "..." --force')
             return 2
 
     try:
@@ -414,7 +429,7 @@ def cmd_policy(args: argparse.Namespace) -> int:
         return 0
     if args.action == "add":
         if not args.match:
-            print("нужны ключевые слова: --match \"release note\"", file=sys.stderr)
+            print('нужны ключевые слова: --match "release note"', file=sys.stderr)
             return 2
         pid = st.add_policy(args.text, args.match)
         print(f"политика {pid} добавлена: {args.text}")
@@ -669,7 +684,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
         for row in unfinished:
             print(f"  {row['task']}: {row['action']}")
         head = subprocess.run(["git", "log", "-1", "--format=%s"],
-                              cwd=args.root, capture_output=True, text=True)
+                              cwd=args.root, capture_output=True, text=True,
+                              check=False)
         print(f"  последний коммит: {head.stdout.strip()}")
         print("  проверьте, применился ли side-effect, и поправьте статус вручную")
         if not args.force:
@@ -765,12 +781,17 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_retry)
 
     p = sub.add_parser("ab", help="сводка по рукам замера (модель/усилие)")
+    p.add_argument("--run", help="только строки одного прогона (run_id)")
     p.set_defaults(func=cmd_ab)
     p = sub.add_parser("report", help="отчёт из журнала")
     p.add_argument("--task")
     p.set_defaults(func=cmd_report)
 
     args = ap.parse_args(argv)
+    # Диагностика включается ЗДЕСЬ, в единственной точке входа: модули
+    # грузятся по путям и не знают, где состояние прогона, а знать
+    # каталог обязан тот, кто разобрал --root.
+    _load("obs").setup(pathlib.Path(args.root) / ".swarm")
     try:
         code: int = args.func(args)
     except state_mod.StateError as e:

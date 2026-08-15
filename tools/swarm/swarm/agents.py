@@ -43,6 +43,9 @@ def _load(name: str) -> ModuleType:
     return mod
 
 
+log = _load("obs").get_logger("agents")
+
+
 def condense_diff(diff: str, limit: int = DIFF_FILE_LIMIT,
                   excerpt: int = DIFF_EXCERPT) -> str:
     """Свернуть файлы диффа длиннее `limit` строк до сводки.
@@ -135,13 +138,15 @@ class Agents:
             idx = self._codemap.HybridIndex(self.state.root)
             text: str = idx.project_map(budget=budget)
         except Exception:
+            log.warning("карта репозитория не построена", exc_info=True,
+                        extra={"swarm_task": task.get("id")})
             return None
         self._map_cache = (key, text)
         return text
 
     def _tree_fingerprint(self) -> str:
         """Отпечаток состояния кода: HEAD плюс незакоммиченные изменения."""
-        head = self.state._git("rev-parse", "HEAD").stdout.strip()
+        head = self.state.git("rev-parse", "HEAD").stdout.strip()
         dirty = "\n".join(sorted(self.state.changed_files()))
         digest = hashlib.sha1(dirty.encode(), usedforsecurity=False).hexdigest()
         return f"{head}:{digest}"
@@ -207,7 +212,7 @@ Acceptance:
         run = drv.start(cmd)
         result = run.collect(self._extract_report)
         raw = self.state.dir / "log" / f"{task['id']}-i{iteration}-executor.jsonl"
-        raw.write_text("".join(run._lines))
+        raw.write_text(run.raw_stream())
         self.state.metric(task=task["id"], iter=iteration, phase="implement",
                           reason=result.reason, wall_s=round(result.wall_s, 1),
                           report=bool(result.report), events=result.events)
@@ -396,12 +401,12 @@ Acceptance:
         """
         pool = self.config.get(f"{key}_pool")
         if confirming:
-            pool = self.config.get(f"confirm_{key.split('_')[-1]}_pool", pool)
+            pool = self.config.get(f"confirm_{key.rsplit('_', 1)[-1]}_pool", pool)
         if pool:
             return self._rng.choice(list(pool))
         value = self.config.get(key)
         if confirming:
-            value = self.config.get(f"confirm_{key.split('_')[-1]}", value)
+            value = self.config.get(f"confirm_{key.rsplit('_', 1)[-1]}", value)
         return value
 
     def review(self, task: dict[str, Any], gate_tail: str, iteration: int,
@@ -424,7 +429,10 @@ Acceptance:
              "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
              "--max-budget-usd", str(self.config.get("review_budget_usd", 1.0)),
              *self._tuning("review", confirming)],
-            capture_output=True, text=True, cwd=self.state.root, timeout=900)
+            # Ненулевой код от `claude` — не повод падать: конверт всё
+            # равно разбирается, и в нём лежит диагноз (квота, бюджет).
+            capture_output=True, text=True, cwd=self.state.root, timeout=900,
+            check=False)
         # Фаза входит в имя: второй проход (после верификации) писал в тот
         # же файл и затирал первый вердикт — на пилоте так потерялся
         # валидный approve за $1.22, и разбираться было не по чему.
@@ -484,12 +492,27 @@ Acceptance:
         if (requests and verify_results is None
                 and self._wants_verification(task)):
             vf = _load("verify")
-            before = set(vf.worktree_dirty(self.state.root))
+            try:
+                before: set[str] | None = set(
+                    vf.worktree_dirty(self.state.root))
+            except OSError:
+                log.exception("состояние дерева до проверок не определено")
+                before = None
             results = vf.run_requests(requests, self.state.root)
             # Сравниваем ДО и ПОСЛЕ: список изменённых файлов сам по себе
             # всегда содержит работу исполнителя и ничего не говорит о том,
             # напортили ли проверки.
-            touched = sorted(set(vf.worktree_dirty(self.state.root)) - before)
+            # `None` здесь означает «не смогли посмотреть», и это НЕ то же
+            # самое, что «ничего не тронуто»: пустой список сказал бы
+            # ревьюеру и журналу неправду о свойстве §5.1.
+            touched: list[str] | None = None
+            if before is not None:
+                try:
+                    touched = sorted(
+                        set(vf.worktree_dirty(self.state.root)) - before)
+                except OSError:
+                    log.exception("состояние дерева после проверок "
+                                  "не определено")
             self.state.log("verification", task=task["id"], round=iteration,
                            requested=len(requests), executed=len(results),
                            touched_by_checks=touched)
@@ -524,6 +547,8 @@ Acceptance:
             try:
                 self._helpers = _load("helpers")
             except Exception:
+                log.warning("хелперы недоступны, сообщение коммита по шаблону",
+                            exc_info=True)
                 return fallback
         message, source = self._helpers.commit_message(task, diff, fallback)
         self.state.log("commit_message", task=task["id"], source=source)

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Доска прогона: одна страница, на которой видно всё происходящее.
 
 Существующие команды (`status`, `report`, `inbox`) отвечают на отдельные
@@ -67,7 +66,7 @@ def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
 
 def _git(root: pathlib.Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=root, capture_output=True,
-                          text=True).stdout
+                          text=True, check=False).stdout
 
 
 def _verdicts(swarm_dir: pathlib.Path, tid: str) -> list[dict[str, Any]]:
@@ -507,10 +506,11 @@ def render(board: dict[str, Any]) -> str:
     parts.append('<button id="toggle-ev">показать хронику прогона</button>')
     parts.append('<div id="events" class="card hidden" style="margin-top:9px">'
                  '<div class="body" style="display:block">')
-    for ev in board["events"]:
-        parts.append(f'<div class="ev"><span class="tm">{e(ev["ts"])}</span>'
-                     f'<span class="kd">{e(str(ev["kind_ru"]))}</span>'
-                     f'<span class="dt">{e(str(ev["task"] or ""))} {e(ev["detail"])}</span></div>')
+    parts.extend(
+        f'<div class="ev"><span class="tm">{e(ev["ts"])}</span>'
+        f'<span class="kd">{e(str(ev["kind_ru"]))}</span>'
+        f'<span class="dt">{e(str(ev["task"] or ""))} {e(ev["detail"])}</span></div>'
+        for ev in board["events"])
     parts.append("</div></div>")
 
     parts.append(
