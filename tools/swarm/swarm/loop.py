@@ -220,11 +220,23 @@ class Loop:
         bad = []
         head = self._sh(["git", "rev-parse", "HEAD"]).stdout.strip()
         if self._head_before and head != self._head_before:
-            bad.append(f"история изменена: HEAD {self._head_before[:8]} -> "
-                       f"{head[:8]} (коммитит только оркестратор)")
+            # Кто сдвинул HEAD, проверка знать не может: у неё есть только
+            # «до» и «после». На PILOT-1 его сдвинул ОПЕРАТОР — закоммитил
+            # правку конфига, пока задача шла в фоне, — а формулировка
+            # «исполнитель вышел за границы доверия» обвинила агента и
+            # стоила круга разбирательства. Поэтому текст нейтрален, а
+            # рядом показан сам коммит: автор и заголовок отвечают на
+            # вопрос «моё это или нет» с одного взгляда.
+            who = self._sh(["git", "log", "-1", "--format=%an: %s",
+                            head]).stdout.strip()
+            bad.append(f"история изменилась во время задачи: HEAD "
+                       f"{self._head_before[:8]} -> {head[:8]}"
+                       + (f" ({who})" if who else "")
+                       + ". Коммитит только оркестратор; если коммит ваш —"
+                         " задачу можно вернуть в очередь как есть")
         state_now = self._state_fingerprint()
         if self._state_before and state_now != self._state_before:
-            bad.append("состояние петли (.swarm/) изменено агентом")
+            bad.append("состояние петли (.swarm/) изменено во время задачи")
         for marker, what in (("rebase-merge", "rebase"), ("rebase-apply", "rebase"),
                              ("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick")):
             if (pathlib.Path(self.state.root) / ".git" / marker).exists():
@@ -461,13 +473,17 @@ class Loop:
                 self.state.metric(task=tid, iter=iteration, phase="integrity",
                                   ok=False, violations=violations)
                 stash = self.cleanup(task, "integrity")
+                # Формулировка нейтральна намеренно: проверка знает ФАКТ
+                # расхождения, но не автора. Обвинение исполнителя, когда
+                # HEAD сдвинул оператор, стоило круга разбирательства.
                 qid = self.state.ask(tid, ASK_USER,
-                                     "исполнитель вышел за границы доверия: "
+                                     "нарушена неприкосновенность истории или "
+                                     "состояния петли: "
                                      + "; ".join(violations), stash=stash)
                 self.state.set_status(tid, "blocked", reason="integrity",
                                       stash=stash, iterations=iteration,
                                       question_id=qid)
-                self.ui(f"    НАРУШЕНИЕ ДОВЕРИЯ [{qid}]: {violations[0]}")
+                self.ui(f"    ЦЕЛОСТНОСТЬ НАРУШЕНА [{qid}]: {violations[0]}")
                 return "blocked"
 
             sok, bad, tests_touched = self.scope_check(task)

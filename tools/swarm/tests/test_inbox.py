@@ -466,5 +466,71 @@ class TestNoSilentBlocking(unittest.TestCase):
                       "вопрос обязан нести версию о причине")
 
 
+class TestAnswerPathGuardEscape(unittest.TestCase):
+    """Упоминание файла в объяснении — не указание его править.
+
+    Страж полезен: сказать исполнителю «почини X», когда X вне границ,
+    гарантирует нарушение и потерянный круг. Но отличить указание от
+    объяснения он не может. На PILOT-1 ответ объяснял, что HEAD сдвинул
+    ОПЕРАТОР, закоммитив swarm.toml во время задачи, — страж прочёл это
+    как задание и предложил выдать исполнителю право на конфиг пилота,
+    ровно то, от чего защищает. Отсюда `--force`: явное «упомянуто, а не
+    задано», вместо опасного расширения границ.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = pathlib.Path(self.tmp.name)
+        self.state = st_mod.SwarmState(self.root)
+        self.state.save_tasks({"goal": "ц", "tasks": [
+            {"id": "t1", "title": "t", "status": "blocked", "deps": [],
+             "type": "feature", "paths": ["src/only.py"], "acceptance": ["ок"]}]})
+        self.qid = self.state.ask("t1", "ask_user", "вопрос?")
+
+    def _answer(self, text, **kw):
+        fields = dict(root=str(self.root), qid=self.qid, text=text,
+                      add_path=[], force=False)
+        fields.update(kw)
+        args = type("A", (), fields)()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = cli.cmd_answer(args)
+        return code, buf.getvalue()
+
+    def test_mention_is_refused_by_default(self):
+        code, out = self._answer("я закоммитил swarm.toml пока шла задача")
+        self.assertEqual(code, 2)
+        self.assertIn("swarm.toml", out)
+
+    def test_guard_offers_both_exits(self):
+        """Один выход — расширить границы, другой — сказать «упомянуто».
+
+        Без второго оператор вынужден либо переписывать объяснение, либо
+        выдавать права, которых давать не хотел.
+        """
+        _, out = self._answer("я закоммитил swarm.toml пока шла задача")
+        self.assertIn("--add-path", out)
+        self.assertIn("--force", out)
+
+    def test_force_lets_the_answer_through(self):
+        code, _ = self._answer("я закоммитил swarm.toml пока шла задача",
+                               force=True)
+        self.assertEqual(code, 0)
+        task = [t for t in self.state.load_tasks()["tasks"]][0]
+        self.assertEqual(task["status"], "pending")
+
+    def test_force_does_not_widen_the_boundaries(self):
+        """Главное отличие от --add-path: границы остаются прежними."""
+        self._answer("я закоммитил swarm.toml пока шла задача", force=True)
+        task = [t for t in self.state.load_tasks()["tasks"]][0]
+        self.assertEqual(task["paths"], ["src/only.py"],
+                         "--force не должен выдавать прав на упомянутый файл")
+
+    def test_clean_answer_needs_no_flag(self):
+        code, _ = self._answer("правь src/only.py и ничего больше")
+        self.assertEqual(code, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

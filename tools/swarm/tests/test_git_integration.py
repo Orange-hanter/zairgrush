@@ -262,13 +262,32 @@ class TestIntegrityCheck(GitCase):
         git(self.root, "commit", "-qm", "я сам себя закоммитил")
         bad = loop.integrity_check()
         self.assertTrue(bad)
-        self.assertIn("история изменена", bad[0])
+        self.assertIn("история изменилась", bad[0])
+
+    def test_message_names_the_commit_author(self):
+        """Проверка знает ФАКТ расхождения, но не автора.
+
+        На PILOT-1 HEAD сдвинул ОПЕРАТОР — закоммитил правку конфига,
+        пока задача шла в фоне, — а формулировка «исполнитель вышел за
+        границы доверия» обвинила агента и стоила круга разбирательства.
+        Автор и заголовок коммита в сообщении отвечают на вопрос «моё это
+        или нет» с одного взгляда.
+        """
+        loop = self._armed()
+        (self.root / "новый.txt").write_text("x")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-qm", "правка конфига оператором")
+        bad = loop.integrity_check()
+        self.assertIn("правка конфига оператором", bad[0],
+                      "заголовок коммита не показан — оператор не поймёт, чей он")
+        self.assertNotIn("исполнитель", bad[0].lower(),
+                         "проверка не может знать автора и не должна обвинять")
 
     def test_agent_reset_is_caught(self):
         git(self.root, "commit", "-q", "--allow-empty", "-m", "второй")
         loop = self._armed()
         git(self.root, "reset", "-q", "--hard", "HEAD~1")
-        self.assertTrue(any("история изменена" in b
+        self.assertTrue(any("история изменилась" in b
                             for b in loop.integrity_check()))
 
     def test_state_tampering_is_caught(self):

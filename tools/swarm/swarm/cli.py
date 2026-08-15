@@ -351,15 +351,23 @@ def cmd_answer(args):
     task_id = questions.get(args.qid, {}).get("task")
     task = next((t for t in st.load_tasks()["tasks"] if t["id"] == task_id), None)
 
-    if task and not args.add_path:
+    if task and not args.add_path and not args.force:
         outside = _paths_mentioned(args.text, task.get("paths") or [])
         if outside:
             print(f"внимание: в ответе упомянуты файлы вне границ задачи: "
                   f"{', '.join(outside)}")
             print(f"границы задачи {task_id}: {task.get('paths')}")
             print("исполнитель не сможет их тронуть — SCOPE-CHECK откатит правки.")
-            print(f"добавьте пути явно: swarm answer {args.qid} \"...\" "
-                  f"--add-path {outside[0]}")
+            print(f"если это УКАЗАНИЕ править файл: swarm answer {args.qid} "
+                  f"\"...\" --add-path {outside[0]}")
+            # Упоминание файла в объяснении — не указание его править.
+            # На PILOT-1 ответ объяснял, что оператор закоммитил swarm.toml
+            # пока задача шла в фоне; страж прочёл это как задание и
+            # предложил ВЫДАТЬ исполнителю право на конфиг пилота — ровно
+            # то, от чего защищает. Отсюда второй выход, а не только
+            # расширение границ.
+            print(f"если это лишь УПОМЯНУТО в объяснении: swarm answer "
+                  f"{args.qid} \"...\" --force")
             return 2
 
     try:
@@ -734,6 +742,8 @@ def main(argv=None):
     p.add_argument("text")
     p.add_argument("--add-path", action="append", default=[],
                    help="расширить границы задачи (можно повторять)")
+    p.add_argument("--force", action="store_true",
+                   help="файл лишь упомянут в объяснении, а не задан к правке")
     p.set_defaults(func=cmd_answer)
 
     p = sub.add_parser("policy", help="политики прогона")
