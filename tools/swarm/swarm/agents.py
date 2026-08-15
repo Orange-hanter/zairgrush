@@ -14,6 +14,8 @@ import re
 import subprocess
 import sys
 import time
+from types import ModuleType
+from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCHEMAS = HERE.parent / "schemas"
@@ -31,15 +33,18 @@ DIFF_FILE_LIMIT = 400
 DIFF_EXCERPT = 40
 
 
-def _load(name):
+def _load(name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
+    if spec is None or spec.loader is None:
+        raise ImportError(f"не удалось загрузить модуль {name}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
-def condense_diff(diff, limit=DIFF_FILE_LIMIT, excerpt=DIFF_EXCERPT):
+def condense_diff(diff: str, limit: int = DIFF_FILE_LIMIT,
+                  excerpt: int = DIFF_EXCERPT) -> str:
     """Свернуть файлы диффа длиннее `limit` строк до сводки.
 
     Сводка называет файл, число добавленных и удалённых строк, хэш
@@ -88,27 +93,27 @@ def condense_diff(diff, limit=DIFF_FILE_LIMIT, excerpt=DIFF_EXCERPT):
 
 
 class Agents:
-    def __init__(self, state, config):
+    def __init__(self, state: Any, config: dict[str, Any]) -> None:
         self.state = state
         self.config = config
         self.driver = _load("driver")
         self.loop_mod = _load("loop")
-        self._helpers = None
-        self._codemap = None
-        self._map_cache = None
+        self._helpers: ModuleType | None = None
+        self._codemap: ModuleType | None = None
+        self._map_cache: tuple[tuple[str, int], str] | None = None
         # Почему ревью не состоялось: оркестратору нужен диагноз, а не
         # голое None. «Кончился бюджет» и «модель ответила мусором» —
         # разные болезни с разным лечением.
-        self.last_review_failure = None
+        self.last_review_failure: str | None = None
         # Жребий для пулов моделей и усилий. Отдельный экземпляр, а не
         # глобальный random: тесты подменяют его сидом, не трогая
         # состояние процесса.
-        self._rng = random.Random(config.get("tuning_seed"))
-        self.last_tuning = {}
+        self._rng = random.Random(config.get("tuning_seed"))  # noqa: S311 — жребий руки замера, не ключи
+        self.last_tuning: dict[str, Any] = {}
 
     # --- контекст ---------------------------------------------------------
 
-    def repo_map(self, task):
+    def repo_map(self, task: dict[str, Any]) -> str | None:
         """Карта нужна, когда задача требует ориентации в чужом коде
         (ADR-006): несколько путей, новый модуль, интеграция. На локальной
         правке одного файла она провоцирует лишние чтения."""
@@ -128,27 +133,29 @@ class Agents:
             return self._map_cache[1]
         try:
             idx = self._codemap.HybridIndex(self.state.root)
-            text = idx.project_map(budget=budget)
-        except Exception:                                   # noqa: BLE001
+            text: str = idx.project_map(budget=budget)
+        except Exception:
             return None
         self._map_cache = (key, text)
         return text
 
-    def _tree_fingerprint(self):
+    def _tree_fingerprint(self) -> str:
         """Отпечаток состояния кода: HEAD плюс незакоммиченные изменения."""
         head = self.state._git("rev-parse", "HEAD").stdout.strip()
         dirty = "\n".join(sorted(self.state.changed_files()))
-        return f"{head}:{hashlib.sha1(dirty.encode()).hexdigest()}"
+        digest = hashlib.sha1(dirty.encode(), usedforsecurity=False).hexdigest()
+        return f"{head}:{digest}"
 
     # --- исполнитель ------------------------------------------------------
 
-    def handoff(self, task, feedback, repo_map):
+    def handoff(self, task: dict[str, Any], feedback: str | None,
+                repo_map: str | None) -> str:
         allowed = ", ".join(task.get("paths") or [])
         protected = {
             "test-task": "Задача типа test-task: продукционный код менять запрещено.",
             "feature-tests": ("Тесты к своей работе пишешь сам (новые файлы из "
                               "списка выше); СУЩЕСТВУЮЩИЕ тесты менять запрещено."),
-        }.get(task.get("type"), "Менять tests/** запрещено.")
+        }.get(str(task.get("type") or ""), "Менять tests/** запрещено.")
         acc = "\n".join("- " + a for a in task.get("acceptance") or [])
         fb = ""
         if feedback:
@@ -186,7 +193,8 @@ Acceptance:
     "evidence": {{"tests": "последняя строка прогона"}}}}
 """
 
-    def implement(self, task, feedback, iteration):
+    def implement(self, task: dict[str, Any], feedback: str | None,
+                  iteration: int) -> dict[str, Any] | None:
         prompt = self.handoff(task, feedback, self.repo_map(task))
         cmd = ["kimi", "-p", prompt, "--output-format", "stream-json"]
         model = self.config.get("executor_model")
@@ -203,10 +211,11 @@ Acceptance:
         self.state.metric(task=task["id"], iter=iteration, phase="implement",
                           reason=result.reason, wall_s=round(result.wall_s, 1),
                           report=bool(result.report), events=result.events)
-        return result.report
+        report: dict[str, Any] | None = result.report
+        return report
 
     @staticmethod
-    def _report_in(text):
+    def _report_in(text: str) -> dict[str, Any] | None:
         """Последний JSON-объект с полем `status` внутри текста.
 
         Контракт требует голый JSON, но исполнитель регулярно предваряет его
@@ -231,10 +240,10 @@ Acceptance:
         return None
 
     @classmethod
-    def _extract_report(cls, stream):
+    def _extract_report(cls, stream: str) -> dict[str, Any] | None:
         """Финальный JSON лежит в последнем assistant-событии, а не в
         последней строке потока (урок SMOKE-1)."""
-        report = None
+        report: dict[str, Any] | None = None
         for line in stream.splitlines():
             try:
                 ev = json.loads(line)
@@ -248,8 +257,10 @@ Acceptance:
 
     # --- ревьюер ----------------------------------------------------------
 
-    def review_prompt(self, task, gate_tail, diff, want_verification=False,
-                      verify_results=None):
+    def review_prompt(self, task: dict[str, Any], gate_tail: str, diff: str,
+                      want_verification: bool = False,
+                      verify_results: list[dict[str, Any]] | None = None,
+                      ) -> str:
         acc = "\n".join("- " + a for a in task.get("acceptance") or [])
         # Решения человека обязаны быть видны и РЕВЬЮЕРУ, иначе он
         # продолжает требовать то, что уже отклонено: на приёмке он трижды
@@ -316,11 +327,12 @@ Acceptance:
 {gate_tail}
 {verify_block}"""
 
-    def work_diff(self):
+    def work_diff(self) -> str:
         """То, что ревьюер обязан увидеть, — включая созданные файлы."""
-        return self.state.work_diff()
+        diff: str = self.state.work_diff()
+        return diff
 
-    def _wants_verification(self, task):
+    def _wants_verification(self, task: dict[str, Any]) -> bool:
         """ADR-005: механизм выборочный, а не постоянный.
 
         Платить +51 % за подтверждение того, что и так подтверждается,
@@ -333,7 +345,7 @@ Acceptance:
             return False
         return bool(task.get("milestone_close") or task.get("verify"))
 
-    def _tuning(self, prefix, confirming=False):
+    def _tuning(self, prefix: str, confirming: bool = False) -> list[str]:
         """Флаги модели и уровня усилия — только если заданы в конфиге.
 
         Пустой список по умолчанию: без явной настройки роль наследует
@@ -363,7 +375,7 @@ Acceptance:
             flags += ["--effort", str(effort)]
         return flags
 
-    def _draw(self, key, confirming):
+    def _draw(self, key: str, confirming: bool) -> Any:
         """Значение параметра: пул со жребием, иначе фиксированная настройка.
 
         Пул (`<key>_pool`) старше одиночного значения и применяется к
@@ -392,8 +404,10 @@ Acceptance:
             value = self.config.get(f"confirm_{key.split('_')[-1]}", value)
         return value
 
-    def review(self, task, gate_tail, iteration, attempt=1, verify_results=None,
-               confirming=False):
+    def review(self, task: dict[str, Any], gate_tail: str, iteration: int,
+               attempt: int = 1,
+               verify_results: list[dict[str, Any]] | None = None,
+               confirming: bool = False) -> dict[str, Any] | None:
         # Голый `git diff` не показывает созданные файлы: ревьюер получал
         # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
         # в историю. Единый источник — state.work_diff (intent-to-add).
@@ -418,14 +432,16 @@ Acceptance:
         raw = (self.state.dir / "log"
                / f"{task['id']}-i{iteration}-{phase}{attempt}-review.json")
         raw.write_text(proc.stdout)
-        verdict, cost, terminal = None, None, None
+        verdict: dict[str, Any] | None = None
+        cost: float | None = None
+        terminal: str | None = None
         try:
             env = json.loads(proc.stdout)
             quota = self.loop_mod.quota_error(env)
             if quota:
                 self.state.metric(task=task["id"], phase="review",
                                   quota_wait=True, provider_message=quota)
-                raise self.loop_mod.QuotaExceeded(quota)
+                raise self.loop_mod.QuotaExceededError(quota)
             verdict = env.get("structured_output")
             cost = env.get("total_cost_usd")
             terminal = env.get("terminal_reason")
@@ -453,7 +469,7 @@ Acceptance:
             return self.review(task, gate_tail, iteration, attempt=2,
                                verify_results=verify_results,
                                confirming=confirming)
-        if not valid:
+        if not valid or verdict is None:
             self.last_review_failure = "invalid"
             return None
         self.last_review_failure = None
@@ -499,7 +515,7 @@ Acceptance:
 
     # --- хелперы ----------------------------------------------------------
 
-    def commit_message(self, task, diff):
+    def commit_message(self, task: dict[str, Any], diff: str) -> str:
         # Хелпер дешёвый, но не бесплатный, и 336 КБ эталона ему так же
         # нечего читать, как и ревьюеру.
         diff = condense_diff(diff)
@@ -507,8 +523,8 @@ Acceptance:
         if self._helpers is None:
             try:
                 self._helpers = _load("helpers")
-            except Exception:                               # noqa: BLE001
+            except Exception:
                 return fallback
         message, source = self._helpers.commit_message(task, diff, fallback)
         self.state.log("commit_message", task=task["id"], source=source)
-        return message
+        return str(message)

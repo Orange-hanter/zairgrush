@@ -27,6 +27,8 @@ import pathlib
 import shutil
 import subprocess
 import sys
+from types import ModuleType
+from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -36,22 +38,24 @@ IMPORT = "import"            # известно, что модуль/имя им
 NAME_MATCH = "name-match"    # совпадение по голому имени, возможны ложные
 
 
-def _load(name, filename):
+def _load(name: str, filename: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, HERE / filename)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"не удалось загрузить {filename}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
-def have_ctags():
+def have_ctags() -> str | None:
     exe = shutil.which("ctags")
     if not exe:
         return None
     try:
         out = subprocess.run([exe, "--version"], capture_output=True, text=True,
                              timeout=10).stdout
-    except Exception:                                       # noqa: BLE001
+    except Exception:
         return None
     # Exuberant 5.8 (2009) не умеет ни JSON, ни ролей, а `brew install ctags`
     # ставит именно его под тем же именем. Принять его за universal — значит
@@ -60,11 +64,14 @@ def have_ctags():
 
 
 class HybridIndex:
-    def __init__(self, root, use_tree_sitter=False):
+    def __init__(self, root: str | pathlib.Path,
+                 use_tree_sitter: bool = False) -> None:
         self.root = pathlib.Path(root)
-        self.symbols = {}        # id -> {name, file, line, kind, lang, source}
-        self.edges = []          # {from, to, file, line, confidence, kind}
-        self.sources = []        # какие слои реально отработали
+        # id -> {name, file, line, kind, lang, source}
+        self.symbols: dict[str, dict[str, Any]] = {}
+        # {from, to, file, line, confidence, kind}
+        self.edges: list[dict[str, Any]] = []
+        self.sources: list[str] = []   # какие слои реально отработали
         self._ctags()
         self._python_precise()
         # tree-sitter дополняет там, где точного разрешателя нет: для Rust и
@@ -75,7 +82,7 @@ class HybridIndex:
 
     # --- слой 1: широкий ------------------------------------------------
 
-    def _ctags(self):
+    def _ctags(self) -> None:
         exe = have_ctags()
         if not exe:
             return
@@ -86,7 +93,7 @@ class HybridIndex:
         try:
             out = subprocess.run(cmd, capture_output=True, text=True,
                                  cwd=self.root, timeout=120).stdout
-        except Exception:                                   # noqa: BLE001
+        except Exception:
             return
         count = 0
         for line in out.splitlines():
@@ -121,13 +128,13 @@ class HybridIndex:
 
     # --- слой 2: точный, по языку ----------------------------------------
 
-    def _python_precise(self):
+    def _python_precise(self) -> None:
         """Для Python поднимаем достоверность до RESOLVED: настоящие вызовы
         с позициями, полученные разбором импортов."""
         try:
             sc = _load("pyindex", "pyindex.py")
             idx = sc.Index(self.root)
-        except Exception:                                   # noqa: BLE001
+        except Exception:
             return
         for sid, sym in idx.symbols.items():
             key = f"{sym.file}::{sym.name}"
@@ -148,13 +155,13 @@ class HybridIndex:
 
     # --- слой 3: запасной ------------------------------------------------
 
-    def _tree_sitter(self):
+    def _tree_sitter(self) -> None:
         try:
             ts = _load("tsindex", "tsindex.py")
             symbols, calls = ts.index_project(self.root)
-        except Exception:                                   # noqa: BLE001
+        except Exception:
             return
-        for sid, s in symbols.items():
+        for s in symbols.values():
             self.symbols.setdefault(f"{s['file']}::{s['name']}", {
                 "name": s["name"], "file": s["file"], "line": s["line"],
                 "kind": "function", "lang": s["lang"], "sig": s["sig"],
@@ -175,7 +182,7 @@ class HybridIndex:
 
     # --- запросы ----------------------------------------------------------
 
-    def callers(self, symbol_name_or_id):
+    def callers(self, symbol_name_or_id: str) -> list[dict[str, Any]]:
         """Все, кто ссылается на символ, с уровнем достоверности.
 
         Сортировка от точного к приблизительному: агент должен сначала
@@ -188,8 +195,8 @@ class HybridIndex:
         return sorted(hits, key=lambda e: (order.get(e["confidence"], 9),
                                            e["file"], e["line"] or 0))
 
-    def project_map(self, budget=25, skip_tests=True):
-        used = {}
+    def project_map(self, budget: int = 25, skip_tests: bool = True) -> str:
+        used: dict[str, int] = {}
         for e in self.edges:
             if e["confidence"] == RESOLVED and not e["file"].startswith("tests/"):
                 used[e["to"].rsplit(".", 1)[-1]] = used.get(
@@ -199,7 +206,7 @@ class HybridIndex:
                  and not (skip_tests and (s["file"].startswith("tests/")
                                           or s["name"].startswith("test_")))]
         items.sort(key=lambda s: (-used.get(s["name"], 0), s["file"], s["line"] or 0))
-        by_file = {}
+        by_file: dict[str, list[dict[str, Any]]] = {}
         for s in items[:budget]:
             by_file.setdefault(s["file"], []).append(s)
         out = []
@@ -212,7 +219,7 @@ class HybridIndex:
                 out.append(f"  {sig}{doc}{mark}")
         return "\n".join(out)
 
-    def impact(self, symbol, max_rows=12):
+    def impact(self, symbol: str, max_rows: int = 12) -> str:
         """Blast radius с честной пометкой, что известно точно, а что нет."""
         hits = self.callers(symbol)
         if not hits:
@@ -234,11 +241,11 @@ class HybridIndex:
             lines.append(f"  + тесты: {tests} ссылок")
         return "\n".join(lines)
 
-    def report(self):
-        by_conf = {}
+    def report(self) -> dict[str, Any]:
+        by_conf: dict[str, int] = {}
         for e in self.edges:
             by_conf[e["confidence"]] = by_conf.get(e["confidence"], 0) + 1
-        langs = {}
+        langs: dict[str, int] = {}
         for s in self.symbols.values():
             langs[s.get("lang") or "?"] = langs.get(s.get("lang") or "?", 0) + 1
         return {"symbols": len(self.symbols), "edges": len(self.edges),

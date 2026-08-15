@@ -50,7 +50,8 @@ class GitCase(unittest.TestCase):
         (self.root / "src").mkdir()
         (self.root / "src" / "existing.py").write_text("def old():\n    return 1\n")
         (self.root / "tests").mkdir()
-        (self.root / "tests" / "test_existing.py").write_text("def test_old():\n    pass\n")
+        (self.root / "tests" / "test_existing.py").write_text(
+            "def test_old():\n    pass\n")
         git(self.root, "add", "-A")
         git(self.root, "commit", "-qm", "init")
         self.state = st.SwarmState(self.root)
@@ -149,19 +150,19 @@ class TestRevertRemovesNewFiles(GitCase):
 
     def test_revert_deletes_created_file(self):
         self.create("src/sneaky.py")
-        self.loop.revert(dict(self.TASK))
+        self.loop.revert()
         self.assertFalse((self.root / "src" / "sneaky.py").exists(),
                          "созданный файл обязан исчезнуть при откате")
 
     def test_revert_restores_modified_file(self):
         (self.root / "src" / "existing.py").write_text("сломано")
-        self.loop.revert(dict(self.TASK))
+        self.loop.revert()
         self.assertIn("def old()", (self.root / "src" / "existing.py").read_text())
 
     def test_revert_leaves_tree_clean(self):
         self.create("src/sneaky.py")
         (self.root / "src" / "existing.py").write_text("сломано")
-        self.loop.revert(dict(self.TASK))
+        self.loop.revert()
         self.assertEqual(git(self.root, "status", "--porcelain").stdout.strip(), "")
 
     def test_revert_does_not_touch_pre_existing_work(self):
@@ -175,7 +176,7 @@ class TestRevertRemovesNewFiles(GitCase):
         self.create("human_notes.md", "черновик человека\n")
         self.loop._pre_existing = set(self.state.changed_files())
         self.create("src/sneaky.py")            # это уже агент
-        self.loop.revert(dict(self.TASK))
+        self.loop.revert()
         self.assertEqual((self.root / "src" / "existing.py").read_text(),
                          "работа человека\n", "правка человека откачена")
         self.assertTrue((self.root / "human_notes.md").exists(),
@@ -192,7 +193,7 @@ class TestRevertRemovesNewFiles(GitCase):
         (self.root / "tests" / "test_existing.py").write_text("работа человека\n")
         self.loop._pre_existing = set(self.state.changed_files())
         (self.root / "src" / "existing.py").write_text("правка агента\n")
-        self.loop.revert(dict(self.TASK))
+        self.loop.revert()
         self.assertEqual((self.root / "tests" / "test_existing.py").read_text(),
                          "работа человека\n",
                          "откат задел отслеживаемый файл человека")
@@ -202,13 +203,13 @@ class TestRevertRemovesNewFiles(GitCase):
     def test_revert_without_baseline_still_works(self):
         """Без снимка (прямой вызов) откат ведёт себя как раньше."""
         self.create("src/sneaky.py")
-        self.loop.revert(dict(self.TASK))
+        self.loop.revert()
         self.assertFalse((self.root / "src" / "sneaky.py").exists())
 
     def test_revert_keeps_swarm_state(self):
         """Откат не должен сносить состояние петли."""
         self.create("src/sneaky.py")
-        self.loop.revert(dict(self.TASK))
+        self.loop.revert()
         self.assertTrue(self.state.tasks_path.exists(),
                         "`git clean` не должен уносить .swarm/")
 
@@ -222,7 +223,7 @@ class TestCommitMatchesReview(GitCase):
         reviewed = agents.work_diff()
         loop = lp.Loop(self.state, {}, type("A", (), {
             "commit_message": staticmethod(lambda task, diff: "msg")})())
-        sha = loop.commit(dict(self.TASK), 1)
+        sha = loop.commit(dict(self.TASK))
         self.assertIsNotNone(sha)
         committed = git(self.root, "show", "--stat", sha).stdout
         self.assertIn("new_module.py", committed)
@@ -232,7 +233,7 @@ class TestCommitMatchesReview(GitCase):
     def test_clean_tree_commits_nothing(self):
         loop = lp.Loop(self.state, {}, type("A", (), {
             "commit_message": staticmethod(lambda task, diff: "msg")})())
-        self.assertIsNone(loop.commit(dict(self.TASK), 1))
+        self.assertIsNone(loop.commit(dict(self.TASK)))
 
 
 class TestIntegrityCheck(GitCase):
@@ -336,7 +337,7 @@ class TestIntegrityCheck(GitCase):
         loop._head_before = git(self.root, "rev-parse", "HEAD").stdout.strip()
         loop._state_before = loop._state_fingerprint()
         self.create("src/new_module.py")
-        loop.commit(dict(self.TASK), 1)
+        loop.commit(dict(self.TASK))
         self.assertEqual(loop.integrity_check(), [],
                          "оркестратор обвинил агента в собственном коммите")
 

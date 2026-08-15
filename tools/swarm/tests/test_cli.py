@@ -3,6 +3,7 @@
 
 Агенты не вызываются: проверяется поведение оркестратора вокруг них.
 """
+import contextlib
 import importlib.util
 import io
 import json
@@ -11,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import contextlib
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
 spec = importlib.util.spec_from_file_location("cli", ROOT_DIR / "cli.py")
@@ -75,7 +75,7 @@ class TestStatus(CliCase):
     def test_reports_unfinished_steps_after_crash(self):
         self.state.log("step_intent", step_id="aaaa:commit:1", task="aaaa",
                        action="commit")
-        code, out = run_cli("--root", str(self.root), "status")
+        _code, out = run_cli("--root", str(self.root), "status")
         self.assertIn("НЕЗАВЕРШЁННЫЕ", out)
         self.assertIn("resume", out)
 
@@ -108,7 +108,7 @@ class TestDryRun(CliCase):
     def test_nothing_ready_returns_distinct_code(self):
         for tid in ("aaaa", "bbbb"):
             self.state.set_status(tid, "done")
-        code, out = run_cli("--root", str(self.root), "run", "--dry-run")
+        code, _out = run_cli("--root", str(self.root), "run", "--dry-run")
         self.assertEqual(code, 3, "пустая выборка — отдельный код, не тишина")
 
 
@@ -135,7 +135,7 @@ class TestResume(CliCase):
 
 class TestDoctor(CliCase):
     def test_reports_environment(self):
-        code, out = run_cli("--root", str(self.root), "doctor")
+        _code, out = run_cli("--root", str(self.root), "doctor")
         self.assertIn("окружение", out)
         self.assertIn("git", out)
 

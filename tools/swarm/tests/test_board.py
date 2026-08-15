@@ -147,7 +147,8 @@ class TestCollectFacts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = make_root(tmp, tasks=[{"id": "t1", "status": "in_review"}],
                              journal=[{"kind": "policy_suppressed", "task": "t1",
-                                       "items": [{"policy": "шум", "issue": "мелочь"}]}])
+                                       "items": [{"policy": "шум",
+                                                  "issue": "мелочь"}]}])
             board = bd.collect(root)
         self.assertEqual(board["tasks"][0]["_suppressed"],
                          [{"policy": "шум", "issue": "мелочь"}])

@@ -3,7 +3,6 @@
 import importlib.util
 import json
 import pathlib
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -112,8 +111,8 @@ class TestStepJournal(StateCase):
     def test_successful_step_writes_both_records(self):
         with self.state.step("aaaa", "commit") as step:
             step.result(commit="abc123")
-        kinds = [json.loads(l)["kind"]
-                 for l in self.state.journal_path.read_text().splitlines()]
+        kinds = [json.loads(line)["kind"]
+                 for line in self.state.journal_path.read_text().splitlines()]
         self.assertEqual(kinds, ["step_intent", "step_done"])
 
     def test_result_payload_lands_in_journal(self):
@@ -123,11 +122,10 @@ class TestStepJournal(StateCase):
         self.assertEqual(last["commit"], "abc123")
 
     def test_failed_step_is_marked(self):
-        with self.assertRaises(RuntimeError):
-            with self.state.step("aaaa", "commit"):
-                raise RuntimeError("git упал")
-        kinds = [json.loads(l)["kind"]
-                 for l in self.state.journal_path.read_text().splitlines()]
+        with self.assertRaises(RuntimeError), self.state.step("aaaa", "commit"):
+            raise RuntimeError("git упал")
+        kinds = [json.loads(line)["kind"]
+                 for line in self.state.journal_path.read_text().splitlines()]
         self.assertIn("step_failed", kinds)
 
     def test_unfinished_step_is_detectable_after_crash(self):

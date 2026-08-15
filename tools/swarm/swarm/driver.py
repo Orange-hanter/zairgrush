@@ -16,11 +16,15 @@
 - kill не роняет петлю: возвращается RunResult с причиной, решение
   принимает конечный автомат.
 """
+import contextlib
 import json
+import pathlib
 import queue
 import subprocess
 import threading
 import time
+from collections.abc import Callable, Iterator
+from typing import Any
 
 TEXT, TOOL_CALL, TOOL_RESULT, USAGE, DONE, ERROR = (
     "text", "tool_call", "tool_result", "usage", "done", "error")
@@ -29,19 +33,31 @@ TEXT, TOOL_CALL, TOOL_RESULT, USAGE, DONE, ERROR = (
 class Event:
     __slots__ = ("kind", "payload", "ts")
 
-    def __init__(self, kind, payload=None):
+    kind: str
+    payload: dict[str, Any]
+    ts: float
+
+    def __init__(self, kind: str, payload: dict[str, Any] | None = None) -> None:
         self.kind = kind
         self.payload = payload or {}
         self.ts = time.time()
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Event({self.kind}, {list(self.payload)[:3]})"
 
 
 class RunResult:
-    __slots__ = ("reason", "report", "events", "wall_s", "returncode")
+    __slots__ = ("events", "reason", "report", "returncode", "wall_s")
 
-    def __init__(self, reason, report=None, events=0, wall_s=0.0, returncode=None):
+    reason: str
+    report: dict[str, Any] | None
+    events: int
+    wall_s: float
+    returncode: int | None
+
+    def __init__(self, reason: str, report: dict[str, Any] | None = None,
+                 events: int = 0, wall_s: float = 0.0,
+                 returncode: int | None = None) -> None:
         self.reason = reason          # done | silence | wall_clock | crash | error
         self.report = report          # извлечённый structured output
         self.events = events
@@ -49,15 +65,15 @@ class RunResult:
         self.returncode = returncode
 
     @property
-    def ok(self):
+    def ok(self) -> bool:
         return self.reason == "done" and self.report is not None
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (f"RunResult({self.reason}, report={bool(self.report)}, "
                 f"events={self.events}, {self.wall_s:.1f}s)")
 
 
-def parse_kimi(line):
+def parse_kimi(line: str) -> Event | None:
     """stream-json Kimi -> Event. Урок SMOKE-1: финальный JSON лежит в
     content последнего assistant-события, а не в последней строке потока."""
     try:
@@ -81,18 +97,21 @@ class Run:
     """Один запуск агента. Поток-читатель складывает события в очередь,
     основной поток ждёт их с таймаутом — так тишина отличима от активности."""
 
-    def __init__(self, cmd, cwd, parser, silence_timeout, wall_clock_cap):
+    def __init__(self, cmd: list[str], cwd: str | pathlib.Path,
+                 parser: Callable[[str], Event | None],
+                 silence_timeout: float, wall_clock_cap: float) -> None:
         self.cmd = cmd
         self.parser = parser
         self.silence_timeout = silence_timeout
         self.wall_clock_cap = wall_clock_cap
-        self._q = queue.Queue()
+        # В очереди СЫРЫЕ строки; None — маркер конца потока.
+        self._q: queue.Queue[str | None] = queue.Queue()
         self._last_activity = time.time()
         self._started = time.time()
-        self._lines = []
+        self._lines: list[str] = []
         self.proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True, bufsize=1)
-        self._err = []
+        self._err: list[str] = []
         self._reader = threading.Thread(target=self._pump, daemon=True)
         self._reader.start()
         # stderr обязан вычитываться ПАРАЛЛЕЛЬНО, а не после завершения.
@@ -103,17 +122,19 @@ class Run:
         self._err_reader = threading.Thread(target=self._drain_err, daemon=True)
         self._err_reader.start()
 
-    def _pump(self):
+    def _pump(self) -> None:
         try:
-            for line in self.proc.stdout:
+            # Каналы созданы с PIPE, но тип этого не гарантирует:
+            # без проверки падение было бы в фоновом потоке и молча.
+            for line in self.proc.stdout or ():
                 self._q.put(line)
         finally:
             self._q.put(None)          # сигнал конца потока
 
-    def _drain_err(self):
+    def _drain_err(self) -> None:
         """Осушение stderr: содержимое копим для журнала, канал держим пустым."""
         try:
-            for line in self.proc.stderr:
+            for line in self.proc.stderr or ():
                 self._err.append(line)
                 # stderr — тоже признак жизни: агент думает вслух
                 self._last_activity = time.time()
@@ -122,22 +143,20 @@ class Run:
         except (OSError, ValueError):
             pass
 
-    def last_activity(self):
+    def last_activity(self) -> float:
         return self._last_activity
 
-    def alive(self):
+    def alive(self) -> bool:
         return self.proc.poll() is None
 
-    def kill(self):
+    def kill(self) -> None:
         if self.alive():
             self.proc.kill()
-            try:
+            with contextlib.suppress(subprocess.TimeoutExpired):
                 self.proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
         self._close_pipes()
 
-    def _close_pipes(self):
+    def _close_pipes(self) -> None:
         """Без этого длинный прогон течёт дескрипторами: каждый убитый
         агент оставляет открытыми stdout/stderr."""
         for pipe in (self.proc.stdout, self.proc.stderr):
@@ -147,7 +166,7 @@ class Run:
             except (OSError, ValueError):
                 pass
 
-    def events(self):
+    def events(self) -> Iterator[Event]:
         """Поток нормализованных событий. Прерывается по тишине или
         wall-clock; сам решение не принимает — только сообщает причину."""
         while True:
@@ -183,7 +202,9 @@ class Run:
             if ev is not None:
                 yield ev
 
-    def collect(self, extract_report):
+    def collect(self,
+                extract_report: Callable[[str], dict[str, Any] | None],
+                ) -> RunResult:
         """Прогнать поток до конца и собрать результат."""
         count = 0
         reason = "done"
@@ -199,7 +220,7 @@ class Run:
         return RunResult(reason, report, count, time.time() - self._started,
                          self.proc.returncode)
 
-    def stderr_tail(self, limit=2000):
+    def stderr_tail(self, limit: int = 2000) -> str:
         """Kimi шлёт thinking/прогресс в stderr — в журнал для человека.
 
         Читаем из накопленного осушителем: обращаться к каналу здесь
@@ -211,10 +232,12 @@ class Run:
 class AgentDriver:
     """Единый интерфейс запуска (§6.0). Конкретный CLI — деталь конфига."""
 
-    def __init__(self, cwd, silence_timeout=600, wall_clock_cap=1800):
+    def __init__(self, cwd: str | pathlib.Path, silence_timeout: float = 600,
+                 wall_clock_cap: float = 1800) -> None:
         self.cwd = cwd
         self.silence_timeout = silence_timeout
         self.wall_clock_cap = wall_clock_cap
 
-    def start(self, cmd, parser=parse_kimi):
+    def start(self, cmd: list[str],
+              parser: Callable[[str], Event | None] = parse_kimi) -> Run:
         return Run(cmd, self.cwd, parser, self.silence_timeout, self.wall_clock_cap)

@@ -24,12 +24,14 @@
 ревью. С обязательной оговоркой: экономия не распространяется на
 валидацию, обработку ошибок и безопасность.
 """
+import contextlib
 import importlib.util
 import json
 import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
@@ -261,17 +263,17 @@ class TestRoleTuning(unittest.TestCase):
         a.loop_mod = _load("loop")
         a.last_review_failure = None
         a.state = type("S", (), {
-            "root": ".", "dir": pathlib.Path("/tmp"),
+            "root": ".", "dir": pathlib.Path(tempfile.gettempdir()),
             "work_diff": staticmethod(lambda: "diff --git a/x b/x\n+1"),
             "metric": staticmethod(lambda **k: None),
             "log": staticmethod(lambda *a, **k: None),
         })()
         a.work_diff = lambda: "diff --git a/x b/x\n+1"
-        try:
+        # Вызов почти наверняка упадёт: подставной state не полон.
+        # Проверяется argv, собранный ДО падения.
+        with contextlib.suppress(Exception):
             a.review({"id": "t1", "title": "t", "spec": "s",
                       "acceptance": ["ок"]}, "OK", 1)
-        except Exception:                                   # noqa: BLE001
-            pass                                            # интересует argv
         self.assertIn("--model", seen.get("argv", []))
         self.assertIn("claude-sonnet-5", seen["argv"])
         self.assertIn("--effort", seen["argv"])
@@ -326,7 +328,8 @@ class TestConfirmationRoundAngle(unittest.TestCase):
         """
         import tempfile
         seen = []
-        st = _load("state"); lp = _load("loop")
+        st = _load("state")
+        lp = _load("loop")
 
         class Reviewer:
             last_review_failure = None
@@ -480,7 +483,7 @@ class TestTuningPools(unittest.TestCase):
         })()
         a.review({"id": "t1", "title": "t", "spec": "s",
                   "acceptance": ["ок"]}, "OK", 1, confirming=True)
-        row = [r for r in rows if r.get("phase") == "review"][0]
+        row = next(r for r in rows if r.get("phase") == "review")
         self.assertEqual(row["model"], "claude-sonnet-5")
         self.assertEqual(row["effort"], "low")
         self.assertTrue(row["confirming"])
@@ -501,7 +504,8 @@ class TestAbSummary(unittest.TestCase):
         return root
 
     def _run(self, rows):
-        import contextlib, io
+        import contextlib
+        import io
         cli = _load("cli")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

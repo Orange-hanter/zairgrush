@@ -87,7 +87,8 @@ class TestPlannerIsReachable(RepoCase):
         self.calls = []
         # call_planner отдаёт (дифф, причина отказа): причина нужна, чтобы
         # обрыв по бюджету не уходил в обречённый повтор.
-        planner.call_planner = lambda prompt, tag, attempt=1, root=None, budget=None, model=None, effort=None: (
+        planner.call_planner = lambda prompt, tag, attempt=1, root=None, \
+                budget=None, model=None, effort=None: (
             self.calls.append((tag, attempt, prompt)),
             (json.loads(json.dumps(DIFF)), None))[1]
         planner.metric = lambda **k: None
@@ -119,7 +120,8 @@ class TestPlannerIsReachable(RepoCase):
     def test_invalid_diff_escalates_after_retry(self):
         planner = sys.modules["planner"]
         planner.call_planner = (
-            lambda prompt, tag, attempt=1, root=None, budget=None, model=None, effort=None: ({"ops": []}, None))
+            lambda prompt, tag, attempt=1, root=None, budget=None, \
+                   model=None, effort=None: ({"ops": []}, None))
         code, out = run_cli("--root", str(self.root), "plan", "--goal", "цель")
         self.assertEqual(code, 2)
         self.assertIn("ЭСКАЛАЦИЯ", out)
@@ -345,7 +347,8 @@ class TestVerificationIsReachable(RepoCase):
                  "findings": [], "out_of_scope_notes": [],
                  "verification_requests": [
                      {"kind": "git_log", "arg": "HEAD", "why": "история"}]}
-        second = dict(reply); second.pop("verification_requests")
+        second = dict(reply)
+        second.pop("verification_requests")
         calls = {"n": 0}
         orig_run = subprocess.run
 
@@ -433,7 +436,8 @@ class TestGoIsSelfSufficient(RepoCase):
         super().setUp()
         planner = _load("planner")
         self.planned = []
-        planner.call_planner = lambda prompt, tag, attempt=1, root=None, budget=None, model=None, effort=None: (
+        planner.call_planner = lambda prompt, tag, attempt=1, root=None, \
+                budget=None, model=None, effort=None: (
             self.planned.append(tag), (json.loads(json.dumps(DIFF)), None))[1]
         planner.metric = lambda **k: None
         self._orig_load = cli._load
@@ -460,7 +464,7 @@ class TestGoIsSelfSufficient(RepoCase):
                               "deps": [], "type": "feature", "paths": ["mod.py"],
                               "acceptance": ["ok"]})
         self.state.save_tasks(data)
-        code, out = run_cli("--root", str(self.root), "go")
+        code, _out = run_cli("--root", str(self.root), "go")
         self.assertEqual(code, 0)
         self.assertEqual(self.planned, [], "перепланировал непустую очередь")
 

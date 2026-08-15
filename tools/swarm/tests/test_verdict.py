@@ -189,7 +189,6 @@ class TestLoopBranches(unittest.TestCase):
         self.FakeState = FakeState
 
     def _loop(self, implement=None, gate=None, scope=None, review=None):
-        outer = self
 
         class FakeAgents:
             def __init__(self):
@@ -219,7 +218,7 @@ class TestLoopBranches(unittest.TestCase):
 
         loop.gate = fake_gate
         loop.scope_check = lambda task: (scope or (True, [], []))
-        loop.commit = lambda task, it: "abc123"
+        loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: f"stash:{reason}"
         loop._sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()

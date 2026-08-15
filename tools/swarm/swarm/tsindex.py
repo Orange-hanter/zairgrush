@@ -20,10 +20,11 @@
 (в петле — опционально: без него работает ast-индекс для Python).
 """
 import pathlib
+from typing import Any
 
-from tree_sitter import Language, Parser, Query, QueryCursor
 import tree_sitter_python
 import tree_sitter_rust
+from tree_sitter import Language, Parser, Query, QueryCursor
 
 LANGS = {
     ".py": (Language(tree_sitter_python.language()), "python"),
@@ -53,11 +54,13 @@ CALL_QUERIES = {
 }
 
 
-def _text(node, src):
+def _text(node: Any, src: bytes) -> str:
     return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
 
 
-def index_file(path):
+def index_file(
+    path: pathlib.Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """-> (definitions, calls) для одного файла любого поддержанного языка."""
     suffix = pathlib.Path(path).suffix
     if suffix not in LANGS:
@@ -88,9 +91,12 @@ def index_file(path):
     return defs, calls
 
 
-def index_project(root, suffixes=(".py", ".rs")):
+def index_project(root: str | pathlib.Path,
+                  suffixes: tuple[str, ...] = (".py", ".rs"),
+                  ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     root = pathlib.Path(root)
-    symbols, calls = {}, []
+    symbols: dict[str, dict[str, Any]] = {}
+    calls: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*")):
         if path.suffix not in suffixes or "__pycache__" in path.parts \
                 or ".git" in path.parts or ".venv" in str(path):
@@ -104,17 +110,20 @@ def index_project(root, suffixes=(".py", ".rs")):
     return symbols, calls
 
 
-def project_map(root, budget=25, skip_tests=True):
+def project_map(root: str | pathlib.Path, budget: int = 25,
+                skip_tests: bool = True) -> str:
     symbols, calls = index_project(root)
-    used = {}
+    used: dict[str, int] = {}
     for c in calls:
         used[c["name"]] = used.get(c["name"], 0) + 1
     items = [(sid, s) for sid, s in symbols.items()
              if not (skip_tests and (s["file"].startswith("tests/")
                                      or s["name"].startswith("test_")))]
-    items.sort(key=lambda kv: (-used.get(kv[1]["name"], 0), kv[1]["file"], kv[1]["line"]))
-    out, by_file = [], {}
-    for sid, s in items[:budget]:
+    items.sort(key=lambda kv: (-used.get(kv[1]["name"], 0),
+                               kv[1]["file"], kv[1]["line"]))
+    out: list[str] = []
+    by_file: dict[str, list[dict[str, Any]]] = {}
+    for _sid, s in items[:budget]:
         by_file.setdefault(s["file"], []).append(s)
     for f in sorted(by_file):
         out.append(f)

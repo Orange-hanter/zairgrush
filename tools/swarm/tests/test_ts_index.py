@@ -22,7 +22,7 @@ try:
     sys.modules["ts_index"] = ts
     _spec.loader.exec_module(ts)
     HAVE_TS = True
-except Exception:                                          # noqa: BLE001
+except Exception:
     HAVE_TS = False
 
 RUST = """

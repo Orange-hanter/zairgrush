@@ -21,6 +21,8 @@ import os
 import pathlib
 import subprocess
 import time
+from types import TracebackType
+from typing import IO, Any
 
 LEGAL_STATUS = {"pending", "in_progress", "in_review", "done", "blocked"}
 TERMINAL = {"done", "blocked"}
@@ -30,14 +32,15 @@ class StateError(Exception):
     """Состояние на диске противоречиво — петля обязана остановиться."""
 
 
-def _atomic_write(path, text):
+def _atomic_write(path: pathlib.Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    tmp.replace(path)
 
 
 class SwarmState:
-    def __init__(self, root, swarm_dir=".swarm"):
+    def __init__(self, root: str | pathlib.Path,
+                 swarm_dir: str = ".swarm") -> None:
         self.root = pathlib.Path(root)
         self.dir = self.root / swarm_dir
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -47,9 +50,9 @@ class SwarmState:
         self.journal_path = self.dir / "log" / "run.jsonl"
         self.metrics_path = self.dir / "metrics.jsonl"
         self.lock_path = self.dir / "state.lock"
-        self._lock = None
+        self._lock: IO[str] | None = None
 
-    def _self_ignore(self, swarm_dir):
+    def _self_ignore(self, swarm_dir: str) -> None:
         """Состояние петли не должно выглядеть как чужие правки.
 
         §6.3 требует держать `.swarm/` вне git. Пишем не в `.gitignore`
@@ -79,7 +82,7 @@ class SwarmState:
 
     # --- блокировка -------------------------------------------------------
 
-    def acquire(self):
+    def acquire(self) -> None:
         """Один живой оркестратор на репозиторий (§4.3)."""
         self._lock = self.lock_path.open("w")
         try:
@@ -92,28 +95,29 @@ class SwarmState:
         self._lock.write(f"{os.getpid()}\n")
         self._lock.flush()
 
-    def release(self):
+    def release(self) -> None:
         if self._lock:
             fcntl.flock(self._lock, fcntl.LOCK_UN)
             self._lock.close()
             self._lock = None
 
-    def __enter__(self):
+    def __enter__(self) -> "SwarmState":
         self.acquire()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> None:
         self.release()
-        return False
 
     # --- очередь задач ----------------------------------------------------
 
-    def load_tasks(self):
+    def load_tasks(self) -> dict[str, Any]:
         if not self.tasks_path.exists():
             return {"goal": "", "tasks": []}
-        return json.loads(self.tasks_path.read_text(encoding="utf-8"))
+        data: dict[str, Any] = json.loads(
+            self.tasks_path.read_text(encoding="utf-8"))
+        return data
 
-    def save_tasks(self, data):
+    def save_tasks(self, data: dict[str, Any]) -> None:
         for t in data.get("tasks", []):
             if t.get("status") not in LEGAL_STATUS:
                 raise StateError(f"недопустимый статус {t.get('status')!r} "
@@ -121,7 +125,7 @@ class SwarmState:
         _atomic_write(self.tasks_path,
                       json.dumps(data, ensure_ascii=False, indent=1) + "\n")
 
-    def set_status(self, task_id, status, **fields):
+    def set_status(self, task_id: str, status: str, **fields: Any) -> None:
         if status not in LEGAL_STATUS:
             raise StateError(f"недопустимый статус {status!r}")
         data = self.load_tasks()
@@ -134,7 +138,7 @@ class SwarmState:
             raise StateError(f"задача {task_id!r} не найдена")
         self.save_tasks(data)
 
-    def ready_tasks(self):
+    def ready_tasks(self) -> list[dict[str, Any]]:
         """Задачи, готовые к запуску: pending и все deps закрыты (§5.0).
 
         Неразрешимый остаток — ошибка, а не тишина: молча пропущенные
@@ -160,7 +164,7 @@ class SwarmState:
 
     # --- журнал и шаги ----------------------------------------------------
 
-    def log(self, kind, **payload):
+    def log(self, kind: str, **payload: Any) -> dict[str, Any]:
         """Append-only журнал событий (ADR-001: jsonl первичен, md — рендер)."""
         row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "kind": kind}
         row.update(payload)
@@ -176,11 +180,11 @@ class SwarmState:
     # но НЕ второму — ревьюер получал пустой дифф и мог одобрить пустоту,
     # которую коммит затем вносил в историю. Теперь источник один.
 
-    def _git(self, *args, **kw):
+    def _git(self, *args: str, **kw: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.run(["git", *args], cwd=self.root, capture_output=True,
                               text=True, **kw)
 
-    def changed_files(self):
+    def changed_files(self) -> list[str]:
         """Пути, изменённые в рабочем дереве, ПОИМЁННО.
 
         Без `-uall` git схлопывает новый каталог в одну строку `?? src/`,
@@ -189,9 +193,10 @@ class SwarmState:
         «слишком крупная».
         """
         out = self._git("status", "--porcelain", "-uall").stdout
-        return [line[3:].strip().strip('"') for line in out.splitlines() if line[3:].strip()]
+        return [line[3:].strip().strip('"') for line in out.splitlines()
+                if line[3:].strip()]
 
-    def work_diff(self):
+    def work_diff(self) -> str:
         """Дифф работы агента, включая СОЗДАННЫЕ файлы.
 
         `git add -N` (intent-to-add) регистрирует новые файлы в индексе, не
@@ -201,7 +206,7 @@ class SwarmState:
         self._git("add", "-A", "-N")
         return self._git("diff").stdout
 
-    def total_spend(self):
+    def total_spend(self) -> float:
         """Сколько уже стоил прогон. Считается по факту из метрик.
 
         Считаются ВСЕ дорогие роли. Планировщик пишет в отдельный поток
@@ -220,14 +225,15 @@ class SwarmState:
                     continue
         return round(total, 2)
 
-    def metric(self, **payload):
+    def metric(self, **payload: Any) -> None:
         payload["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         with self.metrics_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
     # --- инбокс вопросов к человеку ---------------------------------------
 
-    def ask(self, task_id, kind, question, **context):
+    def ask(self, task_id: str, kind: str, question: str,
+            **context: Any) -> str:
         """Отложить вопрос человеку вместо остановки прогона.
 
         Смысл инбокса: одна спорная задача не должна останавливать всю
@@ -241,7 +247,8 @@ class SwarmState:
                  question=question, **context)
         return qid
 
-    def answer(self, qid, text, add_paths=None):
+    def answer(self, qid: str, text: str,
+               add_paths: list[str] | None = None) -> str | None:
         """Ответ человека: вопрос закрывается, задача возвращается в работу.
 
         `add_paths` расширяет границы задачи. Это не удобство, а
@@ -284,9 +291,9 @@ class SwarmState:
                                  qid=qid)
                 break
         self.save_tasks(data)
-        return task_id
+        return str(task_id) if task_id else None
 
-    def questions(self, only_open=False):
+    def questions(self, only_open: bool = False) -> list[dict[str, Any]]:
         """Вопросы из журнала со статусом open/answered."""
         asked, answered = {}, {}
         if not self.journal_path.exists():
@@ -313,7 +320,8 @@ class SwarmState:
 
     # --- политики прогона --------------------------------------------------
 
-    def add_policy(self, text, match, source_qid=None):
+    def add_policy(self, text: str, match: dict[str, Any],
+                   source_qid: str | None = None) -> str:
         """Решение уровня ПРОГОНА, а не задачи.
 
         Часть решений человека относится ко всей цели, а не к одной задаче:
@@ -334,12 +342,12 @@ class SwarmState:
                  source_qid=source_qid)
         return pid
 
-    def drop_policy(self, pid):
+    def drop_policy(self, pid: str) -> None:
         if pid not in {p["pid"] for p in self.policies()}:
             raise StateError(f"политика {pid!r} не найдена")
         self.log("policy_dropped", pid=pid)
 
-    def policies(self):
+    def policies(self) -> list[dict[str, Any]]:
         """Активные политики текущей цели.
 
         Привязка к цели не формальность: при смене цели прогона старые
@@ -362,7 +370,7 @@ class SwarmState:
         return [p for pid, p in sorted(active.items())
                 if pid not in dropped and (not goal or p.get("goal") == goal)]
 
-    def step(self, task_id, action):
+    def step(self, task_id: str, action: str) -> "_Step":
         """Контекст одного side-effect'а: intent -> действие -> done.
 
         Использование:
@@ -372,9 +380,10 @@ class SwarmState:
         """
         return _Step(self, task_id, action)
 
-    def unfinished_steps(self):
+    def unfinished_steps(self) -> list[dict[str, Any]]:
         """Шаги с intent без done — их оставило падение (§5.6)."""
-        started, finished = {}, set()
+        started: dict[str, dict[str, Any]] = {}
+        finished: set[str] = set()
         if not self.journal_path.exists():
             return []
         for line in self.journal_path.read_text(encoding="utf-8").splitlines():
@@ -390,22 +399,24 @@ class SwarmState:
 
 
 class _Step:
-    def __init__(self, state, task_id, action):
+    def __init__(self, state: SwarmState, task_id: str, action: str) -> None:
         self.state = state
         self.task_id = task_id
         self.action = action
         self.step_id = f"{task_id}:{action}:{time.time():.6f}"
-        self._payload = {}
+        self._payload: dict[str, Any] = {}
 
-    def __enter__(self):
+    def __enter__(self) -> "_Step":
         self.state.log("step_intent", step_id=self.step_id,
                        task=self.task_id, action=self.action)
         return self
 
-    def result(self, **payload):
+    def result(self, **payload: Any) -> None:
         self._payload.update(payload)
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, exc_type: type[BaseException] | None,
+                 exc: BaseException | None,
+                 tb: TracebackType | None) -> None:
         if exc_type is None:
             self.state.log("step_done", step_id=self.step_id,
                            task=self.task_id, action=self.action,
@@ -414,4 +425,3 @@ class _Step:
             self.state.log("step_failed", step_id=self.step_id,
                            task=self.task_id, action=self.action,
                            error=f"{exc_type.__name__}: {exc}")
-        return False

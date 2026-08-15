@@ -4,9 +4,9 @@
 Главное свойство: вопрос откладывается, работа продолжается, ответ
 человека возвращает задачу в очередь и доезжает до исполнителя.
 """
+import contextlib
 import importlib.util
 import io
-import contextlib
 import pathlib
 import subprocess
 import sys
@@ -68,7 +68,7 @@ class TestAskAndAnswer(InboxCase):
     def test_answer_returns_task_to_queue(self):
         qid = self.state.ask("aaaa", "intent", "вопрос")
         self.state.set_status("aaaa", "blocked", reason="ask_user")
-        code, out = run_cli("--root", str(self.root), "answer", qid,
+        code, _out = run_cli("--root", str(self.root), "answer", qid,
                             "слой оставить")
         self.assertEqual(code, 0)
         task = next(t for t in self.state.load_tasks()["tasks"]
@@ -248,7 +248,7 @@ class TestAnswerPersists(unittest.TestCase):
         loop = self.lp.Loop(FakeState(), {}, FakeAgents())
         loop.gate = lambda task: (True, "OK")
         loop.scope_check = lambda task: (True, [], [])
-        loop.commit = lambda task, it: "abc123"
+        loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: None
         loop._sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
@@ -489,8 +489,8 @@ class TestAnswerPathGuardEscape(unittest.TestCase):
         self.qid = self.state.ask("t1", "ask_user", "вопрос?")
 
     def _answer(self, text, **kw):
-        fields = dict(root=str(self.root), qid=self.qid, text=text,
-                      add_path=[], force=False)
+        fields = {"root": str(self.root), "qid": self.qid, "text": text,
+                  "add_path": [], "force": False}
         fields.update(kw)
         args = type("A", (), fields)()
         buf = io.StringIO()
@@ -517,13 +517,13 @@ class TestAnswerPathGuardEscape(unittest.TestCase):
         code, _ = self._answer("я закоммитил swarm.toml пока шла задача",
                                force=True)
         self.assertEqual(code, 0)
-        task = [t for t in self.state.load_tasks()["tasks"]][0]
+        task = next(iter(self.state.load_tasks()["tasks"]))
         self.assertEqual(task["status"], "pending")
 
     def test_force_does_not_widen_the_boundaries(self):
         """Главное отличие от --add-path: границы остаются прежними."""
         self._answer("я закоммитил swarm.toml пока шла задача", force=True)
-        task = [t for t in self.state.load_tasks()["tasks"]][0]
+        task = next(iter(self.state.load_tasks()["tasks"]))
         self.assertEqual(task["paths"], ["src/only.py"],
                          "--force не должен выдавать прав на упомянутый файл")
 

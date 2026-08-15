@@ -21,13 +21,15 @@ out_of_scope_notes «собственный прогон выполнить не
 import re
 import subprocess
 import time
+from collections.abc import Callable
+from typing import Any
 
 MAX_REQUESTS = 4          # больше — это уже не проверка, а исследование
 MAX_ROUNDS = 1            # один раунд верификации на итерацию (анти-петля)
 CMD_TIMEOUT = 120
 
 
-class Rejected(Exception):
+class RejectedError(Exception):
     """Запрос не прошёл whitelist. Не ошибка петли — повод сообщить агенту."""
 
 
@@ -38,16 +40,16 @@ _GIT_REF = re.compile(r"^[A-Za-z0-9_./~^-]{1,64}$")     # HEAD~2, a1b2c3d
 _PATH = re.compile(r"^[A-Za-z0-9_./-]{1,120}$")         # wordstat/rank.py
 
 
-def _safe_path(arg):
+def _safe_path(arg: str | None) -> bool:
     """Путь обязан оставаться внутри репозитория: без `..` и без ведущего
     слэша. Поймано собственным тестом — исходный шаблон пропускал
     `../../../etc/passwd`, потому что точка и слэш в нём разрешены."""
-    if not _PATH.match(arg or ""):
+    if not arg or not _PATH.match(arg):
         return False
     return not (arg.startswith("/") or ".." in arg.split("/"))
 
 
-def _as_test_module(arg):
+def _as_test_module(arg: str | None) -> str:
     """Ревьюер одинаково охотно пишет и `tests.test_x`, и `tests/test_x.py`
     (замерено на VERIFY-1). Принимаем обе формы: отклонять из-за записи —
     значит тратить запрос впустую и терять проверку."""
@@ -57,23 +59,23 @@ def _as_test_module(arg):
         # превратится в `...etc.passwd` и проскочит проверку traversal —
         # поймано собственным тестом сразу после добавления этого удобства.
         if not _safe_path(a):
-            raise Rejected(f"недопустимый путь к тестам: {arg!r}")
+            raise RejectedError(f"недопустимый путь к тестам: {arg!r}")
         a = a[:-3].replace("/", ".").replace("\\", ".")
     return a
 
 
-def _unittest(arg):
+def _unittest(arg: str | None) -> list[str]:
     target = _as_test_module(arg)
     if not _TEST_TARGET.match(target):
-        raise Rejected(f"недопустимая цель тестов: {arg!r}")
+        raise RejectedError(f"недопустимая цель тестов: {arg!r}")
     return ["python3", "-m", "unittest", target]
 
 
-def _unittest_all(_arg):
+def _unittest_all(_arg: str | None) -> list[str]:
     return ["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]
 
 
-def _git_show(arg):
+def _git_show(arg: str | None) -> list[str]:
     """Поддержаны обе формы: `HEAD~2` (тогда --stat) и `HEAD:path/file.py`
     (показать файл на коммите) — вторую ревьюер просит чаще, чтобы сравнить
     новую версию файла со старой."""
@@ -81,32 +83,32 @@ def _git_show(arg):
     if ":" in a:
         ref, _, path = a.partition(":")
         if not _GIT_REF.match(ref) or not _safe_path(path):
-            raise Rejected(f"недопустимая ссылка git: {arg!r}")
+            raise RejectedError(f"недопустимая ссылка git: {arg!r}")
         return ["git", "show", f"{ref}:{path}"]
     if not _GIT_REF.match(a):
-        raise Rejected(f"недопустимая ссылка git: {arg!r}")
+        raise RejectedError(f"недопустимая ссылка git: {arg!r}")
     return ["git", "show", "--stat", a]
 
 
-def _git_log(arg):
+def _git_log(arg: str | None) -> list[str]:
     if arg and not _safe_path(arg):
-        raise Rejected(f"недопустимый путь: {arg!r}")
+        raise RejectedError(f"недопустимый путь: {arg!r}")
     return ["git", "log", "--oneline", "-10"] + ([arg] if arg else [])
 
 
-def _python_snippet(arg):
+def _python_snippet(arg: str | None) -> list[str]:
     """Проверка гипотезы кодом. Самый мощный и самый опасный вид запроса,
     поэтому ограничен жёстче остальных: без импорта os/sys/subprocess,
     без файловых операций, короткий, с таймаутом."""
     src = arg or ""
     if len(src) > 600:
-        raise Rejected("сниппет длиннее 600 символов")
+        raise RejectedError("сниппет длиннее 600 символов")
     forbidden = ("import os", "import sys", "import subprocess", "import shutil",
                  "import socket", "open(", "__import__", "eval(", "exec(",
                  "input(", "compile(")
     for bad in forbidden:
         if bad in src:
-            raise Rejected(f"запрещённая конструкция в сниппете: {bad}")
+            raise RejectedError(f"запрещённая конструкция в сниппете: {bad}")
     return ["python3", "-c", src]
 
 
@@ -116,7 +118,7 @@ def _python_snippet(arg):
 # ждал `run_tests`, и самые полезные проверки молча отклонялись
 # (на пилоте — 2 из 3 запросов). Старые имена оставлены псевдонимами,
 # чтобы вердикты прошлых прогонов не ломались.
-WHITELIST = {
+WHITELIST: dict[str, Callable[[str | None], list[str]]] = {
     "unittest": _unittest,
     "unittest_all": _unittest_all,
     "git_show": _git_show,
@@ -127,13 +129,13 @@ WHITELIST = {
 }
 
 
-def build(request):
+def build(request: Any) -> list[str]:
     """Запрос ревьюера -> argv. Бросает Rejected, если запрос не разрешён."""
     if not isinstance(request, dict):
-        raise Rejected("запрос не объект")
+        raise RejectedError("запрос не объект")
     kind = request.get("kind")
     if kind not in WHITELIST:
-        raise Rejected(f"неизвестный вид проверки: {kind!r}; "
+        raise RejectedError(f"неизвестный вид проверки: {kind!r}; "
                        f"разрешены {sorted(WHITELIST)}")
     return WHITELIST[kind](request.get("arg"))
 
@@ -141,7 +143,7 @@ def build(request):
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
-def sanitize_output(text):
+def sanitize_output(text: str | None) -> str:
     """Вывод исполненной команды идёт прямо в промпт следующего вызова.
 
     Найдено на VERIFY-1: ревьюер попросил напечатать символы по диапазону
@@ -154,16 +156,17 @@ def sanitize_output(text):
     return _CTRL.sub("�", text)
 
 
-def run_requests(requests, cwd, max_requests=MAX_REQUESTS):
+def run_requests(requests: list[dict[str, Any]] | None, cwd: str,
+                 max_requests: int = MAX_REQUESTS) -> list[dict[str, Any]]:
     """Исполнить разрешённые запросы. Возвращает список результатов —
     отклонённые тоже попадают в вывод, чтобы ревьюер понял, почему пусто."""
-    results = []
+    results: list[dict[str, Any]] = []
     for req in (requests or [])[:max_requests]:
         entry = {"kind": req.get("kind"), "arg": req.get("arg"),
                  "why": (req.get("why") or "")[:200]}
         try:
             argv = build(req)
-        except Rejected as e:
+        except RejectedError as e:
             entry.update(status="rejected", output=str(e))
             results.append(entry)
             continue
@@ -176,17 +179,17 @@ def run_requests(requests, cwd, max_requests=MAX_REQUESTS):
                          output=out[-2000:], dur_s=round(time.time() - t0, 1))
         except subprocess.TimeoutExpired:
             entry.update(status="timeout", output=f"превышен лимит {CMD_TIMEOUT}s")
-        except Exception as e:                                # noqa: BLE001
+        except Exception as e:
             entry.update(status="error", output=f"{type(e).__name__}: {e}")
         results.append(entry)
     return results
 
 
-def format_results(results):
+def format_results(results: list[dict[str, Any]]) -> str:
     """Блок для второго промпта ревьюера."""
     if not results:
         return "(проверки не запрашивались)"
-    parts = []
+    parts: list[str] = []
     for r in results:
         head = f"### {r['kind']}({r.get('arg')!r}) → {r['status']}"
         if r.get("exit_code") is not None:
@@ -195,9 +198,9 @@ def format_results(results):
     return "\n\n".join(parts)
 
 
-def worktree_dirty(cwd):
+def worktree_dirty(cwd: str) -> list[str]:
     """Проверки не должны менять рабочее дерево (§5.1). Если изменили —
     это дефект самой проверки, а не работы исполнителя."""
     r = subprocess.run(["git", "status", "--porcelain"], cwd=cwd,
                        capture_output=True, text=True)
-    return [l[3:].strip() for l in r.stdout.splitlines()]
+    return [line[3:].strip() for line in r.stdout.splitlines()]

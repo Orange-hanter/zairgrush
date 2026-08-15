@@ -57,7 +57,8 @@ class TestSecretScrub(unittest.TestCase):
         self.assertNotIn("a1b2c3d4e5f6g7h8i9j0", out)
 
     def test_private_key_block_removed(self):
-        blob = "-----BEGIN RSA PRIVATE KEY-----\nMIIabc123\n-----END RSA PRIVATE KEY-----"
+        blob = ("-----BEGIN RSA PRIVATE KEY-----\nMIIabc123\n"
+                "-----END RSA PRIVATE KEY-----")
         self.assertNotIn("MIIabc123", hp.scrub(blob))
 
     def test_ordinary_code_survives(self):
@@ -112,9 +113,11 @@ class TestCommitMessage(HelperTestCase):
 class TestDedupFindings(HelperTestCase):
     def setUp(self):
         super().setUp()
-        self.prev = [{"file": "a.py", "category": "correctness", "issue": "не проверен тип n"}]
+        self.prev = [{"file": "a.py", "category": "correctness",
+                      "issue": "не проверен тип n"}]
         self.curr = [
-            {"file": "a.py", "category": "correctness", "issue": "тип n не валидируется"},
+            {"file": "a.py", "category": "correctness",
+             "issue": "тип n не валидируется"},
             {"file": "b.py", "category": "style", "issue": "длинная строка"},
         ]
 
@@ -290,7 +293,8 @@ class TestNativeApiContract(unittest.TestCase):
         self.assertIs(body["think"], False)
         self.assertEqual(body["options"]["num_predict"], 42)
         self.assertIn("seed", body["options"])
-        self.assertNotIn("max_tokens", body, "max_tokens — поле /v1, нативный API его не знает")
+        self.assertNotIn("max_tokens", body,
+                         "max_tokens — поле /v1, нативный API его не знает")
 
     def test_deterministic_sampling_options(self):
         self.transport({"message": {"content": "ok"}})
@@ -298,7 +302,8 @@ class TestNativeApiContract(unittest.TestCase):
         opts = self.reqs[0]["options"]
         self.assertEqual(opts["temperature"], 0.0)
         self.assertEqual(opts["top_k"], 1, "temperature=0 сама по себе не даёт greedy")
-        self.assertEqual(opts["repeat_penalty"], 1.0, "дефолт 1.1 давит повторы ключей JSON")
+        self.assertEqual(opts["repeat_penalty"], 1.0,
+                         "дефолт 1.1 давит повторы ключей JSON")
 
     def test_cloud_ignored_knobs_are_not_sent(self):
         self.transport({"message": {"content": "ok"}})
@@ -313,7 +318,8 @@ class TestNativeApiContract(unittest.TestCase):
         self.assertIsNone(hp.ollama_chat("p", "t"))
 
     def test_truncated_reply_is_discarded(self):
-        self.transport({"message": {"content": '{"partial": '}, "done_reason": "length"})
+        self.transport({"message": {"content": '{"partial": '},
+                        "done_reason": "length"})
         self.assertIsNone(hp.ollama_chat("p", "t"),
                           "обрезанный ответ хуже отсутствующего")
 

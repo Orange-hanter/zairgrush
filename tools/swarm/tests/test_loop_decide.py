@@ -198,7 +198,8 @@ class TestScopeCheck(unittest.TestCase):
     def test_feature_tests_may_write_own_tests(self):
         task = {"id": "t", "type": "feature-tests",
                 "paths": ["src/a.py", "tests/test_new.py"]}
-        ok, bad, protected = self._loop(["src/a.py", "tests/test_new.py"]).scope_check(task)
+        loop = self._loop(["src/a.py", "tests/test_new.py"])
+        ok, bad, protected = loop.scope_check(task)
         self.assertTrue(ok, "собственные тесты задачи не защищены от неё же")
         self.assertEqual((bad, protected), ([], []))
 
@@ -286,7 +287,7 @@ class TestConfirmDoesNotConsumeBudget(unittest.TestCase):
         loop = lp.Loop(FakeState(), {}, FakeAgents())
         loop.gate = lambda task: (True, "OK")
         loop.scope_check = lambda task: (True, [], [])
-        loop.commit = lambda task, it: "abc123"
+        loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: None
         loop._sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()

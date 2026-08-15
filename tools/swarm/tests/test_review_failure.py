@@ -166,7 +166,7 @@ class RepoCase(unittest.TestCase):
     def _stashes(self):
         out = subprocess.run(["git", "stash", "list"], cwd=self.root,
                              capture_output=True, text=True).stdout
-        return [l for l in out.splitlines() if l.strip()]
+        return [line for line in out.splitlines() if line.strip()]
 
 
 class TestCleanupStash(RepoCase):
@@ -235,8 +235,8 @@ class TestCleanupStash(RepoCase):
 
         loop._sh = broken
         loop.cleanup({"id": "g1nt"}, "invalid-verdict")
-        kinds = [json.loads(l)["kind"]
-                 for l in self.state.journal_path.read_text().splitlines()]
+        kinds = [json.loads(line)["kind"]
+                 for line in self.state.journal_path.read_text().splitlines()]
         self.assertIn("stash_failed", kinds)
 
 
@@ -288,8 +288,8 @@ class TestBudgetExhausted(RepoCase):
                "total_cost_usd": 3.37}
         agents = self._agents([cut])
         agents.review(dict(self.TASK), "OK", 1)
-        kinds = [json.loads(l)["kind"]
-                 for l in self.state.journal_path.read_text().splitlines()]
+        kinds = [json.loads(line)["kind"]
+                 for line in self.state.journal_path.read_text().splitlines()]
         self.assertIn("review_budget_exhausted", kinds)
 
     def test_ordinary_garbage_is_still_retried(self):
@@ -363,15 +363,15 @@ class TestReviewFailureEscalates(RepoCase):
 
     def test_failure_is_journalled(self):
         self._run()
-        kinds = [json.loads(l)["kind"]
-                 for l in self.state.journal_path.read_text().splitlines()]
+        kinds = [json.loads(line)["kind"]
+                 for line in self.state.journal_path.read_text().splitlines()]
         self.assertIn("review_failed", kinds)
 
     def test_status_carries_question_id(self):
         """Без ссылки на вопрос задачу и вопрос не связать."""
         self._run()
-        task = [t for t in self.state.load_tasks()["tasks"]
-                if t["id"] == "g1nt"][0]
+        task = next(t for t in self.state.load_tasks()["tasks"]
+                    if t["id"] == "g1nt")
         self.assertEqual(task["status"], "blocked")
         self.assertTrue(task.get("question_id"))
 
@@ -462,8 +462,8 @@ class TestRestoreFailureIsFatal(RepoCase):
     def test_bad_patch_is_journalled(self):
         self._loop()._apply_patch(
             "diff --git a/нет b/нет\n--- a/нет\n+++ b/нет\n@@ -1 +1 @@\n-нет\n+да\n")
-        kinds = [json.loads(l)["kind"]
-                 for l in self.state.journal_path.read_text().splitlines()]
+        kinds = [json.loads(line)["kind"]
+                 for line in self.state.journal_path.read_text().splitlines()]
         self.assertIn("restore_failed", kinds)
 
     def test_good_patch_applies(self):

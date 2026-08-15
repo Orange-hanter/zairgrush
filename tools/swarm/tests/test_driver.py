@@ -27,9 +27,12 @@ def fake_agent(script):
 NORMAL = r'''
 import json, sys, time
 print(json.dumps({"role": "meta", "type": "start"}), flush=True)
-print(json.dumps({"role": "assistant", "tool_calls": [{"function": {"name": "Read"}}]}), flush=True)
+print(json.dumps({"role": "assistant",
+                  "tool_calls": [{"function": {"name": "Read"}}]}), flush=True)
 print(json.dumps({"role": "tool", "content": "OK"}), flush=True)
-print(json.dumps({"role": "assistant", "content": json.dumps({"status": "done", "summary": "s"})}), flush=True)
+print(json.dumps({"role": "assistant",
+                  "content": json.dumps({"status": "done",
+                                         "summary": "s"})}), flush=True)
 print(json.dumps({"role": "meta", "session_id": "sess-1"}), flush=True)
 '''
 
@@ -54,7 +57,8 @@ while True:
 
 PROSE_ONLY = r'''
 import json
-print(json.dumps({"role": "assistant", "content": "Готово, но JSON я не верну"}), flush=True)
+print(json.dumps({"role": "assistant",
+                  "content": "Готово, но JSON я не верну"}), flush=True)
 '''
 
 
@@ -166,7 +170,8 @@ class TestRestartPolicy(unittest.TestCase):
 
     def test_two_crashes_in_a_row_block(self):
         self.assertEqual(self.decide(["crash", "crash"]),
-                         {"result": "blocked", "reason": "repeated_crash", "iterations": 2})
+                         {"result": "blocked", "reason": "repeated_crash",
+                          "iterations": 2})
 
     def test_silence_counts_as_crash(self):
         self.assertEqual(self.decide(["silence", "crash"])["result"], "blocked")
@@ -193,7 +198,9 @@ class TestStderrDoesNotDeadlock(unittest.TestCase):
 import json, sys
 sys.stderr.write("t" * %d * 1024)
 sys.stderr.flush()
-print(json.dumps({"role": "assistant", "content": json.dumps({"status": "done", "summary": "s"})}), flush=True)
+print(json.dumps({"role": "assistant",
+                  "content": json.dumps({"status": "done",
+                                         "summary": "s"})}), flush=True)
 '''
 
     def _run(self, kb):

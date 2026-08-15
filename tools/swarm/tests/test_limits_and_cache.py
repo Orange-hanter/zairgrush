@@ -66,7 +66,7 @@ class TestConfigurableLimits(RepoCase):
 
         def implement(task, feedback, iteration):
             calls["n"] += 1
-            return None                      # никогда не даёт отчёта
+            return                      # никогда не даёт отчёта
 
         agents = type("A", (), {"implement": staticmethod(implement),
                                 "commit_message": staticmethod(lambda t, d: "m")})()
@@ -106,7 +106,6 @@ class TestMapCache(RepoCase):
         super().setUp()
         self.agents = ag.Agents(self.state, {})
         self.builds = {"n": 0}
-        real = self.agents._codemap
 
         class Counting:
             def __init__(inner, root):

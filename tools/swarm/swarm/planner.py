@@ -19,6 +19,8 @@ import json
 import pathlib
 import subprocess
 import time
+from collections.abc import Callable
+from typing import Any
 
 PLAN = pathlib.Path(__file__).resolve().parent
 SCHEMA = (PLAN.parent / "schemas" / "plan-diff.schema.json").read_text()
@@ -32,7 +34,7 @@ LEGAL_STATUS = {"pending", "blocked", "done"}
 DEFAULT_PLAN_BUDGET = 4.0
 
 
-def artifacts_dir(root=None):
+def artifacts_dir(root: str | pathlib.Path | None = None) -> pathlib.Path:
     """Куда складывать сырые ответы и метрики планировщика.
 
     Раньше — всегда внутрь исходников инструмента (`swarm/raw/`): следы
@@ -45,7 +47,7 @@ def artifacts_dir(root=None):
     return pathlib.Path(root) / ".swarm"
 
 
-def metric(root=None, **row):
+def metric(root: str | pathlib.Path | None = None, **row: Any) -> None:
     row["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     path = artifacts_dir(root) / "plan-metrics.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,19 +55,23 @@ def metric(root=None, **row):
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def repo_map(stand):
+def repo_map(stand: str | pathlib.Path) -> tuple[str, str]:
     """Карта репозитория для планировщика: модули, тесты, размер сьюта."""
+    stand = pathlib.Path(stand)
     files = sorted(p.relative_to(stand).as_posix()
                    for p in stand.rglob("*.py")
                    if "__pycache__" not in p.parts and ".git" not in p.parts)
-    r = subprocess.run(["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."],
+    r = subprocess.run(["python3", "-m", "unittest", "discover",
+                        "-s", "tests", "-t", "."],
                        capture_output=True, text=True, cwd=stand)
     tail = (r.stdout + r.stderr).strip().splitlines()[-2:]
     return "\n".join(files), " ".join(tail)
 
 
-def plan_prompt(goal, tasks, files, suite):
-    return f"""Ты — планировщик в автоматической петле разработки. Ответ парсится механически.
+def plan_prompt(goal: str, tasks: list[dict[str, Any]], files: str,
+                suite: str) -> str:
+    return f"""Ты — планировщик в автоматической петле разработки. \
+Ответ парсится механически.
 
 ## Цель
 {goal}
@@ -103,8 +109,10 @@ def plan_prompt(goal, tasks, files, suite):
 """
 
 
-def replan_prompt(task, dispute, tasks, files, suite):
-    return f"""Ты — планировщик в автоматической петле разработки. Ответ парсится механически.
+def replan_prompt(task: dict[str, Any], dispute: str,
+                  tasks: list[dict[str, Any]], files: str, suite: str) -> str:
+    return f"""Ты — планировщик в автоматической петле разработки. \
+Ответ парсится механически.
 
 ## Ситуация
 Задача ушла в blocked через канал dispute: исполнитель заявил, что требования
@@ -136,13 +144,14 @@ acceptance обязательны, deps без циклов, id уникальн
 """
 
 
-def tuning_flags(model=None, effort=None):
+def tuning_flags(model: str | None = None,
+                 effort: str | None = None) -> list[str]:
     """Флаги модели и уровня усилия — только если заданы.
 
     Пустой список по умолчанию: без явной настройки роль наследует
     сессионные параметры, и поведение прогона не меняется.
     """
-    flags = []
+    flags: list[str] = []
     if model:
         flags += ["--model", str(model)]
     if effort:
@@ -150,8 +159,11 @@ def tuning_flags(model=None, effort=None):
     return flags
 
 
-def call_planner(prompt, tag, attempt=1, root=None, budget=None,
-                 model=None, effort=None):
+def call_planner(prompt: str, tag: str, attempt: int = 1,
+                 root: str | pathlib.Path | None = None,
+                 budget: float | None = None, model: str | None = None,
+                 effort: str | None = None,
+                 ) -> tuple[dict[str, Any] | None, str | None]:
     """Вызов планировщика. -> (план-дифф | None, причина отказа | None).
 
     Причина возвращается отдельно, потому что «модель ответила мусором» и
@@ -173,7 +185,7 @@ def call_planner(prompt, tag, attempt=1, root=None, budget=None,
                        # в тот проект, для которого строится план.
                        cwd=str(root) if root else None)
     dur = round(time.time() - t0, 1)
-    raw_dir = artifacts_dir(root) / ("raw" if root else "raw")
+    raw_dir = artifacts_dir(root) / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     (raw_dir / f"{tag}-a{attempt}.json").write_text(r.stdout)
     diff, cost, reason = None, None, None
@@ -212,8 +224,12 @@ PLAN_DIAGNOSIS = {
 }
 
 
-def plan_with_retry(prompt, mode, tasks, root=None, budget=None, ui=print,
-                    model=None, effort=None):
+def plan_with_retry(prompt: str, mode: str, tasks: list[dict[str, Any]],
+                    root: str | pathlib.Path | None = None,
+                    budget: float | None = None,
+                    ui: Callable[[str], None] = print,
+                    model: str | None = None, effort: str | None = None,
+                    ) -> tuple[dict[str, Any] | None, list[str], str | None]:
     """Не более двух попыток, и вторая — только если она осмысленна.
 
     -> (diff | None, список ошибок, причина отказа | None).
@@ -227,7 +243,7 @@ def plan_with_retry(prompt, mode, tasks, root=None, budget=None, ui=print,
     if reason in TERMINAL_REASONS:
         return None, [PLAN_DIAGNOSIS[reason]], reason
     errs = validate_plan_diff(diff, tasks) if diff else [
-        PLAN_DIAGNOSIS.get(reason, "план-дифф не получен")]
+        PLAN_DIAGNOSIS.get(reason or "", "план-дифф не получен")]
     if not errs:
         return diff, [], None
     ui("план-дифф невалиден, повторная попытка:")
@@ -239,11 +255,12 @@ def plan_with_retry(prompt, mode, tasks, root=None, budget=None, ui=print,
     if reason in TERMINAL_REASONS:
         return None, [PLAN_DIAGNOSIS[reason]], reason
     errs = validate_plan_diff(diff, tasks) if diff else [
-        PLAN_DIAGNOSIS.get(reason, "план-дифф не получен")]
+        PLAN_DIAGNOSIS.get(reason or "", "план-дифф не получен")]
     return (diff, [], None) if not errs else (None, errs, reason)
 
 
-def validate_plan_diff(diff, tasks):
+def validate_plan_diff(diff: dict[str, Any] | None,
+                       tasks: list[dict[str, Any]]) -> list[str]:
     """Механическая валидация плана-диффа (§3.1). -> список ошибок."""
     errs = []
     if not isinstance(diff, dict) or not isinstance(diff.get("ops"), list):
@@ -257,7 +274,7 @@ def validate_plan_diff(diff, tasks):
     existing = {t["id"] for t in tasks}
     added = set()
     removed = set()
-    touched = {}
+    touched: dict[str, Any] = {}
     for i, op in enumerate(diff["ops"]):
         kind, tid = op.get("op"), op.get("id")
         where = f"ops[{i}] {kind} {tid}"
@@ -327,9 +344,9 @@ def validate_plan_diff(diff, tasks):
         for d in deps:
             if d not in universe:
                 errs.append(f"deps {tid} -> {d}: задача не существует")
-    color = {}
+    color: dict[str, int] = {}
 
-    def cyclic(node):
+    def cyclic(node: str) -> bool:
         color[node] = 1
         for nxt in graph.get(node, []):
             if color.get(nxt) == 1:
@@ -346,7 +363,8 @@ def validate_plan_diff(diff, tasks):
     return errs
 
 
-def apply_plan_diff(diff, tasks):
+def apply_plan_diff(diff: dict[str, Any],
+                    tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Копия обязана быть глубокой: `dict(t)` оставляет общими вложенные
     # структуры (paths, deps, acceptance), и правка результата тихо меняет
     # исходную очередь — поймано мутационным аудитом.
@@ -364,7 +382,7 @@ def apply_plan_diff(diff, tasks):
     return [by_id[i] for i in order if i in by_id]
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["plan", "replan"])
     ap.add_argument("--stand", required=True)
@@ -388,7 +406,7 @@ def main():
         prompt = replan_prompt(task, dispute, tasks, files, suite)
 
     diff, errs, reason = plan_with_retry(prompt, args.mode, tasks)
-    if errs:
+    if errs or diff is None:
         print("ЭСКАЛАЦИЯ:", *errs, sep="\n  ")
         metric(mode=args.mode, result="escalation", errors=errs, reason=reason)
         raise SystemExit(2)
@@ -400,9 +418,11 @@ def main():
         print(f"         paths={t.get('paths')} deps={t.get('deps')}")
         print(f"         reason: {op['reason'][:150]}")
     data["tasks"] = apply_plan_diff(diff, tasks)
-    pathlib.Path(args.out).write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    blob = json.dumps(data, ensure_ascii=False, indent=1)
+    pathlib.Path(args.out).write_text(blob + "\n")
     metric(mode=args.mode, result="applied", tasks_after=len(data["tasks"]))
     print(f"\nприменено -> {args.out} ({len(data['tasks'])} задач)")
+    return 0
 
 
 if __name__ == "__main__":

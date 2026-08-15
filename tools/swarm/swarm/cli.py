@@ -22,18 +22,23 @@
 не тот ctags, отсутствующий языковой сервер, старая версия CLI.
 """
 import argparse
+import contextlib
 import importlib.util
 import json
 import pathlib
 import shutil
 import subprocess
 import sys
+from types import ModuleType
+from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
 
 
-def _load(name):
+def _load(name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
+    if spec is None or spec.loader is None:
+        raise ImportError(f"не удалось загрузить модуль {name}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
@@ -44,28 +49,31 @@ state_mod = _load("state")
 loop_mod = _load("loop")
 
 
-def _config(root):
+def _config(root: str | pathlib.Path) -> dict[str, Any]:
     path = pathlib.Path(root) / "swarm.toml"
     cfg = {"gate_command": None, "protected_paths": ["tests/*", "tests/**"]}
     if path.exists():
+        import tomllib
         try:
-            import tomllib
             cfg.update(tomllib.loads(path.read_text(encoding="utf-8")))
-        except Exception:                                   # noqa: BLE001
-            pass
+        except (tomllib.TOMLDecodeError, OSError) as e:
+            # Молчать нельзя: дальше петля пойдёт на умолчаниях, а оператор
+            # будет уверен, что его настройки применились.
+            print(f"ВНИМАНИЕ: {path} не прочитан ({e}); "
+                  f"работаем на умолчаниях", file=sys.stderr)
     return cfg
 
 
 # --- команды -------------------------------------------------------------
 
-def cmd_status(args):
+def cmd_status(args: argparse.Namespace) -> int:
     st = state_mod.SwarmState(args.root)
     data = st.load_tasks()
     tasks = data.get("tasks", [])
     if not tasks:
         print("очередь пуста (.swarm/tasks.json отсутствует или без задач)")
         return 0
-    by_status = {}
+    by_status: dict[str, list[dict[str, Any]]] = {}
     for t in tasks:
         by_status.setdefault(t["status"], []).append(t)
     print(f"цель: {data.get('goal') or '(не задана)'}")
@@ -111,20 +119,18 @@ def cmd_status(args):
     if st.metrics_path.exists():
         cost = 0.0
         for line in st.metrics_path.read_text().splitlines():
-            try:
+            with contextlib.suppress(ValueError):
                 cost += json.loads(line).get("cost_usd") or 0
-            except ValueError:
-                pass
         if cost:
             print(f"\nпотрачено дорогими ролями: ${cost:.2f}")
     return 0
 
 
-def cmd_doctor(args):
+def cmd_doctor(args: argparse.Namespace) -> int:
     """Половина дефектов программы была в окружении, а не в петле."""
     root = pathlib.Path(args.root)
     print("=== окружение ===")
-    checks = []
+    checks: list[tuple[bool | None, str, str]] = []
 
     for name, probe, hint in (
         ("kimi", ["kimi", "--version"], "исполнитель"),
@@ -139,7 +145,7 @@ def cmd_doctor(args):
             out = subprocess.run(probe, capture_output=True, text=True,
                                  timeout=30).stdout.strip().splitlines()
             checks.append((True, name, out[0] if out else exe))
-        except Exception as e:                              # noqa: BLE001
+        except Exception as e:
             checks.append((False, name, f"ошибка запуска: {e}"))
 
     # ctags: важно отличить Universal от Exuberant — под именем `ctags`
@@ -160,7 +166,7 @@ def cmd_doctor(args):
     try:
         importlib.util.find_spec("tree_sitter")
         checks.append((True, "tree-sitter", "доступен"))
-    except Exception:                                       # noqa: BLE001
+    except Exception:
         checks.append((None, "tree-sitter", "не установлен (опционально)"))
 
     for ok, name, note in checks:
@@ -184,7 +190,7 @@ def cmd_doctor(args):
     return 0 if all(c[0] is not False for c in checks) else 1
 
 
-def cmd_map(args):
+def cmd_map(args: argparse.Namespace) -> int:
     codemap = _load("codemap")
     idx = codemap.HybridIndex(args.root, use_tree_sitter=args.tree_sitter)
     print(idx.project_map(budget=args.budget))
@@ -193,14 +199,14 @@ def cmd_map(args):
     return 0
 
 
-def cmd_impact(args):
+def cmd_impact(args: argparse.Namespace) -> int:
     codemap = _load("codemap")
     idx = codemap.HybridIndex(args.root, use_tree_sitter=args.tree_sitter)
     print(idx.impact(args.symbol))
     return 0
 
 
-def cmd_ab(args):
+def cmd_ab(args: argparse.Namespace) -> int:
     """Сводка по рукам замера: что дал жребий за все прогоны.
 
     Отвечает на два разных вопроса, и путать их нельзя.
@@ -236,10 +242,10 @@ def cmd_ab(args):
         print("нет валидных ревью в метриках")
         return 0
 
-    def arm(e):
+    def arm(e: dict[str, Any]) -> tuple[str, str]:
         return (e.get("model") or "(сессионная)", e.get("effort") or "(сессионный)")
 
-    groups = {}
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for e in rows:
         groups.setdefault(arm(e), []).append(e)
 
@@ -257,7 +263,7 @@ def cmd_ab(args):
     # Пары: один и тот же дифф (задача + итерация) двумя разными руками.
     # Итерация — правильный ключ диффа: внутри неё исполнитель не
     # вызывался, значит код тот же.
-    by_diff = {}
+    by_diff: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
     for e in rows:
         by_diff.setdefault((e.get("task"), e.get("iter")), []).append(e)
     pairs = [(k, v) for k, v in by_diff.items()
@@ -278,7 +284,7 @@ def cmd_ab(args):
     return 0
 
 
-def cmd_report(args):
+def cmd_report(args: argparse.Namespace) -> int:
     """Человекочитаемый рендер из jsonl (ADR-001: журнал первичен)."""
     st = state_mod.SwarmState(args.root)
     if not st.journal_path.exists():
@@ -286,10 +292,8 @@ def cmd_report(args):
         return 0
     rows = []
     for line in st.journal_path.read_text().splitlines():
-        try:
+        with contextlib.suppress(ValueError):
             rows.append(json.loads(line))
-        except ValueError:
-            pass
     if args.task:
         rows = [r for r in rows if r.get("task") == args.task]
     for r in rows:
@@ -300,7 +304,7 @@ def cmd_report(args):
     return 0
 
 
-def cmd_inbox(args):
+def cmd_inbox(args: argparse.Namespace) -> int:
     """Накопившиеся вопросы к человеку — разбираются пачкой."""
     st = state_mod.SwarmState(args.root)
     questions = st.questions(only_open=not args.all)
@@ -330,7 +334,7 @@ def cmd_inbox(args):
     return 0
 
 
-def _paths_mentioned(text, allowed):
+def _paths_mentioned(text: str, allowed: list[str]) -> list[str]:
     """Файлы, названные в ответе, но отсутствующие в границах задачи.
 
     Ответ вроде «вынеси в _utils.py» невыполним, если этого файла нет в
@@ -344,7 +348,7 @@ def _paths_mentioned(text, allowed):
                              for a in allowed))
 
 
-def cmd_answer(args):
+def cmd_answer(args: argparse.Namespace) -> int:
     """Ответ человека возвращает задачу в работу с его решением."""
     st = state_mod.SwarmState(args.root)
     questions = {q["qid"]: q for q in st.questions()}
@@ -382,7 +386,7 @@ def cmd_answer(args):
     return 0
 
 
-def cmd_policy(args):
+def cmd_policy(args: argparse.Namespace) -> int:
     """Политики прогона: решения человека уровня цели, а не задачи."""
     st = state_mod.SwarmState(args.root)
     if args.action == "list":
@@ -429,7 +433,7 @@ def cmd_policy(args):
     return 2
 
 
-def cmd_plan(args):
+def cmd_plan(args: argparse.Namespace) -> int:
     """Планировщик (§3.1): цель -> план-дифф, валидируемый механически.
 
     Модуль был написан и покрыт тестами, но не имел входа в CLI — роль
@@ -486,7 +490,7 @@ def cmd_plan(args):
     return 0
 
 
-def cmd_go(args):
+def cmd_go(args: argparse.Namespace) -> int:
     """От А до Я: рой сам декомпозирует цель и сам её исполняет.
 
     Разница с `plan` + `run` не в удобстве: план должен рождаться ВНУТРИ
@@ -540,7 +544,7 @@ def cmd_go(args):
     return 0
 
 
-def cmd_board(args):
+def cmd_board(args: argparse.Namespace) -> int:
     """Доска прогона: всё происходящее одной страницей, без посредника."""
     board_mod = _load("board")
     out, board = board_mod.build(args.root, args.out)
@@ -553,7 +557,7 @@ def cmd_board(args):
     return 0
 
 
-def cmd_retry(args):
+def cmd_retry(args: argparse.Namespace) -> int:
     """Вернуть заблокированную задачу в очередь.
 
     Не всякая блокировка снимается ответом на вопрос: задача может
@@ -590,7 +594,7 @@ def cmd_retry(args):
     return 0
 
 
-def _preflight(st, force=False):
+def _preflight(st: Any, force: bool = False) -> bool:
     """§5.1: петля не запускается на грязном дереве.
 
     Оркестратор откатывает файлы и делает `git add -A`. Если в дереве
@@ -615,7 +619,7 @@ def _preflight(st, force=False):
     return True
 
 
-def cmd_run(args):
+def cmd_run(args: argparse.Namespace) -> int:
     cfg = _config(args.root)
     with state_mod.SwarmState(args.root) as st:
         if not _preflight(st, getattr(args, "force", False)):
@@ -629,7 +633,7 @@ def cmd_run(args):
             for t in ready:
                 print(f"  {t['id']}  {t['title'][:60]}")
                 print(f"     paths={t.get('paths')} deps={t.get('deps') or []}")
-            ok, tail = loop_mod.Loop(st, cfg, None).gate(ready[0])
+            ok, _tail = loop_mod.Loop(st, cfg, None).gate(ready[0])
             print(f"  baseline gate: {'зелёный' if ok else 'КРАСНЫЙ'}")
             return 0
         agents = _load("agents").Agents(st, cfg)
@@ -639,7 +643,7 @@ def cmd_run(args):
     return 0
 
 
-def cmd_resume(args):
+def cmd_resume(args: argparse.Namespace) -> int:
     """Возобновление после падения: разобрать незавершённые шаги (§5.6).
 
     Блокировку здесь НЕ берём: её возьмёт cmd_run. Иначе оркестратор
@@ -675,7 +679,7 @@ def cmd_resume(args):
     return cmd_run(args)
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="swarm", description="петля агентов")
     ap.add_argument("--root", default=".", help="корень целевого репозитория")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -768,13 +772,15 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
     try:
-        return args.func(args)
+        code: int = args.func(args)
     except state_mod.StateError as e:
         print(f"состояние: {e}", file=sys.stderr)
         return 2
-    except loop_mod.QuotaExceeded as e:
+    except loop_mod.QuotaExceededError as e:
         print(f"пауза по квоте провайдера: {e}", file=sys.stderr)
         return 4
+    else:
+        return code
 
 
 if __name__ == "__main__":

@@ -20,7 +20,16 @@ Kimi Code (исполнитель, модель K3) и Claude Code (ревьюе
 - `tools/swarm/` — сама реализация: CLI `swarm`, оркестратор, индексация кода, тесты (`pytest`, `tools/swarm/tests/`), JSON-схемы контрактов (`tools/swarm/schemas/`);
 - `experiments/adr/` — принятые решения экспериментальной программы (ADR); `experiments/findings.jsonl` — сырой журнал наблюдений. Рабочие стенды экспериментов (`experiments/stand*`, `bench/`, `repomap/` и т.п.) — воспроизводимый scratch, в git не попадают (`.gitignore`).
 
-Сборка/линт не настроены; тесты — `cd tools/swarm && python3 -m pytest`.
+Проверка — одна команда: `cd tools/swarm && ./check.sh` (линт → типы →
+тесты, в этом порядке). Отдельно: `.venv/bin/ruff check swarm/ tests/`,
+`.venv/bin/mypy` (strict), `python3 -m pytest`. Инструменты ставятся в
+`.venv` (`uv venv .venv && uv pip install --python .venv ruff mypy`);
+в git `.venv` не попадает.
+
+Код оркестратора аннотирован полностью и проходит `mypy --strict`.
+Правило ужесточения зафиксировано в `tools/swarm/pyproject.toml`: список
+`ignore` только сокращается, каждая строка в нём — долг с объяснением, а
+не разрешение. Новый код без аннотаций гейт не пропустит.
 
 ## Ключевые идеи документа (контекст для правок)
 

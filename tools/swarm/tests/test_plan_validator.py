@@ -63,7 +63,8 @@ class TestRejectedPlans(unittest.TestCase):
     def assertRejected(self, d, needle):
         errs = rp.validate_plan_diff(d, QUEUE)
         self.assertTrue(errs, "дифф должен быть отвергнут")
-        self.assertTrue(any(needle in e for e in errs), f"{needle!r} не найдено в {errs}")
+        self.assertTrue(any(needle in e for e in errs),
+                        f"{needle!r} не найдено в {errs}")
 
     def test_duplicate_id(self):
         self.assertRejected(diff(add(task("aaaa"))), "id уже существует")
@@ -128,7 +129,8 @@ class TestApply(unittest.TestCase):
 
     def test_update_merges_fields(self):
         d = diff({"op": "update", "id": "bbbb",
-                  "task": {"status": "pending", "paths": ["b.py", "n.py"]}, "reason": "r"})
+                  "task": {"status": "pending", "paths": ["b.py", "n.py"]},
+                  "reason": "r"})
         out = rp.apply_plan_diff(d, QUEUE)
         got = next(t for t in out if t["id"] == "bbbb")
         self.assertEqual(got["status"], "pending")
@@ -136,7 +138,8 @@ class TestApply(unittest.TestCase):
         self.assertEqual(got["title"], "вторая", "update не должен терять поля")
 
     def test_remove_drops_task(self):
-        out = rp.apply_plan_diff(diff({"op": "remove", "id": "aaaa", "reason": "r"}), QUEUE)
+        out = rp.apply_plan_diff(
+            diff({"op": "remove", "id": "aaaa", "reason": "r"}), QUEUE)
         self.assertEqual([t["id"] for t in out], ["bbbb"])
 
     def test_input_queue_not_mutated(self):
@@ -236,14 +239,14 @@ class TestConflictingOps(unittest.TestCase):
     def test_removed_task_deps_do_not_block_plan(self):
         """Ложный отказ: удаляем обе задачи, а deps между ними считались
         нарушением — планировщик получал ошибку на корректном плане."""
-        queue = QUEUE + [task("dddd", deps=["eeee"]), task("eeee")]
+        queue = [*QUEUE, task("dddd", deps=["eeee"]), task("eeee")]
         d = diff({"op": "remove", "id": "dddd", "reason": "r"},
                  {"op": "remove", "id": "eeee", "reason": "r"})
         self.assertEqual(rp.validate_plan_diff(d, queue), [])
 
     def test_dangling_dep_after_removal_still_caught(self):
         """Обратная сторона: если ссылка остаётся живой, отказ обязан быть."""
-        queue = QUEUE + [task("dddd", deps=["eeee"]), task("eeee")]
+        queue = [*QUEUE, task("dddd", deps=["eeee"]), task("eeee")]
         d = diff({"op": "remove", "id": "eeee", "reason": "r"})
         errs = rp.validate_plan_diff(d, queue)
         self.assertTrue(any("eeee" in e for e in errs), errs)

@@ -7,7 +7,6 @@
 import importlib.util
 import json
 import pathlib
-import subprocess
 import sys
 import unittest
 
@@ -26,7 +25,8 @@ class TestWhitelistAccepts(unittest.TestCase):
 
     def test_run_all_tests_ignores_arg(self):
         self.assertEqual(vf.build({"kind": "run_all_tests"}),
-                         ["python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."])
+                         ["python3", "-m", "unittest", "discover",
+                          "-s", "tests", "-t", "."])
 
     def test_git_show(self):
         self.assertEqual(vf.build({"kind": "git_show", "arg": "HEAD~2"}),
@@ -45,7 +45,7 @@ class TestWhitelistRejects(unittest.TestCase):
     """Всё, что мог бы попросить агент, если бы захотел выйти за рамки."""
 
     def assertRejected(self, req, needle=None):
-        with self.assertRaises(vf.Rejected) as ctx:
+        with self.assertRaises(vf.RejectedError) as ctx:
             vf.build(req)
         if needle:
             self.assertIn(needle, str(ctx.exception))
@@ -73,7 +73,8 @@ class TestWhitelistRejects(unittest.TestCase):
                       vf.build({"kind": "git_log", "arg": "wordstat/rank.py"}))
 
     def test_dotfile_name_is_not_traversal(self):
-        self.assertIn("tests/.keep", vf.build({"kind": "git_log", "arg": "tests/.keep"}))
+        self.assertIn("tests/.keep",
+                      vf.build({"kind": "git_log", "arg": "tests/.keep"}))
 
     def test_git_ref_with_spaces(self):
         self.assertRejected({"kind": "git_show", "arg": "HEAD; git push"})
@@ -100,7 +101,8 @@ class TestWhitelistRejects(unittest.TestCase):
 
 class TestRunRequests(unittest.TestCase):
     def test_executes_and_captures_output(self):
-        res = vf.run_requests([{"kind": "python", "arg": "print(6*7)", "why": "проверка"}],
+        res = vf.run_requests([{"kind": "python", "arg": "print(6*7)",
+                                "why": "проверка"}],
                               cwd=str(V))
         self.assertEqual(res[0]["status"], "ok")
         self.assertEqual(res[0]["exit_code"], 0)
@@ -176,7 +178,8 @@ class TestArgumentForms(unittest.TestCase):
                          ["python3", "-m", "unittest", "tests.test_roman"])
 
     def test_git_show_file_at_ref(self):
-        self.assertEqual(vf.build({"kind": "git_show", "arg": "HEAD:wordstat/roman.py"}),
+        self.assertEqual(vf.build({"kind": "git_show",
+                                   "arg": "HEAD:wordstat/roman.py"}),
                          ["git", "show", "HEAD:wordstat/roman.py"])
 
     def test_git_show_ref_only_keeps_stat(self):
@@ -184,17 +187,18 @@ class TestArgumentForms(unittest.TestCase):
                          ["git", "show", "--stat", "HEAD~1"])
 
     def test_git_show_traversal_in_path_rejected(self):
-        with self.assertRaises(vf.Rejected):
+        with self.assertRaises(vf.RejectedError):
             vf.build({"kind": "git_show", "arg": "HEAD:../../etc/passwd"})
 
     def test_test_path_traversal_rejected(self):
-        with self.assertRaises(vf.Rejected):
+        with self.assertRaises(vf.RejectedError):
             vf.build({"kind": "run_tests", "arg": "../../etc/passwd.py"})
 
 
 class TestFormatting(unittest.TestCase):
     def test_format_includes_kind_and_output(self):
-        text = vf.format_results([{"kind": "run_tests", "arg": "tests.t", "why": "зачем",
+        text = vf.format_results([{"kind": "run_tests", "arg": "tests.t",
+                                   "why": "зачем",
                                    "status": "ok", "exit_code": 0, "output": "OK"}])
         self.assertIn("run_tests", text)
         self.assertIn("OK", text)
@@ -235,7 +239,7 @@ class TestWhitelistMatchesSchema(unittest.TestCase):
             self.assertTrue(argv, f"{kind} не собрал команду")
 
     def test_unknown_kind_still_rejected(self):
-        with self.assertRaises(vf.Rejected):
+        with self.assertRaises(vf.RejectedError):
             vf.build({"kind": "rm_rf", "arg": "/", "why": "злой"})
 
 

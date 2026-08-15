@@ -5,10 +5,9 @@
 намордник на ревьюера: он продолжает сообщать всё, подавленное остаётся
 видимым, а корректность не подавляется никогда.
 """
+import contextlib
 import importlib.util
 import io
-import contextlib
-import json
 import pathlib
 import subprocess
 import sys
@@ -67,7 +66,7 @@ class TestFiltering(unittest.TestCase):
     def test_match_looks_at_suggestion_too(self):
         f = finding(issue="документация не обновлена")
         f["suggestion"] = "добавить reno-заметку"
-        active, suppressed = lp.apply_policies([f], self.POLICIES)
+        _active, suppressed = lp.apply_policies([f], self.POLICIES)
         self.assertEqual(len(suppressed), 1)
 
     def test_no_policies_changes_nothing(self):

@@ -15,6 +15,7 @@ import json
 import pathlib
 import subprocess
 import time
+from typing import Any
 
 PHASE_RU = {
     "gate": "гейт", "scope": "границы", "implement": "исполнитель",
@@ -45,8 +46,15 @@ KIND_RU = {
 MAX_DIFF_CHARS = 12000        # больше человек в браузере всё равно не читает
 
 
-def _read_jsonl(path):
-    rows = []
+def _key(row: dict[str, Any], field: str = "task") -> str:
+    """Ключ группировки из журнальной записи. Записи без поля попадают в
+    пустой ключ: с идентификатором задачи он не совпадёт никогда, поэтому
+    такая строка не пристанет к чужой задаче."""
+    return str(row.get(field) or "")
+
+
+def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     if not path.exists():
         return rows
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -57,12 +65,12 @@ def _read_jsonl(path):
     return rows
 
 
-def _git(root, *args):
+def _git(root: pathlib.Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=root, capture_output=True,
                           text=True).stdout
 
 
-def _verdicts(swarm_dir, tid):
+def _verdicts(swarm_dir: pathlib.Path, tid: str) -> list[dict[str, Any]]:
     """Вердикты ревьюера по раундам — то, из-за чего задача идёт по кругу.
 
     Читаем сырые ответы: имя вида `<id>-i<раунд>-<фаза><попытка>-review.json`,
@@ -98,7 +106,7 @@ def _verdicts(swarm_dir, tid):
     return out
 
 
-def collect(root):
+def collect(root: str | pathlib.Path) -> dict[str, Any]:
     """Все данные доски. Ничего не додумывает — только факты из файлов."""
     root = pathlib.Path(root)
     swarm = root / ".swarm"
@@ -109,11 +117,10 @@ def collect(root):
     metrics = _read_jsonl(swarm / "metrics.jsonl")
     journal = _read_jsonl(swarm / "log" / "run.jsonl")
 
-    spend = {}
+    spend: dict[str, float] = {}
     for m in metrics:
         if m.get("cost_usd"):
-            spend[m.get("task")] = round(spend.get(m.get("task"), 0)
-                                         + m["cost_usd"], 2)
+            spend[_key(m)] = round(spend.get(_key(m), 0) + m["cost_usd"], 2)
 
     questions = {}
     for row in journal:
@@ -127,17 +134,17 @@ def collect(root):
             questions[row["qid"]].update(status="answered",
                                          answer=row.get("text"))
 
-    suppressed = {}
+    suppressed: dict[str, list[dict[str, Any]]] = {}
     for row in journal:
         if row.get("kind") == "policy_suppressed":
-            suppressed.setdefault(row.get("task"), []).extend(row.get("items") or [])
+            suppressed.setdefault(_key(row), []).extend(row.get("items") or [])
 
     tasks = []
     for t in data.get("tasks", []):
         tid = t.get("id")
         phases = [{
             "ts": (m.get("ts") or "")[11:19], "iter": m.get("iter"),
-            "phase": PHASE_RU.get(m.get("phase"), m.get("phase")),
+            "phase": PHASE_RU.get(_key(m, "phase"), m.get("phase")),
             "result": (m.get("verdict") or m.get("reason")
                        or ("ок" if m.get("ok") else "провал" if m.get("ok") is False else "")),
             "dur": m.get("dur_s") or m.get("wall_s"), "cost": m.get("cost_usd"),
@@ -160,15 +167,15 @@ def collect(root):
                           _questions=[q for q in questions.values()
                                       if q.get("task") == tid]))
 
-    rounds = {}
+    rounds: dict[str, list[dict[str, Any]]] = {}
     for r in journal:
         if r.get("kind") == "round":
-            rounds.setdefault(r.get("task"), []).append(
+            rounds.setdefault(_key(r), []).append(
                 {"round": r.get("round"), "verdict": r.get("verdict"),
                  "outcome": r.get("outcome"), "findings": r.get("findings"),
                  "intent": r.get("intent")})
     for t in tasks:
-        t["_rounds"] = rounds.get(t.get("id"), [])
+        t["_rounds"] = rounds.get(_key(t, "id"), [])
 
     # Записи без задачи — это события ПРОГОНА, а не чьи-то: сгруппировать их
     # «по задачам» значит потерять ровно то, что объясняет остановку очереди.
@@ -178,7 +185,7 @@ def collect(root):
                      "policy", "policy_dropped")]
 
     events = [{"ts": r.get("ts", "")[11:19], "kind": r.get("kind"),
-               "kind_ru": KIND_RU.get(r.get("kind"), r.get("kind")),
+               "kind_ru": KIND_RU.get(_key(r, "kind"), r.get("kind")),
                "task": r.get("task"),
                "detail": json.dumps({k: v for k, v in r.items()
                                      if k not in ("ts", "kind", "task")},
@@ -447,10 +454,10 @@ render();
 """
 
 
-def render(board):
+def render(board: dict[str, Any]) -> str:
     e = html.escape
     open_q = [q for q in board["questions"] if q["status"] == "open"]
-    by = {}
+    by: dict[str, int] = {}
     for t in board["tasks"]:
         by[t.get("status")] = by.get(t.get("status"), 0) + 1
 
@@ -464,9 +471,9 @@ def render(board):
              '<div class="wrap">', "<h1>Прогон петли агентов</h1>",
              f'<div class="goal">{e(board["goal"] or "цель не задана")}</div>',
              '<div class="grid">']
-    for n, l, cls in kpis:
+    for n, label, cls in kpis:
         parts.append(f'<div class="kpi {cls}"><div class="n">{e(str(n))}</div>'
-                     f'<div class="l">{l}</div></div>')
+                     f'<div class="l">{label}</div></div>')
     parts.append("</div>")
 
     if open_q:
@@ -518,7 +525,9 @@ def render(board):
     return "\n".join(parts)
 
 
-def build(root, out=None):
+def build(root: str | pathlib.Path,
+          out: str | pathlib.Path | None = None,
+          ) -> tuple[pathlib.Path, dict[str, Any]]:
     board = collect(root)
     page = render(board)
     out = pathlib.Path(out) if out else pathlib.Path(root) / ".swarm" / "board.html"

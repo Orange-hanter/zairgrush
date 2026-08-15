@@ -148,16 +148,16 @@ class TestPreflight(RepoCase):
 
     def test_untracked_file_also_blocks(self):
         (self.root / "черновик.md").write_text("заметки\n")
-        code, out = run_cli("--root", str(self.root), "run")
+        code, _out = run_cli("--root", str(self.root), "run")
         self.assertEqual(code, 2)
 
     def test_clean_tree_passes_preflight(self):
-        code, out = run_cli("--root", str(self.root), "run", "--dry-run")
+        _code, out = run_cli("--root", str(self.root), "run", "--dry-run")
         self.assertNotIn("PREFLIGHT", out)
 
     def test_force_overrides_but_is_logged(self):
         (self.root / "a.py").write_text("работа человека\n")
-        code, out = run_cli("--root", str(self.root), "run", "--dry-run", "--force")
+        code, _out = run_cli("--root", str(self.root), "run", "--dry-run", "--force")
         self.assertNotEqual(code, 2)
         self.assertIn("preflight_forced", self.state.journal_path.read_text(),
                       "осознанный риск обязан остаться в журнале")
@@ -165,7 +165,7 @@ class TestPreflight(RepoCase):
     def test_swarm_state_does_not_trip_preflight(self):
         """Собственное состояние петли не считается чужой работой."""
         self.state.log("x", note="что-то")
-        code, out = run_cli("--root", str(self.root), "run", "--dry-run")
+        _code, out = run_cli("--root", str(self.root), "run", "--dry-run")
         self.assertNotIn("PREFLIGHT", out)
 
 

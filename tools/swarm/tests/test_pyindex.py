@@ -9,7 +9,6 @@
 Цена дефекта здесь особая: индекс не падает, а тихо врёт. Ревьюер
 построит finding на ложной связи, планировщик — `paths` задачи.
 """
-import ast
 import importlib.util
 import pathlib
 import sys

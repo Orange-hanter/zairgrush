@@ -13,10 +13,11 @@
     5.  COMMIT | FEEDBACK
 """
 import fnmatch
-import json
+import os
 import pathlib
 import subprocess
-import time
+from collections.abc import Callable
+from typing import Any
 
 MAX_ITER = 3
 SEVERITIES = {"blocker", "major", "minor"}
@@ -58,15 +59,15 @@ QUOTA_MARKERS = ("session limit", "rate limit", "quota", "usage limit",
                  "429", "too many requests")
 
 
-class QuotaExceeded(Exception):
+class QuotaExceededError(Exception):
     """Провайдер отказал по квоте: петля ждёт, а не блокирует задачу (§5.3)."""
 
 
-class Escalation(Exception):
+class EscalationError(Exception):
     """Ситуация, которую обязан разобрать человек (§1.1)."""
 
 
-def quota_error(envelope):
+def quota_error(envelope: Any) -> str | None:
     if not isinstance(envelope, dict) or not envelope.get("is_error"):
         return None
     text = str(envelope.get("result") or "").lower()
@@ -74,7 +75,7 @@ def quota_error(envelope):
         m in text for m in QUOTA_MARKERS) else None
 
 
-def validate_verdict(v):
+def validate_verdict(v: Any) -> bool:
     """Форма И смысл (§4.2): схема не ловит заглушку вроде analysis='test'."""
     if not isinstance(v, dict):
         return False
@@ -93,7 +94,9 @@ def validate_verdict(v):
     return len((v.get("summary") or "").strip()) >= MIN_SUMMARY
 
 
-def apply_policies(findings, policies):
+def apply_policies(findings: list[dict[str, Any]],
+                   policies: list[dict[str, Any]],
+                   ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Развести находки на действующие и подавленные политиками прогона.
 
     Фильтрация живёт ЗДЕСЬ, а не в промпте ревьюера, сознательно: инструкция
@@ -121,14 +124,16 @@ def apply_policies(findings, policies):
     return active, suppressed
 
 
-def classify_findings(findings):
+def classify_findings(findings: list[dict[str, Any]] | None,
+                      ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Разделить находки на задевающие замысел и механические.
 
     Смысл различения: «переименуй переменную» исполнитель чинит сам, а
     «эта абстракция лишняя» или «работа вышла за границы задачи» —
     решение о замысле, и правильный ответ знает только человек.
     """
-    intent, mechanical = [], []
+    intent: list[dict[str, Any]] = []
+    mechanical: list[dict[str, Any]] = []
     for f in findings or []:
         marked = f.get("intent")
         is_intent = (marked if isinstance(marked, bool)
@@ -137,7 +142,9 @@ def classify_findings(findings):
     return intent, mechanical
 
 
-def decide(round_no, verdict, history, max_rounds=MAX_ITER, confirmations=2):
+def decide(round_no: int, verdict: dict[str, Any],
+           history: list[dict[str, Any]], max_rounds: int = MAX_ITER,
+           confirmations: int = 2) -> tuple[str, int]:
     """Решение цикла по вердикту и истории раундов.
 
     Порядок проверок важен и заимствован у FuguNano:
@@ -151,7 +158,8 @@ def decide(round_no, verdict, history, max_rounds=MAX_ITER, confirmations=2):
     """
     if verdict["verdict"] == "approve":
         approvals = sum(1 for r in history if r.get("verdict") == "approve") + 1
-        return (DONE, EXIT_OK) if approvals >= confirmations else (CONFIRM, EXIT_WORKING)
+        return ((DONE, EXIT_OK) if approvals >= confirmations
+                else (CONFIRM, EXIT_WORKING))
 
     if verdict["verdict"] == "blocked":
         return ESCALATE_MAX, EXIT_ESCALATE
@@ -175,29 +183,31 @@ def decide(round_no, verdict, history, max_rounds=MAX_ITER, confirmations=2):
 
 
 class Loop:
-    def __init__(self, state, config, agents, ui=None):
+    def __init__(self, state: Any, config: dict[str, Any], agents: Any,
+                 ui: Callable[..., None] | None = None) -> None:
         self.state = state
         self.config = config
         self.agents = agents          # объект с .implement() и .review()
-        self.ui = ui or (lambda *a, **k: None)
-        self._pre_existing = set()    # дерево до старта задачи
-        self._head_before = None      # история до старта задачи
-        self._state_before = None     # состояние петли до старта задачи
+        self.ui = ui or (lambda *_a, **_k: None)
+        self._pre_existing: set[str] = set()   # дерево до старта задачи
+        self._head_before: str | None = None   # история до старта задачи
+        self._state_before: str | None = None  # состояние петли до старта
 
     # --- механические шаги ------------------------------------------------
 
-    def _sh(self, cmd, timeout=900):
+    def _sh(self, cmd: list[str],
+            timeout: float = 900) -> subprocess.CompletedProcess[str]:
         return subprocess.run(cmd, capture_output=True, text=True,
                               cwd=self.state.root, timeout=timeout)
 
     @property
-    def max_iter(self):
+    def max_iter(self) -> int:
         """Лимит раундов исправлений. Три хватало на стенде; на реальном
         проекте задача может честно требовать больше, и упираться в
         зашитую константу — значит эскалировать по чужой причине."""
         return int(self.config.get("max_iterations", MAX_ITER))
 
-    def gate(self, task):
+    def gate(self, task: dict[str, Any]) -> tuple[bool, str]:
         cmd = self.config.get("gate_command") or [
             "python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]
         # Холодная сборка Rust не влезает в 900 с, а таймаут здесь —
@@ -208,7 +218,7 @@ class Loop:
         self.state.metric(task=task["id"], phase="gate", ok=ok, tail=tail[:300])
         return ok, tail
 
-    def integrity_check(self):
+    def integrity_check(self) -> list[str]:
         """§6.1: неприкосновенность истории и состояния петли.
 
         Deny-правила у Kimi недокументированы, а промпт — не гарантия:
@@ -238,21 +248,25 @@ class Loop:
         if self._state_before and state_now != self._state_before:
             bad.append("состояние петли (.swarm/) изменено во время задачи")
         for marker, what in (("rebase-merge", "rebase"), ("rebase-apply", "rebase"),
-                             ("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick")):
+                             ("MERGE_HEAD", "merge"),
+                             ("CHERRY_PICK_HEAD", "cherry-pick")):
             if (pathlib.Path(self.state.root) / ".git" / marker).exists():
                 bad.append(f"репозиторий оставлен в состоянии {what}")
         return bad
 
-    def _state_fingerprint(self):
+    def _state_fingerprint(self) -> str | None:
         path = getattr(self.state, "tasks_path", None)
         if path is None:
             return None
         try:
-            return path.read_text(encoding="utf-8")
+            text: str = path.read_text(encoding="utf-8")
         except OSError:
             return None
+        else:
+            return text
 
-    def scope_check(self, task):
+    def scope_check(self, task: dict[str, Any],
+                    ) -> tuple[bool, list[str], list[str]]:
         """Границы задачи: разрешённые пути и неприкосновенность тестов.
 
         Тонкость, стоившая трёх итераций на приёмке: у задач типа
@@ -277,7 +291,7 @@ class Loop:
                           unexpected=bad, protected=touched_tests)
         return ok, bad, touched_tests
 
-    def revert(self, task):
+    def revert(self) -> list[str]:
         """Откат работы агента, включая СОЗДАННЫЕ файлы.
 
         `git checkout -- .` возвращает отслеживаемые файлы, но untracked
@@ -286,11 +300,12 @@ class Loop:
         поимённо то, что реально изменено, — по всему дереву не метём,
         чтобы не задеть чужое.
         """
-        untouchable = getattr(self, "_pre_existing", set())
+        untouchable: set[str] = getattr(self, "_pre_existing", set())
         changed = [p for p in self.state.changed_files() if p not in untouchable]
         if not changed:
             return []
-        tracked, untracked = [], []
+        tracked: list[str] = []
+        untracked: list[str] = []
         for path in changed:
             probe = self._sh(["git", "ls-files", "--error-unmatch", path])
             (tracked if probe.returncode == 0 else untracked).append(path)
@@ -304,28 +319,27 @@ class Loop:
                 target.unlink()
         return changed
 
-    def commit(self, task, iteration):
+    def commit(self, task: dict[str, Any]) -> str | None:
         """Коммит принятой итерации; пустой diff — не ошибка (§4.4)."""
-        env = dict(GIT_AUTHOR_NAME="swarm-executor",
-                   GIT_AUTHOR_EMAIL="executor@swarm.local",
-                   GIT_COMMITTER_NAME="swarm-orchestrator",
-                   GIT_COMMITTER_EMAIL="orchestrator@swarm.local")
+        env = {"GIT_AUTHOR_NAME": "swarm-executor",
+               "GIT_AUTHOR_EMAIL": "executor@swarm.local",
+               "GIT_COMMITTER_NAME": "swarm-orchestrator",
+               "GIT_COMMITTER_EMAIL": "orchestrator@swarm.local"}
         subprocess.run(["git", "add", "-A"], cwd=self.state.root, check=True)
         staged = subprocess.run(["git", "diff", "--cached", "--quiet"],
                                 cwd=self.state.root)
         if staged.returncode == 0:
             return None
-        import os
         message = self.agents.commit_message(task, self._sh(["git", "diff",
                                                              "--cached"]).stdout)
         subprocess.run(["git", "commit", "-qm", message], cwd=self.state.root,
-                       check=True, env=dict(os.environ, **env))
+                       check=True, env={**os.environ, **env})
         # Коммит оркестратора легален: сдвигаем базу, иначе следующая
         # проверка целостности обвинит агента в нашей же работе.
         self._head_before = self._sh(["git", "rev-parse", "HEAD"]).stdout.strip()
         return self._sh(["git", "rev-parse", "--short", "HEAD"]).stdout.strip()
 
-    def cleanup(self, task, reason):
+    def cleanup(self, task: dict[str, Any], reason: str) -> str | None:
         """Терминальный исход оставляет worktree чистым (§5.5.1).
 
         Два урока пилота, оба стоили работы:
@@ -352,7 +366,7 @@ class Loop:
             return None
         return label
 
-    def _apply_patch(self, diff_text):
+    def _apply_patch(self, diff_text: str) -> bool:
         """Вернуть worktree к сохранённому лучшему состоянию.
 
         Код возврата `git apply` обязан проверяться. Здесь работа уже
@@ -370,7 +384,7 @@ class Loop:
         return r.returncode == 0
 
     @staticmethod
-    def _diagnose(outcome, history):
+    def _diagnose(outcome: str, history: list[dict[str, Any]]) -> str:
         """Несходимость требует ДИАГНОЗА, а не очередного повтора.
 
         Закрытый список гипотез (FuguNano): человеку эскалируется не голый
@@ -390,7 +404,7 @@ class Loop:
 
     # --- цикл --------------------------------------------------------------
 
-    def run_task(self, task):
+    def run_task(self, task: dict[str, Any]) -> str:
         tid = task["id"]
         self.ui(f"=== {tid}: {task['title']}")
         self.state.set_status(tid, "in_progress")
@@ -418,8 +432,8 @@ class Loop:
                      "note": "решение человека по замыслу — обязательно к "
                              "исполнению во всех последующих итерациях"}
         feedback = dict(human) if human else None
-        history = []
-        best = {"findings": None, "round": None, "diff": None}
+        history: list[dict[str, Any]] = []
+        best: dict[str, Any] = {"findings": None, "round": None, "diff": None}
         # Подтверждающие раунды не расходуют лимит исправлений: они не
         # меняют код, а перепроверяют уже принятый. Иначе approve на
         # последней итерации обречён — подтверждать его негде (поймано на
@@ -488,7 +502,7 @@ class Loop:
 
             sok, bad, tests_touched = self.scope_check(task)
             if not sok:
-                self.revert(task)
+                self.revert()
                 feedback = {"note": "нарушение границ задачи",
                             "unexpected_files": bad,
                             "protected_tests": tests_touched}
@@ -504,7 +518,7 @@ class Loop:
                 stash = self.cleanup(task, "invalid-verdict")
                 why = getattr(self.agents, "last_review_failure", None)
                 diagnosis = REVIEW_DIAGNOSIS.get(
-                    why, REVIEW_DIAGNOSIS["invalid"])
+                    why or "", REVIEW_DIAGNOSIS["invalid"])
                 self.state.log("review_failed", task=tid, round=iteration,
                                why=why or "invalid", stash=stash,
                                gate_passed=True)
@@ -541,7 +555,7 @@ class Loop:
                                    confirmations=self.config.get("confirmations", 2))
             history.append({"round": iteration, "verdict": verdict["verdict"],
                             "findings": len(findings),
-                            "categories": sorted({f.get("category")
+                            "categories": sorted({str(f.get("category") or "")
                                                   for f in findings})})
             self.state.log("round", task=tid, round=iteration,
                            verdict=verdict["verdict"], outcome=outcome,
@@ -562,7 +576,7 @@ class Loop:
                 # цикл revert + git apply поверх неизменного дерева.
                 self.ui(f"    регресс: {len(findings)} находок против "
                         f"{best['findings']} в раунде {best['round']} — откат")
-                self.revert(task)
+                self.revert()
                 if not self._apply_patch(best["diff"]):
                     # Работа снесена, восстановить не удалось. Коммитить
                     # тут нечего, и делать вид, что откат состоялся, нельзя.
@@ -586,7 +600,7 @@ class Loop:
                             f"(повторное ревью того же диффа, без исполнителя)")
                     continue
                 with self.state.step(tid, "commit") as step:
-                    sha = self.commit(task, iteration)
+                    sha = self.commit(task)
                     step.result(commit=sha)
                 self.state.set_status(tid, "done", iterations=iteration,
                                       commit=sha, exit_code=code,
@@ -647,8 +661,8 @@ class Loop:
         self.ui(f"    эскалация [{qid}]: {diagnosis}")
         return "blocked"
 
-    def run(self, limit=None):
-        results = {}
+    def run(self, limit: int | None = None) -> dict[str, str]:
+        results: dict[str, str] = {}
         while True:
             ready = self.state.ready_tasks()
             if not ready:
@@ -677,27 +691,29 @@ class Loop:
             except KeyboardInterrupt:
                 self._rescue(task, "прервано человеком")
                 raise
-            except Exception as e:                          # noqa: BLE001
+            except Exception as e:
                 results[task["id"]] = self._rescue(task, f"{type(e).__name__}: {e}")
                 break
             if limit and len(results) >= limit:
                 break
         return results
 
-    def _rescue(self, task, reason):
+    def _rescue(self, task: dict[str, Any], reason: str) -> str:
         """Спасти задачу и работу после аварии: stash, blocked, вопрос."""
         tid = task["id"]
         self.state.log("task_crashed", task=tid, reason=reason)
         try:
             stash = self.cleanup(task, "crash")
-        except Exception:                                   # noqa: BLE001
+        except Exception:
             stash = None
         try:
             qid = self.state.ask(tid, ASK_USER,
                                  f"прогон прерван аварией: {reason}", stash=stash)
             self.state.set_status(tid, "blocked", reason="crash",
                                   stash=stash, question_id=qid)
-        except Exception:                                   # noqa: BLE001
-            pass
+        except Exception as e:
+            # Отказ самого регистратора аварии нельзя терять: иначе задача
+            # молча остаётся в work и оператор не узнает почему.
+            self.ui(f"    не записана авария {tid}: {type(e).__name__}: {e}")
         self.ui(f"    АВАРИЯ на {tid}: {reason}")
         return "blocked"
