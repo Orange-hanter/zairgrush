@@ -131,6 +131,29 @@ class TestCondenseDiff(unittest.TestCase):
         self.assertIn("needs_changes", out,
                       "должен быть назван легальный выход: потребовать файл")
 
+    def test_collapse_does_not_claim_machine_origin(self):
+        """Оркестратор знает ОБЪЁМ, а не происхождение файла.
+
+        На пилоте (e7in) под порог попали 604 строки рукописного теста, а
+        ревьюеру было сказано «судя по объёму, порождён машинно». Он начал
+        вердикт с опровержения и перечитал файл сам. Заявление о причине,
+        которой инструмент знать не может, — тот же класс, что ложные
+        обвинения проверки целостности и стража путей (§5.7.2).
+        """
+        diff = _diff_for("tests/hand_written.rs",
+                         [f"    assert_eq!(x, {i});" for i in range(1000)])
+        out = ag.condense_diff(diff)
+        self.assertNotIn("порождён машинно", out,
+                         "происхождение файла оркестратору неизвестно")
+        self.assertIn("длиннее", out, "причина — длина, и только она")
+
+    def test_collapse_hands_origin_judgement_to_the_reviewer(self):
+        """Раз инструмент не знает происхождения, он обязан сказать это
+        вслух: иначе ревьюер молча примет умолчание за факт."""
+        diff = _diff_for("x.rs", [f"line {i}" for i in range(1000)])
+        out = ag.condense_diff(diff)
+        self.assertIn("ничего не знает", out)
+
     def test_collapse_keeps_an_excerpt(self):
         diff = _diff_for("fixtures/golden.txt",
                          [f"line {i}" for i in range(1000)])

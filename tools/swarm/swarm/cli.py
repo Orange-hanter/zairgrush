@@ -96,6 +96,18 @@ def _config(root: str | pathlib.Path) -> dict[str, Any]:
 
 # --- команды -------------------------------------------------------------
 
+def _ui(*args: object) -> None:
+    """Печать хода петли с немедленным сбросом буфера.
+
+    Голый `print` буферизуется поблочно, когда stdout не терминал. Прогон
+    в фоне (`swarm go > run.log`) писал в файл НОЛЬ БАЙТ пятьдесят минут,
+    хотя петля исправно печатала каждый раунд: всё лежало в буфере до
+    конца процесса. Инструмент, ценность которого в наблюдаемости хода,
+    обязан быть виден и когда его вывод перенаправлен.
+    """
+    print(*args, flush=True)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     st = state_mod.SwarmState(args.root)
     data = st.load_tasks()
@@ -822,7 +834,7 @@ def cmd_go(args: argparse.Namespace) -> int:
 
     with state_mod.SwarmState(args.root) as locked:
         agents = _load("agents").Agents(locked, cfg)
-        loop = loop_mod.Loop(locked, cfg, agents, ui=print)
+        loop = loop_mod.Loop(locked, cfg, agents, ui=_ui)
         results = loop.run(limit=args.limit)
 
     board_mod = _load("board")
@@ -945,7 +957,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"  baseline gate: {'зелёный' if ok else 'КРАСНЫЙ'}")
             return 0
         agents = _load("agents").Agents(st, cfg)
-        loop = loop_mod.Loop(st, cfg, agents, ui=print)
+        loop = loop_mod.Loop(st, cfg, agents, ui=_ui)
         results = loop.run(limit=args.limit)
         print("\nитог:", json.dumps(results, ensure_ascii=False))
     return 0

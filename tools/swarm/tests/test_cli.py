@@ -3,6 +3,7 @@
 
 Агенты не вызываются: проверяется поведение оркестратора вокруг них.
 """
+import builtins
 import contextlib
 import importlib.util
 import io
@@ -473,3 +474,42 @@ class TestLocking(CliCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestLoopOutputIsVisible(unittest.TestCase):
+    """Прогон в фоне писал в файл НОЛЬ БАЙТ пятьдесят минут.
+
+    Петля исправно печатала каждый раунд, но голый `print` при
+    перенаправлении stdout буферизуется поблочно, и всё лежало в буфере до
+    конца процесса. Для инструмента, чья ценность в наблюдаемости хода,
+    невидимый вывод равносилен отсутствию вывода.
+    """
+
+    def test_ui_flushes_every_line(self):
+        seen = []
+        real = builtins.print
+
+        def spy(*args, **kwargs):
+            seen.append(kwargs.get("flush"))
+            real(*args, **{k: v for k, v in kwargs.items() if k != "flush"})
+
+        builtins.print = spy
+        try:
+            cli._ui("=== задача")
+            cli._ui("    раунд 1")
+        finally:
+            builtins.print = real
+        self.assertEqual(seen, [True, True],
+                         "без flush вывод не доходит до файла до конца прогона")
+
+    def test_loop_gets_the_flushing_ui(self):
+        """Проверка проводки: сам по себе `_ui` бесполезен, если петле
+        по-прежнему передают голый `print`."""
+        src = (pathlib.Path(cli.__file__).read_text(encoding="utf-8")
+               if hasattr(cli, "__file__") else "")
+        self.assertNotIn("ui=print", src,
+                         "петля обязана получать печать со сбросом буфера")
+
+
+if __name__ == "__main__":
+    unittest.main()
