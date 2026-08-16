@@ -385,22 +385,42 @@ class Loop:
                     ) -> tuple[bool, list[str], list[str]]:
         """Границы задачи: разрешённые пути и неприкосновенность тестов.
 
-        Тонкость, стоившая трёх итераций на приёмке: у задач типа
-        `feature-tests` исполнитель ОБЯЗАН писать свои тесты, и файлы,
-        явно перечисленные в `paths`, защищёнными не считаются. Защита
-        нужна от правки ЧУЖИХ тестов, а не собственных.
+        Принцип один: защита — от правки ЧУЖОГО, а не названного. Файл из
+        защищённой зоны (tests/**, *.toml, ...) можно менять, только если
+        `paths` задачи целятся в него ЯВНО.
+
+        История правила — два урока, оба стоили кругов:
+
+        1. Приёмка: у `feature-tests` исполнитель ОБЯЗАН писать свои
+           тесты, и файлы из `paths` защищёнными не считались — но только
+           для этого типа.
+        2. Пилот (k3ad, s2ky — шесть сгоревших раундов): задача типа
+           `feature` меняет поведение правила, чьё число диагностик
+           ПРИШПИЛЕНО существующим тестом. Тест был явно назван в `paths`
+           — и всё равно откатывался, потому что исключение работало
+           по типу, а не по явности. Ни один тип не позволял «поменять
+           код и обновить пришпиленный к нему тест» — а это самая
+           обычная форма работы.
+
+        Тонкость: широкий глоб защиту НЕ снимает. `crates/**` покрывает и
+        тесты, но не целится в них; снимает защиту только паттерн, сам
+        лежащий в защищённой зоне (`crates/x/tests/*.rs`, `zeus/Cargo.lock`).
+        Иначе любой размашистый paths обнулял бы анти-gaming (§5.5).
         """
         allowed = task.get("paths") or []
         protected = self.config.get("protected_paths") or ["tests/*", "tests/**"]
-        writes_own_tests = task.get("type") in ("test-task", "feature-tests")
+
+        def is_protected(path: str) -> bool:
+            return any(fnmatch.fnmatch(path, p) for p in protected)
+
+        unlocking = [pat for pat in allowed if is_protected(pat)]
         bad, touched_tests = [], []
         for path in self.state.changed_files():
-            explicitly_allowed = any(fnmatch.fnmatch(path, p) for p in allowed)
-            if not explicitly_allowed:
+            if not any(fnmatch.fnmatch(path, p) for p in allowed):
                 bad.append(path)
                 continue
-            if not writes_own_tests and any(
-                    fnmatch.fnmatch(path, p) for p in protected):
+            if is_protected(path) and not any(
+                    fnmatch.fnmatch(path, u) for u in unlocking):
                 touched_tests.append(path)
         ok = not bad and not touched_tests
         self.state.metric(task=task["id"], phase="scope", ok=ok,
@@ -574,7 +594,8 @@ class Loop:
         return f"{model}/{effort}" if effort else str(model)
 
     @staticmethod
-    def _diagnose(outcome: str, history: list[dict[str, Any]]) -> str:
+    def _diagnose(outcome: str, history: list[dict[str, Any]],
+                  scope_failures: list[list[str]] | None = None) -> str:
         """Несходимость требует ДИАГНОЗА, а не очередного повтора.
 
         Закрытый список гипотез (FuguNano): человеку эскалируется не голый
@@ -589,6 +610,19 @@ class Loop:
         путей: предохранитель, называющий причину, которой не знает.
         """
         if outcome == ESCALATE_MAX:
+            # Сначала — то, что диагност ЗНАЕТ наверняка (§5.7.2). Раунды,
+            # сгоревшие на границах, — факт из журнала, а не гипотеза: на
+            # пилоте k3ad и s2ky получили «задача слишком крупная —
+            # расщепить», когда обе бились об один защищённый файл.
+            # Расщепление там не помогло бы: любой осколок упёрся бы туда же.
+            if scope_failures and len(scope_failures) >= 2:
+                files = sorted({f for row in scope_failures for f in row})
+                shown = ", ".join(files[:5]) + ("…" if len(files) > 5 else "")
+                return (f"{len(scope_failures)} раунд(ов) сгорели на "
+                        f"нарушении границ — исполнитель каждый раз правил: "
+                        f"{shown}. Расщепление не поможет: любой осколок "
+                        f"упрётся туда же. Добавьте файл в paths задачи явно "
+                        f"или пересмотрите protected_paths")
             flip = Loop._reviewers_disagreed(history)
             if flip:
                 prev, last = flip
@@ -660,6 +694,9 @@ class Loop:
         confirm_rounds = 0
         iteration = 0
         confirming = False
+        # Раунды, сгоревшие на границах: диагност обязан отличать «задача
+        # не сходится» от «исполнитель бьётся о защищённый файл».
+        scope_failures: list[list[str]] = []
         while iteration < self.max_iter + confirm_rounds:
             # Бюджет проверяется перед КАЖДОЙ итерацией, а не только между
             # задачами: проверка раз в задачу означала, что одна задача
@@ -703,6 +740,11 @@ class Loop:
 
             ok, tail = self.gate(task)
             if not ok:
+                # В журнал, а не только в метрики: без этого swarm why и
+                # report показывали пустоту, и разбор «почему сгорели
+                # раунды» шёл через метрики вручную (пилот, k3ad).
+                self.state.log("gate_failed", task=tid, round=iteration,
+                               tail=(tail or "")[-300:])
                 feedback = {"note": "gate провален", "tests": tail}
                 continue
 
@@ -728,6 +770,9 @@ class Loop:
 
             sok, bad, tests_touched = self.scope_check(task)
             if not sok:
+                scope_failures.append(sorted(set(bad) | set(tests_touched)))
+                self.state.log("scope_violation", task=tid, round=iteration,
+                               unexpected=bad, protected=tests_touched)
                 self.revert()
                 feedback = {"note": "нарушение границ задачи",
                             "unexpected_files": bad,
@@ -897,7 +942,8 @@ class Loop:
         # разом не возвращал валидный отчёт, блокируется МОЛЧА и человек о
         # ней не узнаёт (поймано на приёмке: v3st исчезла из виду).
         stash = self.cleanup(task, "max-iterations")
-        diagnosis = self._diagnose(ESCALATE_MAX, history)
+        diagnosis = self._diagnose(ESCALATE_MAX, history,
+                                   scope_failures=scope_failures)
         qid = self.state.ask(tid, ESCALATE_MAX, diagnosis, stash=stash,
                              round=self.max_iter, history=history)
         self.state.set_status(tid, "blocked", reason="max_iterations",

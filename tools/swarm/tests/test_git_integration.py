@@ -99,12 +99,28 @@ class TestNewFileIsVisible(GitCase):
         self.assertIn("src/deep/nested/mod.py", bad)
 
     def test_new_test_file_is_protected(self):
-        """Чужой тест нельзя создать в обход защиты."""
-        task = dict(self.TASK, paths=["tests/**"], type="feature")
+        """Чужой тест нельзя создать в обход защиты.
+
+        «Чужой» = не названный в paths. Прежняя версия давала задаче
+        paths=["tests/**"] и ждала отказа — но явный глоб в защищённую
+        зону теперь СНИМАЕТ защиту (это решение владельца при постановке,
+        см. scope_check): барьер по типу задачи убил k3ad и s2ky на
+        пилоте. Угроза, от которой защищаемся, — исполнитель, а он paths
+        не меняет.
+        """
+        task = dict(self.TASK, paths=["src/**"], type="feature")
         self.create("tests/test_sneaky.py")
-        ok, _, protected = self.loop.scope_check(task)
+        ok, bad, _ = self.loop.scope_check(task)
         self.assertFalse(ok)
-        self.assertIn("tests/test_sneaky.py", protected)
+        self.assertIn("tests/test_sneaky.py", bad)
+
+    def test_explicit_tests_glob_unlocks_creation(self):
+        """Обратная сторона: владелец, celившийся paths'ами в тесты,
+        получает право их создавать — независимо от типа задачи."""
+        task = dict(self.TASK, paths=["tests/**"], type="feature")
+        self.create("tests/test_wanted.py")
+        ok, bad, protected = self.loop.scope_check(task)
+        self.assertTrue(ok, (bad, protected))
 
 
 class TestReviewerSeesNewFiles(GitCase):

@@ -57,16 +57,16 @@ class TestHandoff(AgentsCase):
 
     def test_feature_forbids_touching_tests(self):
         text = self.agents.handoff(TASK, None, None)
-        self.assertIn("tests/** запрещено", text)
+        self.assertIn("NOT listed above are", text)
 
     def test_test_task_forbids_production_code(self):
         text = self.agents.handoff(dict(TASK, type="test-task"), None, None)
-        self.assertIn("продукционный код менять запрещено", text)
+        self.assertIn("production code is", text)
 
     def test_feature_tests_writes_own_tests(self):
         text = self.agents.handoff(dict(TASK, type="feature-tests"), None, None)
-        self.assertIn("Тесты к своей работе пишешь сам", text)
-        self.assertIn("СУЩЕСТВУЮЩИЕ тесты менять запрещено", text)
+        self.assertIn("Write your own tests", text)
+        self.assertIn("tests NOT listed are off-limits", text)
 
     def test_feedback_included(self):
         text = self.agents.handoff(TASK, {"findings": [{"issue": "поправь X"}]},

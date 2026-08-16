@@ -102,7 +102,11 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
         data = json.loads((swarm / "tasks.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {"goal": "", "tasks": []}
-    metrics = _read_jsonl(swarm / "metrics.jsonl")
+    # Оба потока метрик: без plan-metrics доска показывала $38.43 там,
+    # где страж бюджета видел $40.12 — два авторитета на одну цифру
+    # (пилот). Считать деньги обязана одна формула: как total_spend().
+    metrics = (_read_jsonl(swarm / "metrics.jsonl")
+               + _read_jsonl(swarm / "plan-metrics.jsonl"))
     journal = _read_jsonl(swarm / "log" / "run.jsonl")
 
     spend: dict[str, float] = {}

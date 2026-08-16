@@ -240,6 +240,27 @@ class TestRoundBudgetIsOneNumber(unittest.TestCase):
         self.assertEqual(lp.decide(4, v, [], max_rounds=4)[0], lp.ESCALATE_MAX)
 
 
+class TestScopeBurnoutDiagnosis(unittest.TestCase):
+    """Регрессия на пилот: k3ad и s2ky сгорели на границах, а диагноз
+    сказал «задача слишком крупная — расщепить». Расщепление не помогло
+    бы: любой осколок упёрся бы в тот же защищённый файл."""
+
+    def test_repeated_scope_burn_names_the_files(self):
+        text = lp.Loop._diagnose(
+            lp.ESCALATE_MAX, [],
+            scope_failures=[["tests/corpus.rs"], ["tests/corpus.rs"]])
+        self.assertIn("границ", text)
+        self.assertIn("tests/corpus.rs", text)
+        self.assertNotIn("расщеп", text.split("Расщепление не поможет")[0],
+                         "нельзя предлагать резать то, что упрётся туда же")
+
+    def test_single_scope_burn_keeps_the_default_hypothesis(self):
+        """Один срыв — ещё не паттерн: полраунда мог съесть и сам агент."""
+        text = lp.Loop._diagnose(lp.ESCALATE_MAX, [],
+                                 scope_failures=[["tests/x.rs"]])
+        self.assertIn("расщепить", text)
+
+
 class TestDisagreementIsNotTaskSize(unittest.TestCase):
     """Диагноз обязан называть только то, что диагност может знать.
 
@@ -362,11 +383,33 @@ class TestScopeCheck(unittest.TestCase):
         self.assertTrue(ok, "собственные тесты задачи не защищены от неё же")
         self.assertEqual((bad, protected), ([], []))
 
-    def test_feature_may_not_touch_tests(self):
+    def test_feature_may_edit_explicitly_listed_test(self):
+        """Регрессия на пилот (k3ad, s2ky — шесть сгоревших раундов).
+
+        Задача меняет поведение правила, чьё число диагностик пришпилено
+        существующим тестом, и тест ЯВНО назван в paths. Старая проверка
+        снимала защиту по типу задачи, а не по явности, — и ни один тип
+        не позволял «поменять код и обновить пришпиленный к нему тест».
+        """
         task = {"id": "t", "type": "feature", "paths": ["src/a.py", "tests/x.py"]}
+        ok, bad, protected = self._loop(["tests/x.py"]).scope_check(task)
+        self.assertTrue(ok, (bad, protected))
+
+    def test_broad_glob_does_not_unlock_protection(self):
+        """Широкий глоб покрывает тесты, но не целится в них: `src и всё
+        вокруг` не должен молча открывать анти-gaming (§5.5)."""
+        task = {"id": "t", "type": "feature", "paths": ["**"]}
         ok, _, protected = self._loop(["tests/x.py"]).scope_check(task)
         self.assertFalse(ok)
         self.assertEqual(protected, ["tests/x.py"])
+
+    def test_feature_may_not_touch_unlisted_tests(self):
+        """Защита осталась защитой: тест, которого нет в paths, — чужой."""
+        task = {"id": "t", "type": "feature", "paths": ["src/a.py"]}
+        ok, bad, touched = self._loop(["tests/x.py"]).scope_check(task)
+        self.assertFalse(ok)
+        self.assertEqual(bad, ["tests/x.py"])
+        self.assertEqual(touched, [])
 
     def test_file_outside_paths_is_rejected(self):
         task = {"id": "t", "type": "feature-tests", "paths": ["src/a.py"]}

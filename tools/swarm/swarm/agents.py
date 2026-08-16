@@ -163,10 +163,15 @@ class Agents:
                 repo_map: str | None) -> str:
         allowed = ", ".join(task.get("paths") or [])
         protected = {
-            "test-task": "Задача типа test-task: продукционный код менять запрещено.",
-            "feature-tests": ("Тесты к своей работе пишешь сам (новые файлы из "
-                              "списка выше); СУЩЕСТВУЮЩИЕ тесты менять запрещено."),
-        }.get(str(task.get("type") or ""), "Менять tests/** запрещено.")
+            "test-task": ("This is a test-task: production code is "
+                          "off-limits."),
+            "feature-tests": ("Write your own tests in the files listed "
+                              "above; tests NOT listed are off-limits."),
+        }.get(str(task.get("type") or ""),
+              "Protected files (tests, configs) NOT listed above are "
+              "off-limits — but a protected file explicitly listed above "
+              "IS yours to edit, including tests that pin values your "
+              "change legitimately shifts.")
         acc = "\n".join("- " + a for a in task.get("acceptance") or [])
         fb = ""
         if feedback:
