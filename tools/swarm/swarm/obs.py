@@ -25,12 +25,18 @@ pass` съедал трассировку, а писать её в журнал 
   идентификатора разобрать «это находки сегодняшнего прогона или
   вчерашнего» нельзя ничем. Для замера рук ревьюера (§8.1) это прямо
   ломает выборку: строки разных прогонов сливаются в одну кучу.
+- **`swarm_sha` в каждой строке.** Задача, возвращённая в очередь через
+  два дня, исполняется тем кодом петли, что лежит на диске СЕЙЧАС, — и
+  без отпечатка нигде не записано каким. Для программы замеров это не
+  мелочь: находку нельзя привязать к версии оркестратора, который её
+  породил, а значит прогоны разных версий неразличимы в выборке.
 """
 import json
 import logging
 import logging.handlers
 import os
 import pathlib
+import subprocess
 import time
 import uuid
 from datetime import UTC, datetime
@@ -63,8 +69,29 @@ RUN_ID = os.environ.get(ENV_RUN_ID) or _new_run_id()
 os.environ.setdefault(ENV_RUN_ID, RUN_ID)
 
 
+def _orchestrator_sha() -> str | None:
+    """SHA кода петли — репозитория, где лежит ЭТОТ модуль, не целевого.
+
+    Отсутствие отпечатка — не повод падать: рой может работать из
+    распакованного архива без git. Тогда строки честно идут без поля,
+    а не с выдуманным значением.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(pathlib.Path(__file__).resolve().parent),
+             "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+SWARM_SHA = _orchestrator_sha()
+
+
 def stamp(row: dict[str, Any]) -> dict[str, Any]:
-    """Проставить в строку журнала время и прогон, не затирая заданное.
+    """Проставить в строку журнала время, прогон и версию петли,
+    не затирая заданное.
 
     `setdefault`, а не присваивание: строку могут собирать заранее (запись
     о шаге, восстановленная после падения), и переписать её время значило
@@ -72,6 +99,8 @@ def stamp(row: dict[str, Any]) -> dict[str, Any]:
     """
     row.setdefault("ts", now())
     row.setdefault("run_id", RUN_ID)
+    if SWARM_SHA:
+        row.setdefault("swarm_sha", SWARM_SHA)
     return row
 
 
@@ -92,6 +121,8 @@ class JsonlFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
         }
+        if SWARM_SHA:
+            row["swarm_sha"] = SWARM_SHA
         if record.exc_info:
             row["exc"] = self.formatException(record.exc_info)
         # Поля, переданные через extra=, — то, ради чего диагностика

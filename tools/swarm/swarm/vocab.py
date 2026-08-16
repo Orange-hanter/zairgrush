@@ -1,0 +1,378 @@
+"""Единый словарь петли: одна запись журнала — одна фраза.
+
+Словари перевода жили внутри доски, и `swarm report` до них не доставал:
+одно и то же событие называлось «нарушение доверия» в браузере и
+`integrity_violation` в терминале. Два имени у одного факта — это два
+разных знания у человека, который читает то одно, то другое.
+
+Правило, ради которого модуль устроен именно так: **фраза не имеет права
+терять поля**. Каждый шаблон объявляет, какие поля он назвал; всё
+остальное из записи дописывается хвостом `ключ=значение`. Без этого
+правила проза строго ХУЖЕ дампа: дамп безобразен, но полон, а гладкая
+фраза молча съедает поле, которого её автор не предвидел, — и человек
+делает вывод по неполной записи, не зная об этом. Новое поле в журнале
+не требует правки словаря: оно появится в хвосте само.
+
+Не попадают во фразу только поля рамки (`FRAME`): они есть у каждой
+строки и печатаются не фразой, а разметкой вокруг неё — время колонкой,
+задача заголовком.
+"""
+import json
+from collections.abc import Callable
+from typing import Any
+
+# --- имена состояний и разборов ------------------------------------------
+
+PHASE_RU = {
+    "gate": "гейт", "scope": "границы", "implement": "исполнитель",
+    "review": "ревьюер", "verification": "проверки", "policy": "политики",
+    "integrity": "целостность",
+}
+STATUS_RU = {
+    "pending": "в очереди", "in_progress": "в работе", "in_review": "на ревью",
+    "done": "закрыта", "blocked": "заблокирована",
+}
+SEVERITY_RU = {"blocker": "блокер", "major": "важное", "minor": "мелочь"}
+CATEGORY_RU = {
+    "correctness": "корректность", "tests": "тесты", "style": "стиль",
+    "scope": "границы", "architecture": "архитектура",
+}
+KIND_RU = {
+    "question": "вопрос человеку", "answer": "ответ человека",
+    "round": "раунд", "step_intent": "шаг начат", "step_done": "шаг завершён",
+    "step_failed": "шаг провален", "policy_suppressed": "подавлено политикой",
+    "policy": "политика заведена", "policy_dropped": "политика снята",
+    "verification": "проверки исполнением",
+    "verification_inconclusive": "проверки не дали результата",
+    "integrity_violation": "нарушение доверия", "task_crashed": "авария",
+    "budget_exhausted": "бюджет исчерпан", "baseline_red": "красный baseline",
+    "review_failed": "ревью не состоялось",
+    "review_budget_exhausted": "ревьюер обрублен по бюджету",
+    "plan_applied": "план применён", "plan_failed": "планирование не удалось",
+    "paths_extended": "границы расширены", "retry": "возврат в очередь",
+    "stash_failed": "работа не спрятана",
+    "restore_failed": "восстановление не удалось",
+    "commit_message": "сообщение коммита",
+    "preflight_forced": "запуск на грязном дереве",
+    "task_accepted_by_operator": "принято оператором",
+    "quota_wait": "ожидание квоты провайдера",
+    "quota_pause": "пауза по квоте провайдера",
+}
+# Вид вопроса в инбоксе — почему петля позвала человека.
+QKIND_RU = {
+    "intent": "находка о замысле", "dispute": "спор исполнителя",
+    "ask_user": "требуется решение", "review_failed": "ревью не состоялось",
+    "plan_failed": "планирование не удалось",
+    "restore_failed": "откат не состоялся",
+    "escalate_max": "раунды исчерпаны",
+    "escalate_nonconvergent": "работа не сходится",
+}
+# Причина блокировки, как она лежит в поле `reason` задачи. Формулировки
+# длиннее одного слова намеренно: человек читает их в тот момент, когда
+# прогон уже встал, и «invalid_verdict» ему в этот момент не помогает.
+REASON_RU = {
+    "baseline_red": "красный baseline — гейт падал ещё до работы агента",
+    "dispute": "спор исполнителя — он считает задачу невыполнимой как поставлена",
+    "integrity": "нарушена неприкосновенность истории или состояния петли",
+    "invalid_verdict": "ревью не состоялось — вердикт не разобран",
+    "ask_user": "находка о замысле — нужно ваше решение",
+    "escalate_max": "раунды исчерпаны",
+    "max_iterations": "раунды исчерпаны",
+    "escalate_nonconvergent": "работа не сходится",
+    "restore_failed": "откат к лучшему раунду не состоялся",
+    "crash": "авария прогона",
+}
+# Исход раунда — что петля решила делать дальше.
+OUTCOME_RU = {
+    "done": "задача закрыта", "confirm": "нужно подтверждение",
+    "continue": "ещё раунд исправлений", "ask_user": "вопрос человеку",
+    "escalate_max": "раунды исчерпаны",
+    "escalate_nonconvergent": "работа не сходится",
+}
+
+# Поля рамки: есть у каждой записи, показываются разметкой, а не фразой.
+# swarm_sha здесь по той же причине, что и run_id: он одинаков у всех
+# строк прогона и во фразе был бы шумом, а не фактом о событии.
+FRAME = frozenset({"ts", "run_id", "kind", "task", "swarm_sha"})
+MAX_VALUE = 200
+
+
+def ru(table: dict[str, str], key: Any) -> str:
+    """Перевод с честным запасным вариантом.
+
+    Незнакомый код показывается как есть, а не заменяется прочерком:
+    оператору нужно уметь найти его `grep`'ом по сырому журналу.
+    """
+    text = "" if key is None else str(key)
+    return table.get(text, text)
+
+
+def _s(value: Any, limit: int = MAX_VALUE) -> str:
+    """Значение поля строкой: списки и словари — компактным JSON."""
+    text = (json.dumps(value, ensure_ascii=False)
+            if isinstance(value, list | dict) else str(value))
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _seq(value: Any) -> list[Any]:
+    """Поле-список как список, чем бы оно ни оказалось на самом деле.
+
+    Журнал — данные, а не контракт: строку могла оставить прежняя версия
+    оркестратора или правка руками. Проверка стоит здесь одна, а не в
+    каждом шаблоне: иначе её забудет автор следующего, и `swarm report`
+    упадёт ровно в тот момент, когда его открыли разбирать поломку.
+    """
+    if isinstance(value, list):
+        return value
+    if value is None or value == "":
+        return []
+    return [value]
+
+
+# --- шаблоны фраз --------------------------------------------------------
+#
+# Каждый возвращает (фраза, названные поля). Второе — не украшение: по
+# нему считается хвост, и забытое в наборе поле просто продублируется,
+# а не исчезнет. Ошибка автора шаблона стоит шума, а не потери факта.
+
+Narrator = Callable[[dict[str, Any]], tuple[str, set[str]]]
+
+
+def _round(r: dict[str, Any]) -> tuple[str, set[str]]:
+    bits = [f"раунд {r.get('round')} → {r.get('verdict')}"]
+    findings = r.get("findings")
+    if findings is not None:
+        bits.append(f"находок {findings}" if findings else "находок нет")
+    if r.get("intent"):
+        bits.append(f"из них о замысле {r['intent']}")
+    if r.get("outcome"):
+        bits.append(ru(OUTCOME_RU, r["outcome"]))
+    return ", ".join(bits), {"round", "verdict", "findings", "intent", "outcome"}
+
+
+def _question(r: dict[str, Any]) -> tuple[str, set[str]]:
+    head = f"вопрос {r.get('qid')} ({ru(QKIND_RU, r.get('qkind'))}): "
+    return head + _s(r.get("question"), 300), {"qid", "qkind", "question"}
+
+
+def _answer(r: dict[str, Any]) -> tuple[str, set[str]]:
+    return (f"ответ на {r.get('qid')}: {_s(r.get('text'), 300)}",
+            {"qid", "text"})
+
+
+def _policy(r: dict[str, Any]) -> tuple[str, set[str]]:
+    words = ", ".join(str(m) for m in _seq(r.get("match")))
+    return (f"политика {r.get('pid')} заведена: {_s(r.get('text'))}"
+            + (f" (слова: {words})" if words else ""),
+            {"pid", "text", "match", "goal"})
+
+
+def _policy_suppressed(r: dict[str, Any]) -> tuple[str, set[str]]:
+    # `items` берётся как ДАННЫЕ, а не как контракт: запись мог оставить
+    # прежний формат или правка руками, а отчёт читают именно тогда,
+    # когда что-то уже сломано, — падать ему нельзя (тот же принцип, что
+    # у доски: любое состояние `.swarm/` даёт страницу, а не traceback).
+    items = _seq(r.get("items"))
+    lead = (f"подавлено политикой: {r.get('count')} "
+            f"замечани(й) в раунде {r.get('round')}")
+    if items:
+        issues = [_s(i.get("issue"), 90) if isinstance(i, dict) else _s(i, 90)
+                  for i in items[:3]]
+        lead += " — " + "; ".join(issues)
+    return lead, {"count", "round", "items"}
+
+
+def _step(verb: str) -> Narrator:
+    def render(r: dict[str, Any]) -> tuple[str, set[str]]:
+        # step_id не печатаем намеренно, и это не потеря: он собран из
+        # `задача:действие:время`, а все три части уже стоят в строке —
+        # задача в заголовке, действие во фразе, время в колонке.
+        text = f"{verb} {r.get('action')}"
+        if r.get("error"):
+            text += f": {_s(r['error'])}"
+        return text, {"action", "step_id", "error"}
+    return render
+
+
+def _plan_applied(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = (f"план применён ({r.get('mode')}): операций {r.get('ops')}, "
+            f"в очереди стало {r.get('tasks_after')}")
+    return text, {"mode", "ops", "tasks_after"}
+
+
+def _plan_failed(r: dict[str, Any]) -> tuple[str, set[str]]:
+    errors = "; ".join(str(e) for e in _seq(r.get("errors")))
+    return (f"планирование не удалось ({r.get('reason')}): {_s(errors, 300)}",
+            {"mode", "reason", "errors"})
+
+
+def _integrity(r: dict[str, Any]) -> tuple[str, set[str]]:
+    # Формулировка нейтральна: проверка знает факт расхождения, но не автора.
+    violations = "; ".join(str(v) for v in _seq(r.get("violations")))
+    text = (f"нарушена неприкосновенность истории или состояния петли "
+            f"(раунд {r.get('round')}): {violations}")
+    return text, {"round", "violations"}
+
+
+def _review_failed(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = f"ревью не состоялось в раунде {r.get('round')}: {r.get('why')}"
+    if r.get("gate_passed"):
+        text += "; гейт при этом был зелёный — работа исполнителя цела"
+    if r.get("stash"):
+        text += f"; работа сохранена: {r['stash']}"
+    return text, {"round", "why", "gate_passed", "stash"}
+
+
+def _review_budget(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = (f"вызов ревьюера обрублен по бюджету в раунде {r.get('round')}: "
+            f"${r.get('cost_usd')} при потолке ${r.get('limit')} "
+            f"(попытка {r.get('attempt')})")
+    return text, {"round", "cost_usd", "limit", "attempt"}
+
+
+def _budget_exhausted(r: dict[str, Any]) -> tuple[str, set[str]]:
+    # Запись бывает двух форм: стоп ПЕРЕД задачей (stopped_before) и стоп
+    # ПОСРЕДИ задачи (round). Фраза называет только то, что в записи есть.
+    text = f"бюджет прогона исчерпан: ${r.get('spent')} из ${r.get('budget')}"
+    if r.get("stopped_before"):
+        text += f", остановлено перед задачей {r.get('stopped_before')}"
+    elif r.get("round") is not None:
+        text += f" посреди задачи (раунд {r.get('round')})"
+    if r.get("stash"):
+        text += f"; работа сохранена: {r['stash']}"
+    return text, {"spent", "budget", "stopped_before", "round", "stash"}
+
+
+def _quota_wait(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = (f"провайдер отказал по квоте: {_s(r.get('message'))} — "
+            f"ждём {r.get('wait_s')} с и повторяем")
+    return text, {"message", "wait_s"}
+
+
+def _quota_pause(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = (f"квота не отпустила после ожиданий: {_s(r.get('message'))} — "
+            f"прогон на паузе, задача возвращена в очередь")
+    if r.get("stash"):
+        text += f"; работа сохранена: {r['stash']}"
+    return text, {"message", "stash"}
+
+
+def _verification(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = (f"проверки исполнением в раунде {r.get('round')}: "
+            f"запрошено {r.get('requested')}, выполнено {r.get('executed')}")
+    touched = _seq(r.get("touched_by_checks"))
+    if touched:
+        text += f"; проверки тронули дерево: {', '.join(map(str, touched))}"
+    return text, {"round", "requested", "executed", "touched_by_checks"}
+
+
+def _baseline_red(_r: dict[str, Any]) -> tuple[str, set[str]]:
+    # Хвост гейта (`output`) намеренно назван, но не показан: это сотни
+    # строк вывода тестов, место которым в `.swarm/log`, а не в строке.
+    text = ("baseline красный до начала работы — задача не запускалась "
+            "(это поломка репозитория, а не агента)")
+    return text, {"output"}
+
+
+def _crashed(r: dict[str, Any]) -> tuple[str, set[str]]:
+    return f"АВАРИЯ: {_s(r.get('reason'), 300)}", {"reason"}
+
+
+def _retry(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = "возвращена в очередь оператором"
+    if r.get("note"):
+        text += f" с указанием: {_s(r['note'])}"
+    added = _seq(r.get("added_paths"))
+    if added:
+        text += f"; границы расширены: {', '.join(map(str, added))}"
+    return text, {"note", "added_paths"}
+
+
+def _preflight(r: dict[str, Any]) -> tuple[str, set[str]]:
+    dirty = _seq(r.get("dirty"))
+    names = ", ".join(map(str, dirty[:5]))
+    text = (f"запуск на грязном дереве по --force "
+            f"({len(dirty)} файлов): {names}")
+    return text, {"dirty"}
+
+
+def _stash_failed(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = (f"работу НЕ удалось спрятать ({r.get('reason')}): "
+            f"{_s(r.get('stderr'))}")
+    return text, {"reason", "stderr"}
+
+
+def _verify_inconclusive(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = (f"проверки исполнением не дали результата в раунде "
+            f"{r.get('round')}: {r.get('kept')}")
+    return text, {"round", "kept"}
+
+
+def _paths_extended(r: dict[str, Any]) -> tuple[str, set[str]]:
+    return (f"границы расширены: {r.get('path')}"
+            + (f" (по {r['qid']})" if r.get("qid") else ""), {"path", "qid"})
+
+
+NARRATORS: dict[str, Narrator] = {
+    "round": _round,
+    "question": _question,
+    "answer": _answer,
+    "policy": _policy,
+    "policy_dropped": lambda r: (f"политика {r.get('pid')} снята", {"pid"}),
+    "policy_suppressed": _policy_suppressed,
+    "step_intent": _step("начат шаг"),
+    "step_done": _step("завершён шаг"),
+    "step_failed": _step("ПРОВАЛЕН шаг"),
+    "plan_applied": _plan_applied,
+    "plan_failed": _plan_failed,
+    "integrity_violation": _integrity,
+    "review_failed": _review_failed,
+    "review_budget_exhausted": _review_budget,
+    "budget_exhausted": _budget_exhausted,
+    "quota_wait": _quota_wait,
+    "quota_pause": _quota_pause,
+    "verification": _verification,
+    "verification_inconclusive": _verify_inconclusive,
+    "baseline_red": _baseline_red,
+    "task_crashed": _crashed,
+    "retry": _retry,
+    "preflight_forced": _preflight,
+    "paths_extended": _paths_extended,
+    "commit_message": lambda r: (
+        f"сообщение коммита сочинил {r.get('source')}", {"source"}),
+    "stash_failed": _stash_failed,
+    "restore_failed": lambda r: (
+        f"откат к лучшему раунду не состоялся: {_s(r.get('stderr'))}",
+        {"stderr"}),
+}
+
+
+def narrate(row: dict[str, Any]) -> str:
+    """Запись журнала одной фразой. Ни одно поле не теряется.
+
+    Пустое значение (None, "", [], {}) в хвост не идёт: отсутствие факта —
+    не факт. Ноль идёт: «находок 0» — это результат, а не пустота.
+    """
+    kind = str(row.get("kind") or "")
+    narrator = NARRATORS.get(kind)
+    named: set[str] = set()
+    if narrator is None:
+        # Незнакомый вид записи — не повод молчать: имя показываем как
+        # есть, а всё содержимое уходит в хвост целиком.
+        phrase = ru(KIND_RU, kind) or "(запись без вида)"
+    else:
+        phrase, named = narrator(row)
+    tail = [f"{k}={_s(v)}" for k, v in row.items()
+            if k not in FRAME and k not in named
+            and v is not None and v != "" and v != [] and v != {}]
+    return phrase + (f"  [{'; '.join(tail)}]" if tail else "")
+
+
+def finding(f: dict[str, Any]) -> str:
+    """Находка ревьюера одной строкой: тяжесть, класс, место, суть."""
+    where = str(f.get("file") or "")
+    if where and f.get("line"):
+        where += f":{f['line']}"
+    head = (f"[{ru(SEVERITY_RU, f.get('severity'))}/"
+            f"{ru(CATEGORY_RU, f.get('category'))}]")
+    return " ".join(p for p in (head, where, "—", _s(f.get("issue"), 400)) if p)

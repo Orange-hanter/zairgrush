@@ -17,6 +17,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -25,7 +26,8 @@ _HERE = str(pathlib.Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import obs  # noqa: E402 — каталог добавлен строкой выше
+import board  # noqa: E402 — каталог добавлен строкой выше
+import obs  # noqa: E402
 
 log = obs.get_logger("loop")
 
@@ -64,6 +66,23 @@ REVIEW_DIAGNOSIS = {
     "invalid": (
         "ревьюер дважды не вернул разбираемый вердикт: ответ не проходит "
         "схему. Смотри сырые ответы в .swarm/log/*-review.json"),
+    # Причины ниже приходят из драйвера: ревью шло потоком, и прогон
+    # не дожил до конверта. Работа исполнителя во всех случаях цела.
+    "silence": (
+        "ревьюер замолчал дольше silence_timeout и был остановлен; "
+        "вердикта нет, работа исполнителя цела. Смотри "
+        ".swarm/log/*-review-stream.jsonl; если он честно думал — "
+        "подними silence_timeout"),
+    "wall_clock": (
+        "ревьюер упёрся в wall_clock_cap и был остановлен; вердикта нет, "
+        "работа исполнителя цела. Обычно так выглядит слишком большой "
+        "дифф — проверь, что в него попало"),
+    "crash": (
+        "процесс ревьюера завершился с ошибкой до вердикта. Смотри "
+        ".swarm/log/*-review-stream.jsonl"),
+    "no_report": (
+        "поток ревьюера кончился без финального result-события — вердикт "
+        "снять не с чего. Смотри .swarm/log/*-review-stream.jsonl"),
 }
 QUOTA_MARKERS = ("session limit", "rate limit", "quota", "usage limit",
                  "429", "too many requests")
@@ -71,6 +90,21 @@ QUOTA_MARKERS = ("session limit", "rate limit", "quota", "usage limit",
 
 class QuotaExceededError(Exception):
     """Провайдер отказал по квоте: петля ждёт, а не блокирует задачу (§5.3)."""
+
+
+def quota_exception(exc: BaseException) -> bool:
+    """Это отказ по квоте? Сверка по ИМЕНИ класса, а не по identity.
+
+    Модули петли грузятся по путям (importlib), и каждый `_load` создаёт
+    СВЕЖУЮ копию модуля: у cli, у Agents и у планировщика — свои объекты
+    класса QuotaExceededError. `except QuotaExceededError` ловит только
+    исключение из собственной копии; квота, поднятая другой копией,
+    пролетала мимо всех трёх ловушек и превращалась в «аварию» с blocked —
+    при зелёных тестах, потому что тесты поднимают исключение из той же
+    копии, из которой построен Loop. Пока рой не устанавливается пакетом,
+    имя класса — единственный стабильный признак.
+    """
+    return type(exc).__name__ == "QuotaExceededError"
 
 
 class EscalationError(Exception):
@@ -202,8 +236,31 @@ class Loop:
         self._pre_existing: set[str] = set()   # дерево до старта задачи
         self._head_before: str | None = None   # история до старта задачи
         self._state_before: str | None = None  # состояние петли до старта
+        self.live_board = bool(config.get("live_board", True))
 
     # --- механические шаги ------------------------------------------------
+
+    def refresh_board(self) -> None:
+        """Переписать `.swarm/board.html` по текущему состоянию.
+
+        Доска обещала в подвале «обновляется по F5», а руководство
+        оператора — «держите её открытой в соседней вкладке во время
+        прогона». Оба утверждения были неправдой: данные вшиваются в
+        страницу при генерации, а генерировал её только `swarm board` и
+        хвост `swarm go`. Человек весь прогон смотрел на снимок прошлого
+        и не имел способа об этом узнать.
+
+        Сбой сборки доски петлю не останавливает: наблюдение — не работа.
+        Но и молчать о нём нельзя, иначе страница тихо застынет снова.
+        """
+        if not self.live_board:
+            return
+        try:
+            board.build(self.state.root)
+        except Exception:
+            # Граница деградации: запись с трассировкой обязательна (§6.7).
+            log.exception("доска не обновлена",
+                          extra={"swarm_phase": "board"})
 
     def _sh(self, cmd: list[str],
             timeout: float = 900) -> subprocess.CompletedProcess[str]:
@@ -400,6 +457,52 @@ class Loop:
             self.state.log("restore_failed", stderr=(r.stderr or "").strip()[:300])
         return r.returncode == 0
 
+    def _review_with_quota_wait(self, task: dict[str, Any], tail: str,
+                                iteration: int, confirming: bool,
+                                ) -> dict[str, Any] | None:
+        """§5.3: отказ по квоте — пауза с бэкоффом, а не авария.
+
+        Квота — заведомо временное и заведомо повторяемое состояние:
+        блокировать за него задачу значит наказывать её за погоду у
+        провайдера. Ровно это и происходило: QuotaExceededError долетал до
+        общего `except Exception` в run(), задача уходила в blocked с
+        диагнозом «авария», очередь останавливалась, а ветка «пауза по
+        квоте» в CLI была недостижима.
+
+        Теперь ждём по нарастающей (1→2→4 мин по умолчанию, конфиг
+        `quota_backoff_s`) и повторяем. Не отпустило — работа в stash,
+        задача возвращается в очередь как есть (она ни в чём не виновата),
+        исключение уходит наверх: прогон ставится на паузу целиком, и
+        «когда продолжить» решает человек.
+        """
+        delays = list(self.config.get("quota_backoff_s", (60, 120, 240)))
+        while True:
+            try:
+                verdict: dict[str, Any] | None = self.agents.review(
+                    task, tail, iteration, confirming=confirming)
+            except Exception as e:
+                # По имени, не по классу: у Agents своя копия модуля loop,
+                # и её QuotaExceededError — другой объект (см. quota_exception).
+                if not quota_exception(e):
+                    raise
+                if not delays:
+                    stash = self.cleanup(task, "quota-pause")
+                    self.state.log("quota_pause", task=task["id"],
+                                   round=iteration, stash=stash,
+                                   message=str(e)[:200])
+                    self.state.set_status(task["id"], "pending", stash=stash)
+                    self.ui(f"    ПАУЗА ПО КВОТЕ: {str(e)[:120]}")
+                    raise
+                delay = delays.pop(0)
+                self.state.log("quota_wait", task=task["id"], round=iteration,
+                               wait_s=delay, message=str(e)[:200])
+                self.state.metric(task=task["id"], iter=iteration,
+                                  phase="review", quota_wait_s=delay)
+                self.ui(f"    квота провайдера: ждём {delay} с")
+                time.sleep(delay)
+            else:
+                return verdict
+
     @staticmethod
     def _reviewers_disagreed(history: list[dict[str, Any]]
                              ) -> tuple[dict[str, Any], dict[str, Any]] | None:
@@ -513,6 +616,22 @@ class Loop:
         iteration = 0
         confirming = False
         while iteration < self.max_iter + confirm_rounds:
+            # Бюджет проверяется перед КАЖДОЙ итерацией, а не только между
+            # задачами: проверка раз в задачу означала, что одна задача
+            # вольна пробить потолок на любую величину — сколько раундов
+            # влезет. Задача при этом ни в чём не виновата, поэтому pending,
+            # а не blocked: подняв бюджет, прогон продолжают тем же `go`.
+            budget = self.config.get("total_budget_usd")
+            spent = self.state.total_spend() if budget else 0.0
+            if budget and spent >= float(budget):
+                stash = self.cleanup(task, "budget")
+                self.state.log("budget_exhausted", task=tid, round=iteration,
+                               spent=spent, budget=budget, stash=stash)
+                self.state.set_status(tid, "pending", stash=stash)
+                self.ui(f"    БЮДЖЕТ ИСЧЕРПАН посреди задачи: ${spent} из "
+                        f"${budget}; работа в stash, задача возвращена "
+                        f"в очередь")
+                return "budget_stop"
             iteration += 1
             # В подтверждающем раунде исполнитель не вызывается: гейт и
             # границы перепроверяются (дёшево), ревью идёт по тому же диффу.
@@ -570,8 +689,8 @@ class Loop:
                             "protected_tests": tests_touched}
                 continue
 
-            verdict = self.agents.review(task, tail, iteration,
-                                         confirming=was_confirmation)
+            verdict = self._review_with_quota_wait(task, tail, iteration,
+                                                   was_confirmation)
             if verdict is None:
                 # Работа могла быть готовой и зелёной — сорвалось РЕВЬЮ.
                 # Молчаливый blocked оставлял оператора без единого слова
@@ -634,6 +753,10 @@ class Loop:
             self.state.log("round", task=tid, round=iteration,
                            verdict=verdict["verdict"], outcome=outcome,
                            findings=len(findings), intent=len(intent))
+            # Раунд — самая мелкая единица, о которой человеку есть что
+            # сказать: он длится минуты, и до конца задачи наблюдать за
+            # прогоном было нечем, кроме бегущих строк в терминале.
+            self.refresh_board()
 
             # keep-best: раунд, где находок меньше всего, запоминается —
             # если следующий окажется хуже, откатываемся к лучшему, чтобы
@@ -673,7 +796,11 @@ class Loop:
                     self.ui(f"    approve #{iteration}, нужно ещё подтверждение "
                             f"(повторное ревью того же диффа, без исполнителя)")
                     continue
-                with self.state.step(tid, "commit") as step:
+                # `head` в интенте — точка отсчёта для реконсиляции (§5.6):
+                # resume сравнит её с текущим HEAD и решит, состоялся ли
+                # коммит, вместо того чтобы посылать человека смотреть.
+                with self.state.step(tid, "commit",
+                                     head=self._head_before) as step:
                     sha = self.commit(task)
                     step.result(commit=sha)
                 self.state.set_status(tid, "done", iterations=iteration,
@@ -737,6 +864,9 @@ class Loop:
 
     def run(self, limit: int | None = None) -> dict[str, str]:
         results: dict[str, str] = {}
+        # Доска должна существовать с первой секунды прогона, а не с
+        # первого раунда: открыть её человек хочет сразу.
+        self.refresh_board()
         while True:
             ready = self.state.ready_tasks()
             if not ready:
@@ -766,9 +896,25 @@ class Loop:
                 self._rescue(task, "прервано человеком")
                 raise
             except Exception as e:
+                if quota_exception(e):
+                    # Не авария: задача уже возвращена в pending, работа в
+                    # stash (_review_with_quota_wait). _rescue здесь
+                    # превратил бы паузу в blocked с диагнозом «авария» —
+                    # ровно тот дефект, который эта ветка чинит. Наверх,
+                    # к exit-коду 4. Проверка по имени класса: исключение
+                    # могло подняться из чужой копии модуля.
+                    self.refresh_board()
+                    raise
                 # убивать очередь; задача обязана остаться разбираемой
                 log.exception("задача упала", extra={"swarm_task": task["id"]})
                 results[task["id"]] = self._rescue(task, f"{type(e).__name__}: {e}")
+                self.refresh_board()
+                break
+            self.refresh_board()
+            if results.get(task["id"]) == "budget_stop":
+                # Задача вернулась в pending — без break ready_tasks выдал
+                # бы её снова, и петля кружила бы по «исчерпано» вечно.
+                results["_budget"] = "exhausted"
                 break
             if limit and len(results) >= limit:
                 break

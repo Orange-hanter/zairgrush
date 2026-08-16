@@ -13,35 +13,24 @@ import html
 import json
 import pathlib
 import subprocess
+import sys
 import time
 from typing import Any
 
-PHASE_RU = {
-    "gate": "гейт", "scope": "границы", "implement": "исполнитель",
-    "review": "ревьюер", "verification": "проверки", "policy": "политики",
-    "integrity": "целостность",
-}
-STATUS_RU = {
-    "pending": "в очереди", "in_progress": "в работе", "in_review": "на ревью",
-    "done": "закрыта", "blocked": "заблокирована",
-}
-SEVERITY_RU = {"blocker": "блокер", "major": "важное", "minor": "мелочь"}
-CATEGORY_RU = {
-    "correctness": "корректность", "tests": "тесты", "style": "стиль",
-    "scope": "границы", "architecture": "архитектура",
-}
-KIND_RU = {
-    "question": "вопрос человеку", "answer": "ответ человека",
-    "round": "раунд", "step_intent": "шаг начат", "step_done": "шаг завершён",
-    "step_failed": "шаг провален", "policy_suppressed": "подавлено политикой",
-    "verification": "проверки исполнением",
-    "verification_inconclusive": "проверки не дали результата",
-    "integrity_violation": "нарушение доверия", "task_crashed": "авария",
-    "budget_exhausted": "бюджет исчерпан", "baseline_red": "красный baseline",
-    "plan_applied": "план применён", "paths_extended": "границы расширены",
-    "preflight_forced": "запуск на грязном дереве",
-    "task_accepted_by_operator": "принято оператором",
-}
+# Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
+_HERE = str(pathlib.Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import vocab  # noqa: E402 — каталог добавлен строкой выше
+
+# Словарь у доски и у терминала обязан быть ОДИН: пока он лежал здесь,
+# `swarm report` до него не доставал и звал те же события кодами.
+PHASE_RU = vocab.PHASE_RU
+STATUS_RU = vocab.STATUS_RU
+SEVERITY_RU = vocab.SEVERITY_RU
+CATEGORY_RU = vocab.CATEGORY_RU
+KIND_RU = vocab.KIND_RU
 MAX_DIFF_CHARS = 12000        # больше человек в браузере всё равно не читает
 
 
@@ -183,12 +172,12 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
                      "budget_exhausted", "preflight_forced", "plan_applied",
                      "policy", "policy_dropped")]
 
+    # Хроника — фразами, а не дампом: `{"kind":"round","round":1,…}` человек
+    # разбирает медленнее, чем «раунд 1 → request_changes, находок 3», и
+    # ровно так же медленно он разбирал её здесь до появления vocab.
     events = [{"ts": r.get("ts", "")[11:19], "kind": r.get("kind"),
-               "kind_ru": KIND_RU.get(_key(r, "kind"), r.get("kind")),
-               "task": r.get("task"),
-               "detail": json.dumps({k: v for k, v in r.items()
-                                     if k not in ("ts", "kind", "task")},
-                                    ensure_ascii=False)[:400]}
+               "kind_ru": vocab.ru(KIND_RU, r.get("kind")),
+               "task": r.get("task"), "detail": vocab.narrate(r)}
               for r in journal]
 
     unfinished = [r for r in journal if r.get("kind") == "step_intent"
@@ -513,10 +502,16 @@ def render(board: dict[str, Any]) -> str:
         for ev in board["events"])
     parts.append("</div></div>")
 
+    # Формулировка точная намеренно: прежде подвал обещал «обновляется по
+    # F5», а данные вшиты в страницу при генерации. Пока петля не
+    # переписывала файл сама, F5 перечитывал тот же снимок прошлого — и
+    # человек не имел способа отличить «ничего не происходит» от
+    # «страница устарела час назад».
     parts.append(
-        f'<div class="foot">Обновляется по F5 — данные читаются из '
-        f'<code>.swarm/</code> при каждой генерации '
-        f'(<code>swarm --root {e(board["root"])} board</code>).<br>'
+        f'<div class="foot">Во время прогона петля переписывает эту страницу '
+        f'после каждого раунда — обновляйте по F5 и сверяйтесь со временем '
+        f'сборки ниже. Вне прогона собрать заново: '
+        f'<code>swarm --root {e(board["root"])} board</code>.<br>'
         f'Собрано: {e(board["built"])}</div></div>')
 
     payload = json.dumps(board, ensure_ascii=False).replace("</", "<\\/")

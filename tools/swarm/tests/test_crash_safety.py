@@ -136,6 +136,94 @@ class TestRetryUnsticksTask(RepoCase):
         self.assertEqual(code, 2, "закрытую задачу не возвращают вслепую")
 
 
+class TestQuotaPause(RepoCase):
+    """§5.3: отказ по квоте — пауза с бэкоффом, а не blocked с «аварией».
+
+    Раньше QuotaExceededError долетал до общего `except Exception` в
+    run(): задача уходила в blocked с диагнозом «авария», очередь
+    вставала, а ветка «пауза по квоте» (exit-код 4) была недостижима.
+    """
+
+    def _loop(self, config, fail_times):
+        calls = {"review": 0}
+        good = {"verdict": "approve", "findings": [],
+                "analysis": "разобрал дифф целиком, замечаний "
+                            "по существу не нашлось",
+                "summary": "работа соответствует спецификации"}
+
+        def review(*_a, **_k):
+            calls["review"] += 1
+            if calls["review"] <= fail_times:
+                raise lp.QuotaExceededError("rate limit reached")
+            return dict(good)
+
+        agents = type("A", (), {
+            "implement": staticmethod(
+                lambda *_a, **_k: {"status": "done", "summary": "готово"}),
+            "review": staticmethod(review),
+            "commit_message": staticmethod(lambda *_a, **_k: "m")})()
+        loop = lp.Loop(self.state, config, agents, ui=lambda *a: None)
+        loop.gate = lambda task: (True, "OK")
+        return loop
+
+    def test_backoff_retries_and_task_completes(self):
+        loop = self._loop({"quota_backoff_s": [0, 0],
+                           "confirmations": 1}, fail_times=1)
+        results = loop.run()
+        self.assertEqual(results.get("aaaa"), "done",
+                         "квота отпустила, а задача не закрылась")
+        self.assertIn("quota_wait", self.state.journal_path.read_text())
+
+    def test_exhausted_backoff_pauses_run_not_blocks_task(self):
+        loop = self._loop({"quota_backoff_s": []}, fail_times=99)
+        with self.assertRaises(lp.QuotaExceededError):
+            loop.run()
+        self.assertEqual(self.status_of(), "pending",
+                         "квота — не вина задачи: pending, не blocked")
+        journal = self.state.journal_path.read_text()
+        self.assertIn("quota_pause", journal)
+        self.assertNotIn("task_crashed", journal,
+                         "пауза по квоте записана как авария")
+
+    def test_wait_is_metered(self):
+        """§8.1: время паузы обязано попасть в метрики (quota_wait_s)."""
+        loop = self._loop({"quota_backoff_s": [0],
+                           "confirmations": 1}, fail_times=1)
+        loop.run()
+        self.assertIn("quota_wait_s", self.state.metrics_path.read_text())
+
+    def test_foreign_module_copy_is_still_a_pause(self):
+        """Регрессия межкопийной сцепки: Agents грузит СВОЮ копию loop.
+
+        Её QuotaExceededError — другой объект класса, и ловля по identity
+        превращала квоту в «аварию» с blocked при полностью зелёных
+        тестах: тесты поднимают исключение из той же копии, из которой
+        построен Loop, а прод — нет. Здесь чужая копия создаётся явно.
+        """
+        s = importlib.util.spec_from_file_location(
+            "loop_copy", ROOT_DIR / "loop.py")
+        foreign = importlib.util.module_from_spec(s)
+        s.loader.exec_module(foreign)
+        self.assertIsNot(foreign.QuotaExceededError, lp.QuotaExceededError,
+                         "копии не разошлись — тест проверяет сам себя")
+
+        def review(*_a, **_k):
+            raise foreign.QuotaExceededError("session limit reached")
+
+        agents = type("A", (), {
+            "implement": staticmethod(
+                lambda *_a, **_k: {"status": "done", "summary": "s"}),
+            "review": staticmethod(review),
+            "commit_message": staticmethod(lambda *_a, **_k: "m")})()
+        loop = lp.Loop(self.state, {"quota_backoff_s": []}, agents,
+                       ui=lambda *a: None)
+        loop.gate = lambda task: (True, "OK")
+        with self.assertRaises(foreign.QuotaExceededError):
+            loop.run()
+        self.assertEqual(self.status_of(), "pending",
+                         "чужая копия класса превратила паузу в аварию")
+
+
 class TestPreflight(RepoCase):
     """§5.1: грязное дерево — отказ, а не риск потери работы."""
 

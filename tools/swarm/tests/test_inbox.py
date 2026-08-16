@@ -129,6 +129,36 @@ class TestAskAndAnswer(InboxCase):
         self.assertEqual(task["human_answer"].count("одно и то же"), 1)
 
 
+class TestIdUniqueness(InboxCase):
+    """Реюз id — ответ не на тот вопрос: номер не выводится из количества.
+
+    Счётчик по длине выдаёт занятый id, как только хоть одна запись
+    потерялась (ротация, обрезанный журнал, снятая политика), а answer
+    ключуется именно по qid.
+    """
+
+    def test_qid_continues_after_answered(self):
+        q1 = self.state.ask("aaaa", "intent", "первый вопрос")
+        self.state.answer(q1, "решено")
+        self.assertEqual(self.state.ask("bbbb", "intent", "второй"), "q002")
+
+    def test_live_reference_survives_journal_loss(self):
+        q1 = self.state.ask("aaaa", "intent", "первый вопрос")   # q001
+        self.state.set_status("aaaa", "blocked", question_id=q1)
+        self.state.journal_path.unlink()                          # журнал утрачен
+        q2 = self.state.ask("bbbb", "intent", "второй вопрос")
+        self.assertNotEqual(q2, q1,
+                            "id живой ссылки из tasks.json выдан повторно")
+
+    def test_policy_id_not_reused_after_drop(self):
+        p1 = self.state.add_policy("release notes не трогаем", ["release"])
+        self.state.drop_policy(p1)
+        p2 = self.state.add_policy("иное решение", ["иное"])
+        self.assertNotEqual(p2, p1,
+                            "id снятой политики достался новой — вместе с "
+                            "историей подавлений старой")
+
+
 class TestQueueKeepsGoing(InboxCase):
     """Одна спорная задача не должна останавливать остальные."""
 

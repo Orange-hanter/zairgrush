@@ -197,5 +197,73 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(board["tasks"][0]["id"], "t1")
 
 
+class TestChronicleIsProse(unittest.TestCase):
+    """Хроника переводится тем же словарём, что и `swarm report`."""
+
+    def test_event_detail_is_a_sentence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, journal=[
+                {"kind": "round", "task": "t1", "round": 2,
+                 "verdict": "approve", "findings": 0, "outcome": "done"}])
+            board = bd.collect(root)
+        detail = board["events"][0]["detail"]
+        self.assertIn("раунд 2 → approve", detail)
+        self.assertIn("задача закрыта", detail)
+        self.assertNotIn('{"round"', detail)
+
+    def test_unexpected_field_is_not_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, journal=[
+                {"kind": "round", "task": "t1", "round": 1,
+                 "verdict": "approve", "поле_из_будущего": "важное"}])
+            board = bd.collect(root)
+        self.assertIn("поле_из_будущего=важное", board["events"][0]["detail"])
+
+
+class TestLiveBoard(unittest.TestCase):
+    """Страница обещает в подвале, что переписывается по ходу прогона.
+
+    Пока это обещание не выполнялось, F5 перечитывал тот же снимок
+    прошлого, а руководство оператора велело держать доску открытой во
+    время прогона — то есть смотреть на устаревшие данные и не иметь
+    способа об этом узнать.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        s = importlib.util.spec_from_file_location("loop", ROOT_DIR / "loop.py")
+        self.lp = importlib.util.module_from_spec(s)
+        sys.modules["loop"] = self.lp
+        s.loader.exec_module(self.lp)
+        s2 = importlib.util.spec_from_file_location("state", ROOT_DIR / "state.py")
+        st_mod = importlib.util.module_from_spec(s2)
+        sys.modules["state"] = st_mod
+        s2.loader.exec_module(st_mod)
+        self.state = st_mod.SwarmState(self.root)
+        self.state.save_tasks({"goal": "живая цель", "tasks": [
+            {"id": "t1", "title": "первая", "status": "pending",
+             "deps": [], "paths": ["a.py"]}]})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_loop_rewrites_the_page(self):
+        self.lp.Loop(self.state, {}, None).refresh_board()
+        page = (self.root / ".swarm" / "board.html").read_text(encoding="utf-8")
+        self.assertIn("живая цель", page)
+
+    def test_can_be_switched_off(self):
+        self.lp.Loop(self.state, {"live_board": False}, None).refresh_board()
+        self.assertFalse((self.root / ".swarm" / "board.html").exists())
+
+    def test_failure_to_build_does_not_stop_the_loop(self):
+        """Наблюдение — не работа: сбой доски не имеет права ронять прогон."""
+        loop = self.lp.Loop(self.state, {}, None)
+        broken = pathlib.Path(self.tmp.name) / "нет-такого-каталога" / "x"
+        loop.state = type("S", (), {"root": broken})()
+        loop.refresh_board()      # исключения быть не должно
+
+
 if __name__ == "__main__":
     unittest.main()

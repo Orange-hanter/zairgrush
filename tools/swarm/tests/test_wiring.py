@@ -36,6 +36,52 @@ def _load(name):
 ag = _load("agents")
 
 
+class FakeClaudeProc:
+    """Процесс-двойник ревьюера: конверт одним result-событием stream-json.
+
+    Ревьюер ходит через драйвер (Popen + поток), а не subprocess.run, —
+    двойник отдаёт ровно то, что драйвер читает: stdout построчно,
+    пустой stderr, код возврата.
+    """
+
+    def __init__(self, envelope, returncode=0):
+        if envelope is None:      # поток оборвался, result-события не было
+            self.stdout = io.StringIO(json.dumps({"type": "assistant"}) + "\n")
+        else:
+            line = json.dumps({"type": "result", **envelope},
+                              ensure_ascii=False)
+            self.stdout = io.StringIO(line + "\n")
+        self.stderr = io.StringIO("")
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        pass
+
+
+def patch_claude_popen(testcase, reply):
+    """Перехват ТОЛЬКО вызова ревьюера: остальные Popen идут по-настоящему.
+
+    `reply(argv)` возвращает dict конверта. Подменяется внешний CLI, путь
+    review остаётся настоящим — тот же принцип, что у прежнего перехвата
+    subprocess.run.
+    """
+    orig = subprocess.Popen
+
+    def fake_popen(argv, **kw):
+        if not (argv and argv[0] == "claude"):
+            return orig(argv, **kw)
+        return FakeClaudeProc(reply(argv))
+
+    subprocess.Popen = fake_popen
+    testcase.addCleanup(lambda: setattr(subprocess, "Popen", orig))
+
+
 def run_cli(*argv):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -88,7 +134,7 @@ class TestPlannerIsReachable(RepoCase):
         # call_planner отдаёт (дифф, причина отказа): причина нужна, чтобы
         # обрыв по бюджету не уходил в обречённый повтор.
         planner.call_planner = lambda prompt, tag, attempt=1, root=None, \
-                budget=None, model=None, effort=None: (
+                budget=None, model=None, effort=None, timeout=None: (
             self.calls.append((tag, attempt, prompt)),
             (json.loads(json.dumps(DIFF)), None))[1]
         planner.metric = lambda **k: None
@@ -121,7 +167,7 @@ class TestPlannerIsReachable(RepoCase):
         planner = sys.modules["planner"]
         planner.call_planner = (
             lambda prompt, tag, attempt=1, root=None, budget=None, \
-                   model=None, effort=None: ({"ops": []}, None))
+                   model=None, effort=None, timeout=None: ({"ops": []}, None))
         code, out = run_cli("--root", str(self.root), "plan", "--goal", "цель")
         self.assertEqual(code, 2)
         self.assertIn("ЭСКАЛАЦИЯ", out)
@@ -163,24 +209,13 @@ class TestVerificationIsReachable(RepoCase):
              "findings": [], "out_of_scope_notes": []},
         ]
 
-        orig_run = subprocess.run
-
-        def fake_run(argv, **kw):
-            # Модуль subprocess один на всех: подменять его целиком значит
-            # подделать и git, и запуск проверок. Перехватываем ТОЛЬКО
-            # вызов ревьюера, остальное идёт по-настоящему.
-            if not (argv and argv[0] == "claude"):
-                return orig_run(argv, **kw)
+        def reply(argv):
             prompt = argv[argv.index("-p") + 1] if "-p" in argv else ""
             self.prompts.append(prompt)
             body = replies[min(len(self.prompts), len(replies)) - 1]
-            return type("R", (), {
-                "stdout": json.dumps({"structured_output": body,
-                                      "total_cost_usd": 0.1}),
-                "stderr": "", "returncode": 0})()
+            return {"structured_output": body, "total_cost_usd": 0.1}
 
-        subprocess.run = fake_run
-        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        patch_claude_popen(self, reply)
         return agents
 
     TASK = {"id": "aaaa", "title": "t", "spec": "s", "acceptance": ["ок"],
@@ -247,24 +282,16 @@ class TestVerificationIsReachable(RepoCase):
                       # намеренно дешёвая проверка: при регрессе цикл
                       # крутится, и тест не должен из-за этого идти минуту
                       {"kind": "git_log", "arg": "HEAD", "why": "посмотреть историю"}]}
-        orig_run = subprocess.run
-
-        def fake_run(argv, **kw):
-            if not (argv and argv[0] == "claude"):
-                return orig_run(argv, **kw)
+        def reply(argv):
             self.prompts.append(argv[argv.index("-p") + 1])
             # Обрываем цикл здесь, а не ждём RecursionError: при регрессе
             # каждый виток запускает внешние команды, и тест шёл бы минуту.
             if len(self.prompts) > 2:
                 raise AssertionError("верификация зациклилась: "
                                      "раунд не ограничен")
-            return type("R", (), {
-                "stdout": json.dumps({"structured_output": asking,
-                                      "total_cost_usd": 0.1}),
-                "stderr": "", "returncode": 0})()
+            return {"structured_output": asking, "total_cost_usd": 0.1}
 
-        subprocess.run = fake_run
-        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        patch_claude_popen(self, reply)
         agents.review(dict(self.TASK), "OK", 1)
         self.assertEqual(len(self.prompts), 2,
                          "верификация зациклилась: раунд не ограничен")
@@ -283,19 +310,11 @@ class TestVerificationIsReachable(RepoCase):
                  "findings": [], "out_of_scope_notes": [],
                  "verification_requests": [
                      {"kind": "unittest_all", "why": "на всякий случай"}]}
-        orig_run = subprocess.run
-
-        def fake_run(argv, **kw):
-            if not (argv and argv[0] == "claude"):
-                return orig_run(argv, **kw)
+        def answer(argv):
             self.prompts.append(argv[argv.index("-p") + 1])
-            return type("R", (), {
-                "stdout": json.dumps({"structured_output": reply,
-                                      "total_cost_usd": 0.1}),
-                "stderr": "", "returncode": 0})()
+            return {"structured_output": reply, "total_cost_usd": 0.1}
 
-        subprocess.run = fake_run
-        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        patch_claude_popen(self, answer)
         v = agents.review(dict(self.TASK), "OK", 1)
         self.assertEqual(len(self.prompts), 1,
                          "проверки исполнены, хотя механизм выключен")
@@ -315,23 +334,15 @@ class TestVerificationIsReachable(RepoCase):
                  "findings": [], "out_of_scope_notes": [],
                  "verification_requests": [
                      {"kind": "git_log", "arg": "HEAD", "why": "история"}]}
-        orig_run = subprocess.run
-
-        def fake_run(argv, **kw):
-            if not (argv and argv[0] == "claude"):
-                return orig_run(argv, **kw)
+        def reply(argv):
             calls["n"] += 1
             if calls["n"] == 1:
-                body = json.dumps({"structured_output": first,
-                                   "total_cost_usd": 1.2})
-            else:   # второй проход и ретрай — отказ по бюджету, как на пилоте
-                body = json.dumps({"is_error": True, "result": None,
-                                   "subtype": "error_max_budget_usd"})
-            return type("R", (), {"stdout": body, "stderr": "",
-                                  "returncode": 0})()
+                return {"structured_output": first, "total_cost_usd": 1.2}
+            # второй проход и ретрай — отказ по бюджету, как на пилоте
+            return {"is_error": True, "result": None,
+                    "subtype": "error_max_budget_usd"}
 
-        subprocess.run = fake_run
-        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        patch_claude_popen(self, reply)
         v = agents.review(dict(self.TASK), "OK", 1)
         self.assertIsNotNone(v, "валидный первый вердикт потерян")
         self.assertEqual(v["verdict"], "approve")
@@ -350,20 +361,13 @@ class TestVerificationIsReachable(RepoCase):
         second = dict(reply)
         second.pop("verification_requests")
         calls = {"n": 0}
-        orig_run = subprocess.run
 
-        def fake_run(argv, **kw):
-            if not (argv and argv[0] == "claude"):
-                return orig_run(argv, **kw)
+        def answer(argv):
             calls["n"] += 1
             body = reply if calls["n"] == 1 else second
-            return type("R", (), {
-                "stdout": json.dumps({"structured_output": body,
-                                      "total_cost_usd": 0.1}),
-                "stderr": "", "returncode": 0})()
+            return {"structured_output": body, "total_cost_usd": 0.1}
 
-        subprocess.run = fake_run
-        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        patch_claude_popen(self, answer)
         agents.review(dict(self.TASK), "OK", 1)
         names = sorted(p.name for p in (self.state.dir / "log").glob("*review.json"))
         self.assertEqual(len(names), 2, f"ответы затёрли друг друга: {names}")
@@ -428,6 +432,32 @@ class TestBudgetStopsRun(RepoCase):
             f.write("не json\n")
         self.assertEqual(self.state.total_spend(), 1.0)
 
+    def test_budget_stops_mid_task_between_iterations(self):
+        """Проверка раз в задачу позволяла одной задаче пробить потолок
+        на любую величину — сколько раундов влезет."""
+        def implement(task, feedback, iteration):
+            # каждый раунд дорожает; отчёта нет — цикл идёт дальше
+            self.state.metric(task="aaaa", phase="review", cost_usd=10.0)
+            return
+
+        agents = type("A", (), {"implement": staticmethod(implement),
+                                "review": staticmethod(lambda *a, **k: None),
+                                "commit_message": staticmethod(lambda t, d: "m")})()
+        loop = cli.loop_mod.Loop(self.state, {"total_budget_usd": 5}, agents,
+                                 ui=lambda *a: None)
+        loop.gate = lambda task: (True, "OK")
+        self.state.save_tasks({"goal": "g", "tasks": [
+            {"id": "aaaa", "title": "t", "status": "pending", "deps": [],
+             "type": "feature", "paths": ["mod.py"]}]})
+        results = loop.run()
+        self.assertEqual(results.get("_budget"), "exhausted",
+                         "прогон не остановился посреди задачи")
+        task = next(t for t in self.state.load_tasks()["tasks"])
+        self.assertEqual(task["status"], "pending",
+                         "задача не виновата в исчерпании бюджета")
+        journal = self.state.journal_path.read_text()
+        self.assertIn("budget_exhausted", journal)
+
 
 class TestGoIsSelfSufficient(RepoCase):
     """План рождается ВНУТРИ роя, а не приносится снаружи."""
@@ -437,7 +467,7 @@ class TestGoIsSelfSufficient(RepoCase):
         planner = _load("planner")
         self.planned = []
         planner.call_planner = lambda prompt, tag, attempt=1, root=None, \
-                budget=None, model=None, effort=None: (
+                budget=None, model=None, effort=None, timeout=None: (
             self.planned.append(tag), (json.loads(json.dumps(DIFF)), None))[1]
         planner.metric = lambda **k: None
         self._orig_load = cli._load

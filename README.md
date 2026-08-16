@@ -8,7 +8,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3ecbe0.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/status-experimental-ff9d54.svg" alt="status: experimental">
-  <img src="https://img.shields.io/badge/tests-448%20passed-4a2e78.svg" alt="tests: 448 passed">
+  <img src="https://img.shields.io/badge/tests-637%20passed-4a2e78.svg" alt="tests: 637 passed">
 </p>
 
 ---
@@ -54,9 +54,11 @@ python3 -m pytest
 ./swarm-cli --root /путь/к/вашему/репо go --goal "цель на естественном языке"
 ```
 
-`swarm --help` — полный список команд (`run`, `resume`, `status`, `inbox`,
-`answer`, `retry`, `plan`, `replan`, `policy`, `report`, `board`, `map`,
-`impact`, `doctor`). Как вести разработку через петлю руками — в
+`swarm --help` — карта команд с порядком применения (`run`, `resume`,
+`status`, `inbox`, `answer`, `retry`, `plan`, `replan`, `policy`, `why`,
+`report`, `board`, `ab`, `map`, `impact`, `doctor`). Когда прогон встал —
+`swarm why`: одним ответом причина, траектория раундов, вердикт ревьюера
+и готовая команда разбора. Как вести разработку через петлю руками — в
 [`08-operators-guide.md`](08-operators-guide.md).
 
 ## Структура репозитория
@@ -76,8 +78,8 @@ python3 -m pytest
 
 Проект **экспериментальный** (`draft`), активно меняется — см. `version`/
 `updated` во frontmatter каждого документа и журналы изменений в их конце.
-Автотесты `tools/swarm`: 448 passed, 9 skipped, 1 известный падающий
-edge-case (`tests/test_board.py::TestCollectSurvives`, не блокирует петлю).
+Автотесты `tools/swarm`: 637 passed, 9 skipped — одна команда
+`cd tools/swarm && ./check.sh` (линт → типы → тесты).
 
 Открытые решения помечены в документах как «на утверждение» / «проект
 значений» — это осознанно незакрытые вопросы, а не недосмотр.

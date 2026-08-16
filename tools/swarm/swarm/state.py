@@ -43,9 +43,29 @@ class StateError(Exception):
 
 
 def _atomic_write(path: pathlib.Path, text: str) -> None:
+    """Временный файл + rename, с fsync до и после.
+
+    Голый rename атомарен для ПРОЦЕССА, но не для машины: без fsync
+    содержимое живёт в кэше страниц, и падение хоста может оставить
+    переименованный файл пустым или каталог — без записи о rename.
+    Для файла, в котором лежит вся очередь задач, это невосстановимо.
+    """
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
+    with tmp.open("w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
     tmp.replace(path)
+    try:
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return                      # fsync каталога поддержан не везде
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
 
 
 class SwarmState:
@@ -225,6 +245,12 @@ class SwarmState:
         (`plan-metrics.jsonl`), и пока он в счёт не входил, стоп по
         `total_budget_usd` не видел целой роли: на PILOT-1 две обрубленные
         попытки планирования за $3.30 остались вне бюджета прогона.
+
+        Слепое пятно, которое надо знать: ИСПОЛНИТЕЛЬ в счёт не входит.
+        Поток kimi не содержит ни usage, ни стоимости (проверено по сырым
+        логам: у событий вообще нет таких полей), и выдумывать цену вместо
+        отсутствующего факта хуже, чем честно её не знать. Бюджет прогона
+        ограничивает вызовы claude — ревью и планирование.
         """
         total = 0.0
         for path in (self.metrics_path, self.dir / "plan-metrics.jsonl"):
@@ -244,6 +270,21 @@ class SwarmState:
 
     # --- инбокс вопросов к человеку ---------------------------------------
 
+    @staticmethod
+    def _next_id(prefix: str, used: set[str]) -> str:
+        """Следующий свободный id вида `q007`/`p003`.
+
+        Номер — максимум занятых плюс один, а НЕ количество записей:
+        счётчик по длине выдаёт уже использованный id, как только хоть
+        одна запись потерялась (ротация, обрезанный журнал), а `answer`
+        ключуется именно по qid — реюз означает ответ не на тот вопрос.
+        """
+        top = 0
+        for uid in used:
+            if uid.startswith(prefix) and uid[len(prefix):].isdigit():
+                top = max(top, int(uid[len(prefix):]))
+        return f"{prefix}{top + 1:03d}"
+
     def ask(self, task_id: str, kind: str, question: str,
             **context: Any) -> str:
         """Отложить вопрос человеку вместо остановки прогона.
@@ -251,8 +292,16 @@ class SwarmState:
         Смысл инбокса: одна спорная задача не должна останавливать всю
         очередь. Петля откладывает вопрос, берёт следующую задачу, а
         человек разбирает накопившееся пачкой.
+
+        Занятые id собираются не только из журнала, но и из ссылок
+        `question_id` в tasks.json: очередь переживает потерю журнала, и
+        новый вопрос не имеет права получить id, на который ещё ссылается
+        живая задача.
         """
-        qid = f"q{len(self.questions()) + 1:03d}"
+        used = {str(q["qid"]) for q in self.questions()}
+        used |= {str(t["question_id"]) for t in self.load_tasks().get("tasks", [])
+                 if t.get("question_id")}
+        qid = self._next_id("q", used)
         # поле называется qkind, а не kind: `kind` уже занят типом записи
         # журнала, и передача обоих ломала вызов (поймано диагностикой)
         self.log("question", qid=qid, task=task_id, qkind=kind,
@@ -348,7 +397,19 @@ class SwarmState:
         """
         if not match:
             raise StateError("политике нужны ключевые слова для сопоставления")
-        pid = f"p{len(self.policies()) + 1:03d}"
+        # Занятость считается по ВСЕМУ журналу, а не по policies():
+        # та отфильтровывает снятые политики и чужие цели, и id снятой
+        # политики достался бы новой — со всей историей подавлений старой.
+        used = set()
+        if self.journal_path.exists():
+            for line in self.journal_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("kind") == "policy" and row.get("pid"):
+                    used.add(str(row["pid"]))
+        pid = self._next_id("p", used)
         goal = self.load_tasks().get("goal", "")
         self.log("policy", pid=pid, text=text, match=list(match), goal=goal,
                  source_qid=source_qid)
@@ -382,18 +443,31 @@ class SwarmState:
         return [p for pid, p in sorted(active.items())
                 if pid not in dropped and (not goal or p.get("goal") == goal)]
 
-    def step(self, task_id: str, action: str) -> "_Step":
+    def step(self, task_id: str, action: str, **payload: Any) -> "_Step":
         """Контекст одного side-effect'а: intent -> действие -> done.
 
+        `payload` попадает в intent-запись. Это не украшение, а материал
+        для реконсиляции (§5.6): интент коммита без записанного `head`
+        нельзя доиграть механически — resume не знает, с какого состояния
+        действие стартовало, и вынужден звать человека.
+
         Использование:
-            with state.step("a1b2", "commit") as st:
+            with state.step("a1b2", "commit", head="abc123") as st:
                 make_commit()
-                st.result(commit="abc123")
+                st.result(commit="def456")
         """
-        return _Step(self, task_id, action)
+        return _Step(self, task_id, action, **payload)
 
     def unfinished_steps(self) -> list[dict[str, Any]]:
-        """Шаги с intent без done — их оставило падение (§5.6)."""
+        """Шаги с intent без исхода — их оставило падение (§5.6).
+
+        Исход — это и `step_done`, и `step_failed`: провал с записанной
+        причиной — РАЗОБРАННАЯ история (исключение уже ушло в _rescue, у
+        задачи есть вопрос в инбоксе). Незавершённым считается только
+        интент без какого-либо исхода — то есть падение процесса между
+        действием и записью о нём. Пока провал не закрывал шаг, каждый
+        следующий `resume` требовал --force за давно разобранное.
+        """
         started: dict[str, dict[str, Any]] = {}
         finished: set[str] = set()
         if not self.journal_path.exists():
@@ -405,22 +479,24 @@ class SwarmState:
                 continue
             if row.get("kind") == "step_intent":
                 started[row["step_id"]] = row
-            elif row.get("kind") == "step_done":
+            elif row.get("kind") in ("step_done", "step_failed"):
                 finished.add(row["step_id"])
         return [r for sid, r in started.items() if sid not in finished]
 
 
 class _Step:
-    def __init__(self, state: SwarmState, task_id: str, action: str) -> None:
+    def __init__(self, state: SwarmState, task_id: str, action: str,
+                 **intent_payload: Any) -> None:
         self.state = state
         self.task_id = task_id
         self.action = action
         self.step_id = f"{task_id}:{action}:{time.time():.6f}"
+        self._intent = intent_payload
         self._payload: dict[str, Any] = {}
 
     def __enter__(self) -> "_Step":
         self.state.log("step_intent", step_id=self.step_id,
-                       task=self.task_id, action=self.action)
+                       task=self.task_id, action=self.action, **self._intent)
         return self
 
     def result(self, **payload: Any) -> None:

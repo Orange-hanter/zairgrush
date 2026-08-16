@@ -92,6 +92,48 @@ def parse_kimi(line: str) -> Event | None:
     return None
 
 
+def parse_claude(line: str) -> Event | None:
+    """stream-json Claude -> Event: у него `type`, а не `role`.
+
+    Смысл разбора здесь — ЖИВОСТЬ, а не содержание: конечному автомату
+    важно, что события идут, а вердикт снимается отдельно, из финального
+    result-события (см. extract_result_envelope). Поэтому дельты
+    (`stream_event`) не расшифровываются — каждая из них и так признак
+    жизни, ради которого ревьюер и переведён на поток.
+    """
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        return None
+    kind = ev.get("type")
+    if kind in ("assistant", "stream_event"):
+        return Event(TEXT, {})
+    if kind == "user":                 # результаты инструментов приходят так
+        return Event(TOOL_RESULT, {})
+    if kind == "result":
+        return Event(DONE, {"subtype": ev.get("subtype")})
+    return None
+
+
+def extract_result_envelope(stream: str) -> dict[str, Any] | None:
+    """Конверт из потока Claude: последняя строка с `type == "result"`.
+
+    Тот же объект, что отдаёт `--output-format json` целиком:
+    structured_output, total_cost_usd, is_error, terminal_reason.
+    Сканируем с конца — result-событие завершает поток, и брать первое
+    попавшееся с начала значило бы отдать конверт из процитированного
+    в TEXT-содержимом куска.
+    """
+    for line in reversed(stream.splitlines()):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            return ev
+    return None
+
+
 class Run:
     """Один запуск агента. Поток-читатель складывает события в очередь,
     основной поток ждёт их с таймаутом — так тишина отличима от активности."""

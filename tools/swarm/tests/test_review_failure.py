@@ -19,6 +19,7 @@
 задала человеку ни одного вопроса. `swarm inbox` был пуст.
 """
 import importlib.util
+import io
 import json
 import pathlib
 import subprocess
@@ -40,6 +41,52 @@ def _load(name):
 st = _load("state")
 lp = _load("loop")
 ag = _load("agents")
+
+
+class FakeClaudeProc:
+    """Процесс-двойник ревьюера: конверт одним result-событием stream-json.
+
+    Ревьюер ходит через драйвер (Popen + поток), а не subprocess.run, —
+    двойник отдаёт ровно то, что драйвер читает: stdout построчно,
+    пустой stderr, код возврата.
+    """
+
+    def __init__(self, envelope, returncode=0):
+        if envelope is None:      # поток оборвался, result-события не было
+            self.stdout = io.StringIO(json.dumps({"type": "assistant"}) + "\n")
+        else:
+            line = json.dumps({"type": "result", **envelope},
+                              ensure_ascii=False)
+            self.stdout = io.StringIO(line + "\n")
+        self.stderr = io.StringIO("")
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        pass
+
+
+def patch_claude_popen(testcase, reply):
+    """Перехват ТОЛЬКО вызова ревьюера: остальные Popen идут по-настоящему.
+
+    `reply(argv)` возвращает dict конверта. Подменяется внешний CLI, путь
+    review остаётся настоящим — тот же принцип, что у прежнего перехвата
+    subprocess.run.
+    """
+    orig = subprocess.Popen
+
+    def fake_popen(argv, **kw):
+        if not (argv and argv[0] == "claude"):
+            return orig(argv, **kw)
+        return FakeClaudeProc(reply(argv))
+
+    subprocess.Popen = fake_popen
+    testcase.addCleanup(lambda: setattr(subprocess, "Popen", orig))
 
 
 def _diff_for(path, body_lines):
@@ -257,18 +304,12 @@ class TestBudgetExhausted(RepoCase):
     def _agents(self, replies, config=None):
         agents = ag.Agents(self.state, config or {"review_budget_usd": 3.0})
         self.calls = []
-        orig_run = subprocess.run
 
-        def fake_run(argv, **kw):
-            if not (argv and argv[0] == "claude"):
-                return orig_run(argv, **kw)
+        def reply(argv):
             self.calls.append(argv)
-            body = replies[min(len(self.calls), len(replies)) - 1]
-            return type("R", (), {"stdout": json.dumps(body), "stderr": "",
-                                  "returncode": 0})()
+            return replies[min(len(self.calls), len(replies)) - 1]
 
-        subprocess.run = fake_run
-        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        patch_claude_popen(self, reply)
         return agents
 
     def test_budget_exhausted_is_not_retried(self):
@@ -321,6 +362,51 @@ class TestBudgetExhausted(RepoCase):
         self.assertIn("свернул", prompt)
         self.assertNotIn("строка 1900", prompt,
                          "сгенерированный файл ушёл ревьюеру целиком")
+
+
+class TestReviewRunFailures(RepoCase):
+    """Прогон ревьюера не дожил до конверта: диагноз — причина, не ярлык.
+
+    Раньше любой сбой без вердикта схлопывался в «invalid»: «убит по
+    тишине» и «ответ не прошёл схему» — разные болезни с разным лечением,
+    а оператору отдавался один ярлык на обе.
+    """
+
+    TASK = {"id": "g1nt", "title": "t", "spec": "s", "acceptance": ["ок"],
+            "paths": ["mod.py"], "type": "feature"}
+
+    def test_stream_without_result_names_no_report(self):
+        agents = ag.Agents(self.state, {})
+        calls = []
+
+        def reply(argv):
+            calls.append(argv)
+            return                       # поток без result-события
+
+        patch_claude_popen(self, reply)
+        self.assertIsNone(agents.review(dict(self.TASK), "OK", 1))
+        self.assertEqual(len(calls), 2,
+                         "сбой прогона ретраится один раз, как invalid")
+        self.assertEqual(agents.last_review_failure, "no_report")
+
+    def test_every_driver_reason_has_a_diagnosis(self):
+        """Диагноз обязан называть только то, что знает (§5.7)."""
+        for reason in ("silence", "wall_clock", "crash", "no_report"):
+            self.assertIn(reason, lp.REVIEW_DIAGNOSIS,
+                          f"причина {reason} осталась бы ярлыком invalid")
+
+    def test_raw_stream_is_saved_beside_the_envelope(self):
+        """Сырой поток — то, куда диагноз посылает оператора смотреть."""
+        agents = ag.Agents(self.state, {})
+        patch_claude_popen(self, lambda argv: {"structured_output": VALID,
+                                               "total_cost_usd": 0.1})
+        agents.review(dict(self.TASK), "OK", 1)
+        log_dir = self.state.dir / "log"
+        self.assertEqual(
+            len(list(log_dir.glob("*review-stream.jsonl"))), 1,
+            "поток ревьюера не сохранён")
+        self.assertEqual(len(list(log_dir.glob("*review.json"))), 1,
+                         "конверт под прежним именем не сохранён")
 
 
 class TestReviewFailureEscalates(RepoCase):
@@ -501,7 +587,7 @@ class TestPlannerTerminalFailure(RepoCase):
         self.calls = []
 
         def fake(prompt, tag, attempt=1, root=None, budget=None,
-                 model=None, effort=None):
+                 model=None, effort=None, timeout=None):
             self.calls.append({"attempt": attempt, "root": root, "budget": budget})
             return outcomes[min(len(self.calls), len(outcomes)) - 1]
 
@@ -542,6 +628,99 @@ class TestPlannerTerminalFailure(RepoCase):
                            ui=lambda *a: None)
         self.assertEqual(self.calls[0]["budget"], 7.5)
         self.assertEqual(self.calls[0]["root"], self.root)
+
+
+class TestPlannerQuotaAndTimeout(RepoCase):
+    """Квота и зависание — состояния вызова, которых у планировщика не было.
+
+    Отказ по квоте шёл обычным «no_output»: повтор сжигал второй заведомо
+    обречённый вызов, а диагноз посылал читать сырой ответ вместо «подожди
+    и повтори». Таймаута не было вовсе: зависший claude держал бы
+    `swarm go` вечно и молча — у ревьюера потолок времени был всегда.
+    """
+
+    def _claude_run(self, behave):
+        orig_run = subprocess.run
+
+        def fake_run(argv, **kw):
+            if not (argv and argv[0] == "claude"):
+                return orig_run(argv, **kw)
+            return behave(argv, kw)
+
+        subprocess.run = fake_run
+        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+
+    @staticmethod
+    def _refusal(text):
+        return type("R", (), {"stdout": json.dumps(
+            {"is_error": True, "result": text}),
+            "stderr": "", "returncode": 1})()
+
+    def test_quota_refusal_raises_not_retries(self):
+        calls = []
+
+        def behave(argv, kw):
+            calls.append(argv)
+            return self._refusal("You've hit your session limit")
+
+        self._claude_run(behave)
+        with self.assertRaises(pl.loop.QuotaExceededError):
+            pl.plan_with_retry("p", "plan", [], root=self.root,
+                               ui=lambda *a: None)
+        self.assertEqual(len(calls), 1,
+                         "квотный отказ повторён — второй вызов обречён")
+
+    def test_quota_is_metered_before_the_raise(self):
+        """Вызов случился и стоил времени: без строки в метриках прогон
+        невоспроизводим."""
+        self._claude_run(lambda argv, kw: self._refusal("rate limit"))
+        with self.assertRaises(pl.loop.QuotaExceededError):
+            pl.call_planner("p", "plan", root=self.root)
+        rows = (self.root / ".swarm" / "plan-metrics.jsonl").read_text()
+        self.assertIn('"quota"', rows)
+
+    def test_timeout_is_a_reason_not_a_crash(self):
+        def behave(argv, kw):
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout") or 0)
+
+        self._claude_run(behave)
+        diff, reason = pl.call_planner("p", "plan", root=self.root)
+        self.assertIsNone(diff)
+        self.assertEqual(reason, "timeout")
+        self.assertIn("timeout", pl.PLAN_DIAGNOSIS,
+                      "причина без диагноза — ярлык, а не помощь")
+
+    def test_timeout_reaches_subprocess(self):
+        """Ручка, не доехавшая до вызова, — это ручка, которой нет."""
+        seen = {}
+
+        def behave(argv, kw):
+            seen["timeout"] = kw.get("timeout")
+            return type("R", (), {"stdout": "{}", "stderr": "",
+                                  "returncode": 0})()
+
+        self._claude_run(behave)
+        pl.call_planner("p", "plan", root=self.root, timeout=123)
+        self.assertEqual(seen["timeout"], 123)
+        pl.call_planner("p", "plan", root=self.root)
+        self.assertEqual(seen["timeout"], pl.DEFAULT_PLAN_TIMEOUT)
+
+    def test_hang_is_retried_once_then_diagnosed(self):
+        calls = []
+
+        def behave(argv, kw):
+            calls.append(argv)
+            raise subprocess.TimeoutExpired(argv, 1)
+
+        self._claude_run(behave)
+        diff, errs, reason = pl.plan_with_retry(
+            "p", "plan", [], root=self.root, ui=lambda *a: None)
+        self.assertIsNone(diff)
+        self.assertEqual(len(calls), 2,
+                         "зависание не детерминировано — один повтор положен")
+        self.assertEqual(reason, "timeout")
+        self.assertIn("plan_timeout", errs[0],
+                      "диагноз обязан назвать ручку, которой лечат")
 
 
 class TestPlannerArtifacts(RepoCase):

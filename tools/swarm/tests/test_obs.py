@@ -67,6 +67,15 @@ class TestRunId(unittest.TestCase):
         row = obs.stamp({"ts": "2020-01-01T00:00:00+00:00", "kind": "step"})
         self.assertEqual(row["ts"], "2020-01-01T00:00:00+00:00")
 
+    def test_stamp_carries_orchestrator_sha(self):
+        """Задача, возвращённая через два дня, исполняется тем кодом, что
+        на диске СЕЙЧАС, — без отпечатка нигде не записано каким. Для
+        программы замеров это ломает привязку находки к версии петли."""
+        self.assertTrue(obs.SWARM_SHA,
+                        "оркестратор живёт в git — отпечатка нет почему?")
+        row = obs.stamp({"kind": "round"})
+        self.assertEqual(row["swarm_sha"], obs.SWARM_SHA)
+
 
 class TestDiagnostics(unittest.TestCase):
     def setUp(self):

@@ -28,6 +28,10 @@ _HERE = str(pathlib.Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+# loop — нормальным import'ом, а не _load: если петля уже загрузила его,
+# берётся ТА ЖЕ копия модуля — а с ней и тот же детектор квоты. Свежая
+# копия не нужна; см. loop.quota_exception о цене лишних копий.
+import loop  # noqa: E402 — каталог добавлен строкой выше
 import obs  # noqa: E402 — каталог добавлен строкой выше
 
 PLAN = pathlib.Path(__file__).resolve().parent
@@ -40,6 +44,11 @@ LEGAL_STATUS = {"pending", "blocked", "done"}
 # зашитые $1.50 обрубали ОБЕ попытки (PILOT-1: $1.63 и $1.67, ops=0), и
 # роль, объявленная в §3.1, ни разу не отработала.
 DEFAULT_PLAN_BUDGET = 4.0
+
+# Потолок стены времени на один вызов. У ревьюера он был с самого начала,
+# у планировщика subprocess.run шёл вовсе без timeout: зависший claude
+# держал бы `swarm go` вечно и молча.
+DEFAULT_PLAN_TIMEOUT = 900
 
 
 def artifacts_dir(root: str | pathlib.Path | None = None) -> pathlib.Path:
@@ -113,7 +122,14 @@ def plan_prompt(goal: str, tasks: list[dict[str, Any]], files: str,
 - задачи должны быть маленькими: одна задача = один связный результат,
   сходящийся за 1–2 итерации;
 - `paths` обязаны учитывать ФАКТИЧЕСКОЕ состояние репозитория выше, включая
-  файлы, созданные соседними задачами очереди.
+  файлы, созданные соседними задачами очереди;
+- если задача требует НЕЗАВИСИМОГО эталона (сверить поведение с отдельно
+  посчитанным результатом), критерий приёмки обязан перечислить ЗАПРЕЩЁННЫЕ
+  источники — поля, которые вычисляет сама проверяемая реализация. Без
+  этого исполнитель законно берёт кратчайший путь к зелёному тесту и
+  сверяет реализацию саму с собой: на пилоте эталон ERC дважды подряд
+  повторял то, что производило правило (сначала форматную строку location,
+  потом ключ подавления), и оба раза дефект правила стал невидим.
 
 В поле analysis сначала рассуждай, потом формируй ops.
 """
@@ -172,7 +188,7 @@ def tuning_flags(model: str | None = None,
 def call_planner(prompt: str, tag: str, attempt: int = 1,
                  root: str | pathlib.Path | None = None,
                  budget: float | None = None, model: str | None = None,
-                 effort: str | None = None,
+                 effort: str | None = None, timeout: float | None = None,
                  ) -> tuple[dict[str, Any] | None, str | None]:
     """Вызов планировщика. -> (план-дифф | None, причина отказа | None).
 
@@ -181,19 +197,32 @@ def call_planner(prompt: str, tag: str, attempt: int = 1,
     только по тому, что ему сказали. На PILOT-1 обе попытки были обрублены
     по зашитым $1.50, а в консоль ушло «невалидный JSON» — диагноз, ведущий
     искать поломку в схеме вместо лимита.
+
+    Отказ по квоте — исключение, а не причина в кортеже: это состояние
+    ПРОГОНА, а не вызова. Пока квота шла обычным «no_output», повтор
+    сжигал второй заведомо обречённый вызов, а диагноз посылал оператора
+    читать сырой ответ вместо «подожди и повтори».
     """
     t0 = time.time()
-    r = subprocess.run(["claude", "-p", prompt, "--output-format", "json",
-                        "--json-schema", SCHEMA, "--allowedTools",
-                        "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*)",
-                        "--max-budget-usd",
-                        str(budget or DEFAULT_PLAN_BUDGET),
-                        *tuning_flags(model, effort)],
-                       capture_output=True, text=True,
-                       # Без cwd планировщик читает репозиторий по каталогу
-                       # процесса, а не по --root: Read/Grep смотрели бы не
-                       # в тот проект, для которого строится план.
-                       cwd=str(root) if root else None, check=False)
+    try:
+        r = subprocess.run(["claude", "-p", prompt, "--output-format", "json",
+                            "--json-schema", SCHEMA, "--allowedTools",
+                            "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*)",
+                            "--max-budget-usd",
+                            str(budget or DEFAULT_PLAN_BUDGET),
+                            *tuning_flags(model, effort)],
+                           capture_output=True, text=True,
+                           timeout=timeout or DEFAULT_PLAN_TIMEOUT,
+                           # Без cwd планировщик читает репозиторий по каталогу
+                           # процесса, а не по --root: Read/Grep смотрели бы не
+                           # в тот проект, для которого строится план.
+                           cwd=str(root) if root else None, check=False)
+    except subprocess.TimeoutExpired:
+        # Зависший вызов — результат со своей причиной, а не смерть
+        # `swarm go`: решение о повторе принимает plan_with_retry.
+        metric(root=root, mode=tag, attempt=attempt,
+               dur_s=round(time.time() - t0, 1), reason="timeout")
+        return None, "timeout"
     dur = round(time.time() - t0, 1)
     raw_dir = artifacts_dir(root) / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -201,6 +230,13 @@ def call_planner(prompt: str, tag: str, attempt: int = 1,
     diff, cost, reason = None, None, None
     try:
         env = json.loads(r.stdout)
+        quota = loop.quota_error(env)
+        if quota:
+            # Метрика — ДО исключения: вызов случился и стоил времени,
+            # и прогон без этой строки невоспроизводим.
+            metric(root=root, mode=tag, attempt=attempt, dur_s=dur,
+                   reason="quota", quota_wait=True, provider_message=quota)
+            raise loop.QuotaExceededError(quota)
         diff = env.get("structured_output")
         cost = env.get("total_cost_usd")
         if not isinstance(diff, dict):
@@ -231,6 +267,10 @@ PLAN_DIAGNOSIS = {
     "no_output": (
         "планировщик завершился без структурированного плана — смотри "
         "сырой ответ в .swarm/raw/"),
+    "timeout": (
+        "планировщик не уложился в потолок времени и был остановлен; "
+        "сырого ответа нет — вызов не завершился. Подними plan_timeout "
+        "в swarm.toml или сузь цель"),
 }
 
 
@@ -239,6 +279,7 @@ def plan_with_retry(prompt: str, mode: str, tasks: list[dict[str, Any]],
                     budget: float | None = None,
                     ui: Callable[[str], None] = print,
                     model: str | None = None, effort: str | None = None,
+                    timeout: float | None = None,
                     ) -> tuple[dict[str, Any] | None, list[str], str | None]:
     """Не более двух попыток, и вторая — только если она осмысленна.
 
@@ -247,9 +288,13 @@ def plan_with_retry(prompt: str, mode: str, tasks: list[dict[str, Any]],
     Политика повтора живёт здесь одна на всех вызывающих: раньше она была
     продублирована в CLI петли и в собственном main планировщика, и
     разошлась — второй экземпляр молча ретраил обрыв по бюджету.
+
+    Таймаут ретраится (зависание не детерминировано), обрыв по бюджету —
+    нет (тот же промпт кончится там же), квота выходит исключением ещё из
+    call_planner (это состояние прогона, повтор сейчас обречён).
     """
     diff, reason = call_planner(prompt, mode, root=root, budget=budget,
-                                model=model, effort=effort)
+                                model=model, effort=effort, timeout=timeout)
     if reason in TERMINAL_REASONS:
         return None, [PLAN_DIAGNOSIS[reason]], reason
     errs = validate_plan_diff(diff, tasks) if diff else [
@@ -261,7 +306,8 @@ def plan_with_retry(prompt: str, mode: str, tasks: list[dict[str, Any]],
         ui(f"  {e}")
     diff, reason = call_planner(
         prompt + "\n\n## Ошибки прошлой попытки\n" + "\n".join(errs),
-        mode, attempt=2, root=root, budget=budget, model=model, effort=effort)
+        mode, attempt=2, root=root, budget=budget, model=model,
+        effort=effort, timeout=timeout)
     if reason in TERMINAL_REASONS:
         return None, [PLAN_DIAGNOSIS[reason]], reason
     errs = validate_plan_diff(diff, tasks) if diff else [

@@ -244,23 +244,28 @@ class TestRoleTuning(unittest.TestCase):
 
     def test_flags_reach_the_actual_call(self):
         """Ручка, не доехавшая до argv, — это ручка, которой нет."""
+        import io
         import subprocess as sp
         seen = {}
-        orig = sp.run
+        orig = sp.Popen
 
         def fake(argv, **kw):
             if not (argv and argv[0] == "claude"):
                 return orig(argv, **kw)
             seen["argv"] = argv
-            return type("R", (), {"stdout": "{}", "stderr": "",
-                                  "returncode": 0})()
+            # двойник процесса: ревьюер ходит через драйвер (Popen)
+            return type("P", (), {
+                "stdout": io.StringIO(""), "stderr": io.StringIO(""),
+                "returncode": 0, "poll": lambda s: 0,
+                "wait": lambda s, timeout=None: 0, "kill": lambda s: None})()
 
-        sp.run = fake
-        self.addCleanup(lambda: setattr(sp, "run", orig))
+        sp.Popen = fake
+        self.addCleanup(lambda: setattr(sp, "Popen", orig))
 
         a = ag.Agents.__new__(ag.Agents)
         a.config = {"review_model": "claude-sonnet-5", "review_effort": "low"}
         a.loop_mod = _load("loop")
+        a.driver = _load("driver")
         a.last_review_failure = None
         a.state = type("S", (), {
             "root": ".", "dir": pathlib.Path(tempfile.gettempdir()),
@@ -450,26 +455,33 @@ class TestTuningPools(unittest.TestCase):
 
     def test_metric_carries_the_draw(self):
         """Жребий, не попавший в журнал, — это шум, а не замер."""
+        import io
         import subprocess as sp
         rows = []
-        orig = sp.run
+        orig = sp.Popen
+        envelope = json.dumps({"type": "result", "structured_output": {
+            "verdict": "approve", "findings": [],
+            "analysis": "разобрал дифф и сверился со спецификацией",
+            "summary": "работа соответствует требованиям"},
+            "total_cost_usd": 0.5}, ensure_ascii=False)
 
         def fake(argv, **kw):
             if not (argv and argv[0] == "claude"):
                 return orig(argv, **kw)
-            return type("R", (), {"stdout": json.dumps({
-                "structured_output": {
-                    "verdict": "approve", "findings": [],
-                    "analysis": "разобрал дифф и сверился со спецификацией",
-                    "summary": "работа соответствует требованиям"},
-                "total_cost_usd": 0.5}), "stderr": "", "returncode": 0})()
+            # двойник процесса: ревьюер ходит через драйвер (Popen)
+            return type("P", (), {
+                "stdout": io.StringIO(envelope + "\n"),
+                "stderr": io.StringIO(""),
+                "returncode": 0, "poll": lambda s: 0,
+                "wait": lambda s, timeout=None: 0, "kill": lambda s: None})()
 
-        sp.run = fake
-        self.addCleanup(lambda: setattr(sp, "run", orig))
+        sp.Popen = fake
+        self.addCleanup(lambda: setattr(sp, "Popen", orig))
 
         a = self._agents({"review_model_pool": ["claude-sonnet-5"],
                           "review_effort_pool": ["low"]})
         a.loop_mod = _load("loop")
+        a.driver = _load("driver")
         a.last_review_failure = None
         a.work_diff = lambda: "diff --git a/x b/x\n+1"
         import tempfile

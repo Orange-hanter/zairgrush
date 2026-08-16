@@ -152,8 +152,18 @@ class TestVisibility(PolicyCase):
         self.state.log("policy_suppressed", task="aaaa", round=1, count=1,
                        items=[{"policy": "p001", "issue": "reno note missing"}])
         _, out = run_cli("--root", str(self.root), "report")
-        self.assertIn("policy_suppressed", out)
+        # Проверяется ЗНАНИЕ, а не код события: отчёт говорит прозой, и
+        # требовать в нём строку `policy_suppressed` значило бы закрепить
+        # тестом ровно ту машинную запись, от которой отчёт и уходит.
+        self.assertIn("подавлено политикой", out)
         self.assertIn("reno note missing", out)
+
+    def test_suppressed_raw_kind_available_as_json(self):
+        """Проза не отменяет первоисточник: сырьё достижимо целиком."""
+        self.state.log("policy_suppressed", task="aaaa", round=1, count=1,
+                       items=[{"policy": "p001", "issue": "reno note missing"}])
+        _, out = run_cli("--root", str(self.root), "report", "--json")
+        self.assertIn("policy_suppressed", out)
 
     def test_reviewer_prompt_unchanged(self):
         """Ревьюеру не говорят молчать: фильтрует оркестратор."""

@@ -11,7 +11,8 @@
     swarm plan --goal "цель"            декомпозиция цели в задачи (план-дифф)
     swarm replan <task> --dispute файл  пересмотр плана по спору исполнителя
     swarm policy add "текст" --match .. решение уровня прогона, а не задачи
-    swarm report [--task ID]            человекочитаемый отчёт из журнала
+    swarm why [задача]                  почему встала и что делать дальше
+    swarm report [--task ID] [--json]   хроника прогона связным текстом
     swarm board [--open]                доска прогона одной страницей (HTML)
     swarm map [--budget N]              карта символов репозитория
     swarm impact <symbol>               кто вызывает символ
@@ -24,6 +25,8 @@
 import argparse
 import contextlib
 import importlib.util
+import inspect
+import itertools
 import json
 import pathlib
 import re
@@ -51,17 +54,43 @@ state_mod = _load("state")
 loop_mod = _load("loop")
 
 
+# Все ключи, которые петля где-либо читает. Список закрытый намеренно:
+# опечатка в имени ключа (`max_iteration` без s) молча включала умолчание,
+# и оператор был уверен, что его настройка действует.
+KNOWN_CONFIG_KEYS = frozenset({
+    "gate_command", "protected_paths", "max_iterations", "confirmations",
+    "gate_timeout", "silence_timeout", "wall_clock_cap", "executor_model",
+    "review_budget_usd", "verification", "total_budget_usd", "live_board",
+    "map_budget", "tuning_seed", "quota_backoff_s",
+    "plan_budget_usd", "plan_model", "plan_effort", "plan_timeout",
+    "review_model", "review_effort", "review_model_pool", "review_effort_pool",
+    "confirm_model", "confirm_effort", "confirm_model_pool",
+    "confirm_effort_pool",
+})
+
+
 def _config(root: str | pathlib.Path) -> dict[str, Any]:
     path = pathlib.Path(root) / "swarm.toml"
     cfg = {"gate_command": None, "protected_paths": ["tests/*", "tests/**"]}
     if path.exists():
         try:
-            cfg.update(tomllib.loads(path.read_text(encoding="utf-8")))
+            parsed = tomllib.loads(path.read_text(encoding="utf-8"))
         except (tomllib.TOMLDecodeError, OSError) as e:
             # Молчать нельзя: дальше петля пойдёт на умолчаниях, а оператор
             # будет уверен, что его настройки применились.
             print(f"ВНИМАНИЕ: {path} не прочитан ({e}); "
                   f"работаем на умолчаниях", file=sys.stderr)
+        else:
+            unknown = sorted(set(parsed) - KNOWN_CONFIG_KEYS)
+            if unknown:
+                # Предупреждение, а не отказ: ключ может быть нужен
+                # будущей версии или чужому инструменту, читающему тот же
+                # файл. Но молчать нельзя — см. историю с умолчаниями выше.
+                print(f"ВНИМАНИЕ: {path}: незнакомые ключи "
+                      f"({', '.join(unknown)}) — петля их не читает; "
+                      f"если это настройка петли, проверь имя",
+                      file=sys.stderr)
+            cfg.update(parsed)
     return cfg
 
 
@@ -124,7 +153,38 @@ def cmd_status(args: argparse.Namespace) -> int:
                 cost += json.loads(line).get("cost_usd") or 0
         if cost:
             print(f"\nпотрачено дорогими ролями: ${cost:.2f}")
+    _print_next(args.root, tasks, open_q)
     return 0
+
+
+def _print_next(root: str, tasks: list[dict[str, Any]],
+                open_q: list[dict[str, Any]]) -> None:
+    """Одна строка «дальше» вместо необходимости помнить весь набор команд.
+
+    Сводка состояния отвечает на вопрос «что происходит», но человек
+    приходит с другим — «что мне теперь делать». Ответ выводится из того
+    же состояния и не требует держать в голове руководство оператора.
+    """
+    pre = _prefix(root)
+    by_status: dict[str, list[dict[str, Any]]] = {}
+    for t in tasks:
+        by_status.setdefault(str(t.get("status")), []).append(t)
+    if open_q:
+        nxt = (f'{pre} answer {open_q[0]["qid"]} "…"',
+               (f"вас ждут {len(open_q)} вопрос(ов) — очередь не пойдёт "
+                f"дальше без решения"))
+    elif by_status.get("blocked"):
+        stuck = by_status["blocked"][0]
+        nxt = (f'{pre} why {stuck["id"]}',
+               "разобрать, почему задача встала")
+    elif by_status.get("pending"):
+        nxt = (f"{pre} go", "продолжить прогон")
+    elif by_status.get("done"):
+        nxt = (f"git -C {root} log -p",
+               "работа закончена — остался просмотр глазами")
+    else:
+        return
+    print(f"\nдальше: {nxt[0]}\n        {nxt[1]}")
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -301,22 +361,244 @@ def cmd_ab(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    """Человекочитаемый рендер из jsonl (ADR-001: журнал первичен)."""
+    """Хроника прогона связным текстом (ADR-001: журнал первичен, md — рендер).
+
+    Прежде здесь печаталось `ts kind {json…}` с обрезкой на 160 символах —
+    то есть `jq` для бедных, притом обрезка могла срезать ровно то поле,
+    ради которого отчёт и открывали. Между тем руководство оператора
+    называет эту команду ПЕРВОЙ в порядке диагностики: человек приходит
+    сюда в тот момент, когда прогон уже встал, и получает дамп.
+
+    Записи сгруппированы по задачам, потому что разбирают прогон именно
+    так — «что было с этой». События прогона (бюджет, план, preflight)
+    ничьи и идут отдельным блоком: приклеенные к задаче, они объясняли бы
+    остановку очереди не тем.
+    """
+    vocab = _load("vocab")
     st = state_mod.SwarmState(args.root)
     if not st.journal_path.exists():
         print("журнал пуст")
         return 0
     rows = []
-    for line in st.journal_path.read_text().splitlines():
+    for line in st.journal_path.read_text(encoding="utf-8").splitlines():
         with contextlib.suppress(ValueError):
             rows.append(json.loads(line))
     if args.task:
         rows = [r for r in rows if r.get("task") == args.task]
+    if not rows:
+        print(f"в журнале нет записей по задаче {args.task!r}" if args.task
+              else "журнал пуст")
+        return 0
+    if args.json:
+        # Сырьё остаётся доступным и БЕЗ обрезки: проза — удобство, а
+        # первоисточник обязан быть достижим целиком.
+        for r in rows:
+            print(json.dumps(r, ensure_ascii=False))
+        return 0
+
+    titles = {t["id"]: t for t in st.load_tasks().get("tasks", [])}
+    groups: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
-        head = f"{r['ts']}  {r['kind']:14}"
-        detail = {k: v for k, v in r.items()
-                  if k not in ("ts", "kind", "step_id")}
-        print(f"{head} {json.dumps(detail, ensure_ascii=False)[:160]}")
+        groups.setdefault(str(r.get("task") or ""), []).append(r)
+
+    run_level = groups.pop("", [])
+    if run_level:
+        print("=== прогон в целом ===")
+        for r in run_level:
+            print(f"  {str(r.get('ts', ''))[11:19]}  {vocab.narrate(r)}")
+        print()
+
+    for tid in sorted(groups):
+        task = titles.get(tid, {})
+        head = f"=== {tid}"
+        if task.get("title"):
+            head += f": {task['title']}"
+        if task.get("status"):
+            head += f"  [{vocab.ru(vocab.STATUS_RU, task['status'])}]"
+        print(head)
+        for r in groups[tid]:
+            print(f"  {str(r.get('ts', ''))[11:19]}  {vocab.narrate(r)}")
+        print()
+
+    print(f"записей: {len(rows)}; сырьё без обрезки — "
+          f"`{_prefix(str(args.root))} report --json`")
+    return 0
+
+
+def _read_trend(counts: list[int]) -> str:
+    """Что говорит ряд находок по раундам.
+
+    Убывание проверяется СТРОГО. Первая редакция считала ряд убывающим,
+    если он не растёт, — и на ряде 3, 3, 3 печатала «находки убывают,
+    работа сходилась» прямо под диагнозом петли «число находок не
+    убывает». Читателю предъявлялись два противоположных вывода об одних
+    и тех же трёх числах.
+    """
+    if len(set(counts)) == 1:
+        return (f"число находок стоит на месте ({counts[0]}) — "
+                f"это топтание, а не схождение")
+    non_increasing = all(b <= a for a, b in itertools.pairwise(counts))
+    if non_increasing and counts[-1] < counts[0]:
+        return ("находки убывают — работа сходилась"
+                + ("" if counts[-1] else " до нуля"))
+    return "число находок не убывает — вероятны качели fix→break"
+
+
+def _prefix(root: str) -> str:
+    """`swarm` вместо `swarm --root <длинный путь>`, когда корень и так текущий.
+
+    Готовая команда ценна тем, что её копируют целиком. Лишний флаг с
+    абсолютным путём переносится на вторую строку и ломает ровно это.
+    """
+    with contextlib.suppress(OSError):
+        if pathlib.Path(root).resolve() == pathlib.Path.cwd():
+            return "swarm"
+    return f"swarm --root {root}"
+
+
+def _round_label(stem: Any) -> str:
+    """`i3-a1` — это раунд 3, проход a1. Имя файла человеку ничего не говорит."""
+    m = re.fullmatch(r"i(\d+)-([a-z])(\d+)", str(stem))
+    if not m:
+        return str(stem)
+    phase = {"a": "обычный проход", "v": "повторный после проверок"}.get(
+        m.group(2), m.group(2))
+    return f"раунд {m.group(1)}, {phase} #{m.group(3)}"
+
+
+def _explain(task: dict[str, Any], root: str) -> None:
+    """Разбор одной задачи: почему она в этом состоянии и что дальше."""
+    vocab = _load("vocab")
+    print(f"=== {task['id']}: {task.get('title', '')}")
+    status = vocab.ru(vocab.STATUS_RU, task.get("status"))
+    reason = task.get("reason")
+    print(f"статус: {status}"
+          + (f" — {vocab.ru(vocab.REASON_RU, reason)}"
+             if reason and task.get("status") == "blocked" else ""))
+    if task.get("_cost"):
+        print(f"стоила: ${task['_cost']}")
+
+    # Диагноз петли — её собственные слова о том, почему не сошлось. Он
+    # уже посчитан и лежит в задаче, но до сих пор показывался только в
+    # момент эскалации, в потоке, который к утру уже прокручен.
+    if task.get("diagnosis"):
+        print(f"\nдиагноз петли:\n  {task['diagnosis']}")
+
+    rounds = task.get("_rounds") or []
+    if rounds:
+        print("\nтраектория:")
+        for r in rounds:
+            # Через тот же словарь, что и отчёт: раунд, названный здесь
+            # иначе, чем в `report`, — это два знания об одном событии.
+            print("  " + vocab.narrate({"kind": "round", **r}))
+        counts = [r.get("findings") for r in rounds
+                  if isinstance(r.get("findings"), int)]
+        if len(counts) > 1:
+            print("  " + _read_trend(counts))
+
+    verdicts = task.get("_verdicts") or []
+    if verdicts:
+        last = verdicts[-1]
+        if last.get("failed"):
+            print(f"\nпоследнее ревью ({_round_label(last.get('round'))}): "
+                  f"ответа нет — {last.get('why')}")
+        else:
+            print(f"\nпоследний вердикт ({_round_label(last.get('round'))}) → "
+                  f"{last.get('verdict')}")
+            if last.get("summary"):
+                print(f"  {last['summary']}")
+            for f in last.get("findings") or []:
+                print(f"  · {vocab.finding(f)}")
+                if f.get("suggestion"):
+                    print(f"      → {str(f['suggestion'])[:200]}")
+            for note in last.get("notes") or []:
+                print(f"  (вне рамок задачи) {str(note)[:200]}")
+
+    for q in task.get("_questions") or []:
+        if q.get("status") == "open":
+            print(f"\nждёт вас: {q['qid']} "
+                  f"({vocab.ru(vocab.QKIND_RU, q.get('qkind'))})\n"
+                  f"  {str(q.get('question', ''))[:400]}")
+
+    if task.get("stash"):
+        print(f"\nработа сохранена: {task['stash']} "
+              f"(видна в `git stash list`; петля сама её не применяет)")
+    if task.get("commit"):
+        print(f"\nвошло в код: {task['commit']} — `git show {task['commit']}`")
+    if task.get("_streams"):
+        print(f"\nсырьё: .swarm/log/ — {', '.join(task['_streams'])}")
+
+    steps = _next_steps(task, root)
+    if steps:
+        print("\nдальше:")
+        for cmd, why in steps:
+            print(f"  {cmd}\n      {why}")
+    print()
+
+
+WHY_ANSWER = ("ответить по существу замысла; если решение требует тронуть "
+              "файл вне границ — добавьте --add-path путь")
+WHY_SPLIT = ("или расщепить задачу: диагноз «слишком крупная» чаще всего "
+             "именно об этом")
+WHY_EYES = ("просмотр глазами — единственное место, где ловится «сделано "
+            "правильно, но не то»")
+
+
+def _next_steps(task: dict[str, Any], root: str) -> list[tuple[str, str]]:
+    """Готовые команды под конкретное состояние задачи.
+
+    Знание «что теперь нажать» лежало в руководстве оператора, то есть в
+    другом окне и в другой момент времени. Оно нужно здесь.
+    """
+    pre = _prefix(root)
+    open_q = [q for q in task.get("_questions") or []
+              if q.get("status") == "open"]
+    steps: list[tuple[str, str]] = [
+        (f'{pre} answer {q["qid"]} "…"', WHY_ANSWER) for q in open_q]
+    if task.get("status") == "blocked":
+        steps.append((f'{pre} retry {task["id"]} --note "…"',
+                      "вернуть в очередь с указанием, что сделать иначе"))
+        if task.get("reason") in ("escalate_max", "max_iterations"):
+            steps.append((f'{pre} plan --goal "…"', WHY_SPLIT))
+    if task.get("status") == "done" and task.get("commit"):
+        steps.append((f"git -C {root} show {task['commit']}", WHY_EYES))
+    return steps
+
+
+def cmd_why(args: argparse.Namespace) -> int:
+    """Почему задача в таком состоянии и что делать дальше.
+
+    Ответ существовал и раньше — но по частям: статус в `status`, вопрос
+    в `inbox`, траектория в `report`, вердикт в `.swarm/log/*.json`,
+    следующий шаг в руководстве оператора. Человек собирал его руками из
+    пяти мест, причём именно тогда, когда прогон уже встал и разбираться
+    хочется меньше всего.
+
+    Данные берутся тем же сборщиком, что и доска: два представления
+    одного знания расходиться не должны.
+    """
+    board_mod = _load("board")
+    board = board_mod.collect(args.root)
+    tasks = board["tasks"]
+    if not tasks:
+        print("очередь пуста — рассказывать не о чем")
+        return 0
+    if args.task:
+        chosen = [t for t in tasks if t.get("id") == args.task] or [
+            t for t in tasks if str(t.get("id", "")).startswith(args.task)]
+        if not chosen:
+            print(f"задача {args.task!r} не найдена", file=sys.stderr)
+            return 2
+    else:
+        # Без аргумента разбираем ту, что остановила очередь: спрашивая
+        # «почему», человек почти всегда имеет в виду именно её.
+        order = {"blocked": 0, "in_progress": 1, "in_review": 2,
+                 "pending": 3, "done": 4}
+        chosen = [min(tasks, key=lambda t: order.get(str(t.get("status")), 9))]
+        print(f"(задача не названа — разбираю {chosen[0]['id']}, "
+              f"она первой требует внимания)\n")
+    for task in chosen:
+        _explain(task, str(args.root))
     return 0
 
 
@@ -479,7 +761,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
     diff, errs, reason = planner.plan_with_retry(
         prompt, args.cmd, tasks, root=args.root,
         budget=cfg.get("plan_budget_usd"),
-        model=cfg.get("plan_model"), effort=cfg.get("plan_effort"))
+        model=cfg.get("plan_model"), effort=cfg.get("plan_effort"),
+        timeout=cfg.get("plan_timeout"))
     if errs:
         print("ЭСКАЛАЦИЯ:", *errs, sep="\n  ", file=sys.stderr)
         st.log("plan_failed", mode=args.cmd, reason=reason, errors=errs)
@@ -554,8 +837,18 @@ def cmd_go(args: argparse.Namespace) -> int:
         print(f"\nЖДУТ ВАС ({len(open_q)}):")
         for q in open_q:
             print(f"  {q['qid']}  {q['task']}  {str(q.get('question',''))[:90]}")
-        print(f'  ответить: swarm --root {args.root} answer <id> "текст"')
-        print(f"  затем продолжить: swarm --root {args.root} go")
+        print(f'  ответить: {_prefix(str(args.root))} answer <id> "текст"')
+        print(f"  затем продолжить: {_prefix(str(args.root))} go")
+    else:
+        # Заблокированная без вопроса — самый глухой исход: инбокс пуст,
+        # и человеку неоткуда узнать, что очередь встала и почему.
+        stuck = [t for t in board["tasks"] if t.get("status") == "blocked"]
+        if stuck:
+            print(f"\nВСТАЛО ({len(stuck)}), вопросов в инбоксе нет:")
+            for t in stuck:
+                print(f"  {t['id']}  {str(t.get('title', ''))[:60]}")
+            print(f"  разобрать: {_prefix(str(args.root))} "
+                  f"why {stuck[0]['id']}")
     return 0
 
 
@@ -658,8 +951,73 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+ORCHESTRATOR_EMAIL = "orchestrator@swarm.local"
+
+
+def _reconcile_commit_step(st: Any, row: dict[str, Any],
+                           root: str | pathlib.Path) -> str | None:
+    """Доиграть или откатить незавершённый интент коммита (§5.6).
+
+    Интент без done означает падение между действием и записью о нём.
+    Повторять вслепую нельзя (дубль коммита), бросать тоже (задача висит).
+    Сравнение записанного в интенте `head` с фактической историей отвечает
+    на вопрос механически:
+
+    - HEAD не сдвинулся → коммита не было: интент закрывается как
+      проваленный, задача возвращается в очередь;
+    - первый коммит после записанного `head` сделан оркестратором →
+      действие состоялось, падение пришлось на запись статуса: интент
+      закрывается как выполненный, задача — done.
+
+    Возвращает описание исхода или None, если решить механически нельзя
+    (интент без `head` — старый журнал; первый коммит чужой; история
+    переписана). Тогда действует прежний путь: эскалация человеку.
+    """
+    head_before = row.get("head")
+    if row.get("action") != "commit" or not head_before:
+        return None
+    cur = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
+                         capture_output=True, text=True, check=False)
+    if cur.returncode != 0:
+        return None
+    if cur.stdout.strip() == head_before:
+        st.log("step_failed", step_id=row["step_id"], task=row["task"],
+               action="commit", reconciled=True,
+               error="реконсиляция resume: HEAD не сдвинулся, коммита не было")
+        data = st.load_tasks()
+        for t in data["tasks"]:
+            if t["id"] == row["task"] and t["status"] == "in_progress":
+                t["status"] = "pending"
+                t.pop("reason", None)
+        st.save_tasks(data)
+        return "коммита не было — задача возвращена в очередь"
+    # Смотрим ПЕРВЫЙ коммит после записанной точки, а не HEAD: после
+    # падения поверх могли коммитить и оператор, и следующий прогон.
+    after = subprocess.run(["git", "log", "--reverse", "--format=%H %ce",
+                            f"{head_before}..HEAD"], cwd=root,
+                           capture_output=True, text=True, check=False)
+    first = (after.stdout.strip().splitlines() or [""])[0].split()
+    if after.returncode != 0 or len(first) < 2 or first[1] != ORCHESTRATOR_EMAIL:
+        return None
+    sha = first[0][:8]
+    st.log("step_done", step_id=row["step_id"], task=row["task"],
+           action="commit", reconciled=True, commit=sha)
+    data = st.load_tasks()
+    for t in data["tasks"]:
+        if t["id"] == row["task"] and t["status"] != "done":
+            t["status"] = "done"
+            t["commit"] = sha
+            t.pop("reason", None)
+    st.save_tasks(data)
+    return f"коммит {sha} состоялся — задача закрыта"
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
     """Возобновление после падения: разобрать незавершённые шаги (§5.6).
+
+    Сначала реконсиляция: незавершённый интент коммита с записанным
+    `head` доигрывается или откатывается механически. Человеку остаётся
+    только то, что механически решить нельзя.
 
     Блокировку здесь НЕ берём: её возьмёт cmd_run. Иначе оркестратор
     отказывает сам себе — поймано тестами CLI.
@@ -679,9 +1037,16 @@ def cmd_resume(args: argparse.Namespace) -> int:
         print("  -> `swarm inbox` покажет детали")
 
     unfinished = st.unfinished_steps()
-    if unfinished:
-        print(f"незавершённых шагов: {len(unfinished)}")
-        for row in unfinished:
+    leftover = []
+    for row in unfinished:
+        outcome = _reconcile_commit_step(st, row, args.root)
+        if outcome:
+            print(f"реконсиляция: {row['task']}: {outcome}")
+        else:
+            leftover.append(row)
+    if leftover:
+        print(f"незавершённых шагов: {len(leftover)}")
+        for row in leftover:
             print(f"  {row['task']}: {row['action']}")
         head = subprocess.run(["git", "log", "-1", "--format=%s"],
                               cwd=args.root, capture_output=True, text=True,
@@ -695,8 +1060,32 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return cmd_run(args)
 
 
+EPILOG = """
+порядок применения (первый прогон):
+  doctor                      проверить среду — тридцать секунд здесь
+                              экономят час диагностики потом
+  go --goal "цель"            от А до Я: рой сам планирует и сам исполняет
+  board --open                смотреть, как идёт (страница живая: петля
+                              переписывает её после каждого раунда)
+  inbox -> answer <id> "…"    разобрать вопросы, которые петля отложила
+  go                          продолжить с того же места
+
+когда что-то пошло не так:
+  why [задача]                почему встала и что нажать дальше
+  report --task <id>          хроника задачи связным текстом
+  report --json               то же сырьём, без обрезки
+  retry <задача> --note "…"   вернуть в очередь с указанием
+
+первое правило разбора: подозревайте обвязку, а не модель.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="swarm", description="петля агентов")
+    # Карта команд с порядком применения жила в докстринге модуля, то есть
+    # была видна кому угодно, кроме того, кто набрал `swarm --help`.
+    ap = argparse.ArgumentParser(
+        prog="swarm", description="петля агентов: исполнитель ↔ ревьюер",
+        epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default=".", help="корень целевого репозитория")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -780,12 +1169,27 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--add-path", action="append", default=[])
     p.set_defaults(func=cmd_retry)
 
-    p = sub.add_parser("ab", help="сводка по рукам замера (модель/усилие)")
+    p = sub.add_parser("ab", help="сводка по рукам замера (модель/усилие)",
+                       description=inspect.getdoc(cmd_ab),
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--run", help="только строки одного прогона (run_id)")
     p.set_defaults(func=cmd_ab)
-    p = sub.add_parser("report", help="отчёт из журнала")
-    p.add_argument("--task")
+
+    p = sub.add_parser("report", help="хроника прогона связным текстом",
+                       description=inspect.getdoc(cmd_report),
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--task", help="только события одной задачи")
+    p.add_argument("--json", action="store_true",
+                   help="сырые записи журнала без обрезки, по строке на запись")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("why", help="почему задача встала и что делать дальше",
+                       description=inspect.getdoc(cmd_why),
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("task", nargs="?",
+                   help="id задачи или его начало; без аргумента — та, "
+                        "что первой требует внимания")
+    p.set_defaults(func=cmd_why)
 
     args = ap.parse_args(argv)
     # Диагностика включается ЗДЕСЬ, в единственной точке входа: модули
@@ -797,9 +1201,14 @@ def main(argv: list[str] | None = None) -> int:
     except state_mod.StateError as e:
         print(f"состояние: {e}", file=sys.stderr)
         return 2
-    except loop_mod.QuotaExceededError as e:
-        print(f"пауза по квоте провайдера: {e}", file=sys.stderr)
-        return 4
+    except Exception as e:
+        # По имени, не по классу: квоту поднимают Agents и планировщик из
+        # СВОИХ копий модуля loop, и `except loop_mod.QuotaExceededError`
+        # ловил только исключение собственной копии (см. quota_exception).
+        if loop_mod.quota_exception(e):
+            print(f"пауза по квоте провайдера: {e}", file=sys.stderr)
+            return 4
+        raise
     else:
         return code
 

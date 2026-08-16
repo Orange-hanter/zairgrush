@@ -243,5 +243,54 @@ print(json.dumps({"role": "assistant",
         self.assertEqual(res.reason, "done")
 
 
+class TestParseClaude(unittest.TestCase):
+    """Разбор потока Claude: живость — из событий, конверт — из result.
+
+    У Claude поле `type`, а не `role`, и финальный вердикт лежит не в
+    assistant-событии, а в отдельном result-событии — том же объекте,
+    который `--output-format json` отдал бы целиком.
+    """
+
+    def test_result_event_is_done(self):
+        ev = dr.parse_claude(json.dumps({"type": "result", "subtype": "success"}))
+        self.assertEqual(ev.kind, dr.DONE)
+
+    def test_assistant_and_deltas_are_activity(self):
+        for kind in ("assistant", "stream_event"):
+            ev = dr.parse_claude(json.dumps({"type": kind}))
+            self.assertEqual(ev.kind, dr.TEXT, f"{kind} — не признак жизни?")
+
+    def test_user_event_is_tool_result(self):
+        self.assertEqual(dr.parse_claude('{"type": "user"}').kind, dr.TOOL_RESULT)
+
+    def test_unknown_and_garbage_are_ignored(self):
+        self.assertIsNone(dr.parse_claude(json.dumps({"type": "system"})))
+        self.assertIsNone(dr.parse_claude("не json"))
+
+    def test_envelope_from_result_event(self):
+        stream = "\n".join([
+            json.dumps({"type": "assistant"}),
+            json.dumps({"type": "result", "total_cost_usd": 0.5,
+                        "structured_output": {"verdict": "approve"}}),
+        ])
+        env = dr.extract_result_envelope(stream)
+        self.assertEqual(env["total_cost_usd"], 0.5)
+        self.assertEqual(env["structured_output"]["verdict"], "approve")
+
+    def test_no_result_event_means_no_envelope(self):
+        self.assertIsNone(dr.extract_result_envelope(
+            json.dumps({"type": "assistant"}) + "\nмусор\n"))
+        self.assertIsNone(dr.extract_result_envelope(""))
+
+    def test_quoted_result_inside_text_does_not_win(self):
+        """Конверт снимается с КОНЦА: цитата result-события в содержимом
+        (например, при ревью кода самой петли) не должна подменять вердикт."""
+        quoted = json.dumps({"type": "assistant",
+                             "message": '{"type": "result", "fake": true}'})
+        real = json.dumps({"type": "result", "real": True})
+        env = dr.extract_result_envelope(quoted + "\n" + real)
+        self.assertTrue(env.get("real"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

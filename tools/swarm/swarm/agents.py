@@ -11,9 +11,7 @@ import json
 import pathlib
 import random
 import re
-import subprocess
 import sys
-import time
 from types import ModuleType
 from typing import Any
 
@@ -418,33 +416,48 @@ Acceptance:
         # в историю. Единый источник — state.work_diff (intent-to-add).
         diff = condense_diff(self.work_diff())
         schema = (SCHEMAS / "verdict-v1.schema.json").read_text()
-        t0 = time.time()
-        proc = subprocess.run(
-            ["claude", "-p", self.review_prompt(
-                task, gate_tail, diff,
-                want_verification=(verify_results is None
-                                   and self._wants_verification(task)),
-                verify_results=verify_results),
-             "--output-format", "json", "--json-schema", schema,
-             "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
-             "--max-budget-usd", str(self.config.get("review_budget_usd", 1.0)),
-             *self._tuning("review", confirming)],
-            # Ненулевой код от `claude` — не повод падать: конверт всё
-            # равно разбирается, и в нём лежит диагноз (квота, бюджет).
-            capture_output=True, text=True, cwd=self.state.root, timeout=900,
-            check=False)
+        # Самый дорогой вызов системы шёл в обход слоя живости: голый
+        # subprocess.run с жёстким таймаутом, который не отличал «думает»
+        # от «завис», а по истечении ронял исключением всю очередь.
+        # Теперь ревьюер идёт через тот же драйвер, что и исполнитель:
+        # stream-json как признак жизни, heartbeat по тишине, жёсткий
+        # потолок стены времени — и любой исход возвращается результатом,
+        # а не исключением. Конверт (`--output-format json` целиком) лежит
+        # в финальном result-событии потока.
+        cmd = ["claude", "-p", self.review_prompt(
+                   task, gate_tail, diff,
+                   want_verification=(verify_results is None
+                                      and self._wants_verification(task)),
+                   verify_results=verify_results),
+               "--output-format", "stream-json", "--verbose",
+               "--include-partial-messages",
+               "--json-schema", schema,
+               "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
+               "--max-budget-usd", str(self.config.get("review_budget_usd", 1.0)),
+               *self._tuning("review", confirming)]
+        drv = self.driver.AgentDriver(
+            cwd=str(self.state.root),
+            silence_timeout=self.config.get("silence_timeout", 600),
+            wall_clock_cap=self.config.get("wall_clock_cap", 1800))
+        run = drv.start(cmd, parser=self.driver.parse_claude)
+        result = run.collect(self.driver.extract_result_envelope)
+        env: dict[str, Any] | None = result.report
         # Фаза входит в имя: второй проход (после верификации) писал в тот
         # же файл и затирал первый вердикт — на пилоте так потерялся
         # валидный approve за $1.22, и разбираться было не по чему.
         phase = "v" if verify_results is not None else "a"
-        raw = (self.state.dir / "log"
-               / f"{task['id']}-i{iteration}-{phase}{attempt}-review.json")
-        raw.write_text(proc.stdout)
+        stem = f"{task['id']}-i{iteration}-{phase}{attempt}"
+        # Конверт — под прежним именем (его читают доска и `swarm why`);
+        # полный поток — рядом, под именем, которое их глобы не ловят.
+        (self.state.dir / "log" / f"{stem}-review-stream.jsonl").write_text(
+            run.raw_stream())
+        (self.state.dir / "log" / f"{stem}-review.json").write_text(
+            json.dumps(env, ensure_ascii=False) if env is not None
+            else run.raw_stream())
         verdict: dict[str, Any] | None = None
         cost: float | None = None
         terminal: str | None = None
-        try:
-            env = json.loads(proc.stdout)
+        if env is not None:
             quota = self.loop_mod.quota_error(env)
             if quota:
                 self.state.metric(task=task["id"], phase="review",
@@ -453,13 +466,12 @@ Acceptance:
             verdict = env.get("structured_output")
             cost = env.get("total_cost_usd")
             terminal = env.get("terminal_reason")
-        except ValueError:
-            pass
         valid = self.loop_mod.validate_verdict(verdict)
         # Выбор руки — часть замера, а не деталь запуска: жребий, не
         # попавший в журнал, делает прогон невоспроизводимым шумом.
         self.state.metric(task=task["id"], iter=iteration, phase="review",
-                          attempt=attempt, dur_s=round(time.time() - t0, 1),
+                          attempt=attempt, dur_s=round(result.wall_s, 1),
+                          run_reason=result.reason,
                           cost_usd=cost, verdict=(verdict or {}).get("verdict"),
                           findings=len((verdict or {}).get("findings", [])),
                           valid=valid, terminal_reason=terminal,
@@ -478,7 +490,12 @@ Acceptance:
                                verify_results=verify_results,
                                confirming=confirming)
         if not valid or verdict is None:
-            self.last_review_failure = "invalid"
+            # Диагноз — причина, а не факт: «убит по тишине» и «ответ не
+            # прошёл схему» лечатся по-разному, и оператору отдаётся то,
+            # что драйвер знает о прогоне (silence, wall_clock, crash,
+            # no_report), а не общий ярлык.
+            self.last_review_failure = (result.reason
+                                        if result.reason != "done" else "invalid")
             return None
         self.last_review_failure = None
         # Второй вызов с результатами — ровно один раунд на итерацию
