@@ -13,6 +13,7 @@
     5.  COMMIT | FEEDBACK
 """
 import fnmatch
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -316,14 +317,58 @@ class Loop:
                        + ". Коммитит только оркестратор; если коммит ваш —"
                          " задачу можно вернуть в очередь как есть")
         state_now = self._state_fingerprint()
-        if self._state_before and state_now != self._state_before:
-            bad.append("состояние петли (.swarm/) изменено во время задачи")
+        if (self._state_before and state_now is not None
+                and state_now != self._state_before):
+            # Изменение состояния само по себе НЕ нарушение: через тот же
+            # `.swarm/` работают и петля (set_status), и оператор
+            # (`swarm answer` из соседнего процесса). Раньше проверка
+            # сравнивала только «до» и «после» и роняла бегущую задачу,
+            # когда оператор отвечал на вопрос ДРУГОЙ, — то есть инбокс,
+            # заведённый чтобы спор не останавливал очередь, останавливал
+            # её сам (пилот, c4rp).
+            #
+            # Разделитель — журнал: законная запись идёт через
+            # `state.save_tasks` и объявляет там свой отпечаток. Если
+            # текущее состояние совпадает с последним объявленным, все
+            # изменения объяснены. Правка файла в обход API следа не
+            # оставляет и остаётся нарушением.
+            #
+            # Граница честности: агент, дописавший в журнал поддельную
+            # строку, обойдёт проверку. Она ловит небрежность и жадность,
+            # а не подделку, — и это по-прежнему больше, чем ловилось до.
+            declared = self._declared_state_sha()
+            if declared is None or declared != self._state_sha(state_now):
+                bad.append("состояние петли (.swarm/) изменено в обход API: "
+                           "правка файла не объявлена в журнале")
+            else:
+                # Объяснено — сдвигаем базу, иначе следующая проверка той же
+                # задачи сработает на том же самом изменении повторно.
+                self._state_before = state_now
         for marker, what in (("rebase-merge", "rebase"), ("rebase-apply", "rebase"),
                              ("MERGE_HEAD", "merge"),
                              ("CHERRY_PICK_HEAD", "cherry-pick")):
             if (pathlib.Path(self.state.root) / ".git" / marker).exists():
                 bad.append(f"репозиторий оставлен в состоянии {what}")
         return bad
+
+    def _state_sha(self, blob: str) -> str:
+        """Отпечаток очереди тем же способом, каким его объявляет запись."""
+        state_mod = sys.modules.get("state")
+        if state_mod is not None:
+            sha: str = state_mod.tasks_sha(blob)
+            return sha
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def _declared_state_sha(self) -> str | None:
+        """Последний отпечаток, объявленный законной записью состояния."""
+        path = getattr(self.state, "journal_path", None)
+        if path is None:
+            return None
+        state_mod = sys.modules.get("state")
+        if state_mod is None:
+            return None
+        declared: str | None = state_mod.last_declared_sha(path)
+        return declared
 
     def _state_fingerprint(self) -> str | None:
         path = getattr(self.state, "tasks_path", None)

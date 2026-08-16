@@ -13,6 +13,7 @@
 и ревьюер одобрял пустоту, пока `git add -A` этот файл коммитил.
 """
 import importlib.util
+import json
 import pathlib
 import subprocess
 import sys
@@ -292,12 +293,45 @@ class TestIntegrityCheck(GitCase):
                             for b in loop.integrity_check()))
 
     def test_state_tampering_is_caught(self):
-        """Пометить задачу done правкой состояния — самый дешёвый обман."""
+        """Пометить задачу done правкой состояния — самый дешёвый обман.
+
+        Правка делается ФАЙЛОМ, а не через `state.save_tasks`, потому что
+        именно так её и делает агент: объекта состояния петли у него нет,
+        у него есть shell и путь. Прежняя версия теста звала API — то есть
+        проверяла законный путь и называла его обманом.
+        """
+        loop = self._armed()
+        (self.state.tasks_path).write_text(
+            json.dumps({"goal": "", "tasks": [
+                {"id": "x", "title": "t", "status": "done", "deps": []}]},
+                ensure_ascii=False),
+            encoding="utf-8")
+        bad = loop.integrity_check()
+        self.assertTrue(any(".swarm/" in b for b in bad), bad)
+        self.assertTrue(any("в обход API" in b for b in bad), bad)
+
+    def test_legitimate_write_is_not_tampering(self):
+        """Регрессия на пилот (c4rp): оператор ответил через `swarm answer`
+        на вопрос ОДНОЙ задачи, пока шла ДРУГАЯ, — и уронил бегущую.
+
+        Инбокс заведён затем, чтобы спор не останавливал очередь; проверка,
+        считающая любую запись состояния нарушением, останавливала её сама.
+        """
         loop = self._armed()
         data = self.state.load_tasks()
-        data["tasks"] = [{"id": "x", "title": "t", "status": "done", "deps": []}]
+        data["tasks"] = [{"id": "x", "title": "t", "status": "pending", "deps": []}]
+        self.state.save_tasks(data)          # законный путь: объявляет себя
+        self.assertEqual([b for b in loop.integrity_check() if ".swarm/" in b], [])
+
+    def test_second_check_does_not_refire_on_the_same_change(self):
+        """База сдвигается после объяснённого изменения: иначе одна и та же
+        законная запись срабатывала бы на каждом раунде задачи."""
+        loop = self._armed()
+        data = self.state.load_tasks()
+        data["tasks"] = [{"id": "x", "title": "t", "status": "pending", "deps": []}]
         self.state.save_tasks(data)
-        self.assertTrue(any(".swarm/" in b for b in loop.integrity_check()))
+        loop.integrity_check()
+        self.assertEqual([b for b in loop.integrity_check() if ".swarm/" in b], [])
 
     def test_unfinished_merge_is_caught(self):
         loop = self._armed()

@@ -113,7 +113,7 @@ class TestStepJournal(StateCase):
             step.result(commit="abc123")
         kinds = [json.loads(line)["kind"]
                  for line in self.state.journal_path.read_text().splitlines()]
-        self.assertEqual(kinds, ["step_intent", "step_done"])
+        self.assertEqual(kinds, ["state_written", "step_intent", "step_done"])
 
     def test_result_payload_lands_in_journal(self):
         with self.state.step("aaaa", "commit") as step:

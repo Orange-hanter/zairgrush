@@ -16,6 +16,7 @@
   прошлого запуска молча обнулили выборку задач.
 """
 import fcntl
+import hashlib
 import json
 import os
 import pathlib
@@ -40,6 +41,27 @@ TERMINAL = {"done", "blocked"}
 
 class StateError(Exception):
     """Состояние на диске противоречиво — петля обязана остановиться."""
+
+
+def tasks_sha(blob: str) -> str:
+    """Отпечаток очереди. Одна функция на запись и на проверку: две копии
+    формулы разошлись бы, и целостность начала бы врать в обе стороны."""
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def last_declared_sha(journal_path: pathlib.Path) -> str | None:
+    """Последний отпечаток, объявленный законной записью состояния."""
+    if not journal_path.exists():
+        return None
+    sha = None
+    for line in journal_path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("kind") == "state_written" and row.get("sha"):
+            sha = str(row["sha"])
+    return sha
 
 
 def _atomic_write(path: pathlib.Path, text: str) -> None:
@@ -148,12 +170,26 @@ class SwarmState:
         return data
 
     def save_tasks(self, data: dict[str, Any]) -> None:
+        """Записать очередь — и ОБЪЯВИТЬ запись в журнале.
+
+        Отпечаток попадает в журнал не ради истории, а ради проверки
+        целостности (§6.1). Она сравнивает состояние до и после задачи и
+        не может знать, кто его менял. На пилоте это дважды обвинило не
+        того: оператор отвечал через `swarm answer` на вопрос ОДНОЙ задачи,
+        пока шла ДРУГАЯ, — и роняло бегущую. Инбокс заведён ровно затем,
+        чтобы спор не останавливал очередь, а получалось наоборот.
+
+        Разделитель прост: законная запись идёт через этот метод и сама
+        себя протоколирует; правка файла в обход API следа не оставляет.
+        Проверка сверяет текущий отпечаток с последним объявленным.
+        """
         for t in data.get("tasks", []):
             if t.get("status") not in LEGAL_STATUS:
                 raise StateError(f"недопустимый статус {t.get('status')!r} "
                                  f"у задачи {t.get('id')!r}")
-        _atomic_write(self.tasks_path,
-                      json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+        blob = json.dumps(data, ensure_ascii=False, indent=1) + "\n"
+        _atomic_write(self.tasks_path, blob)
+        self.log("state_written", sha=tasks_sha(blob))
 
     def set_status(self, task_id: str, status: str, **fields: Any) -> None:
         if status not in LEGAL_STATUS:
