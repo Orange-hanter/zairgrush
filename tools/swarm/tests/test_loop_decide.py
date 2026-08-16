@@ -240,6 +240,72 @@ class TestRoundBudgetIsOneNumber(unittest.TestCase):
         self.assertEqual(lp.decide(4, v, [], max_rounds=4)[0], lp.ESCALATE_MAX)
 
 
+class TestExecutorUnavailable(unittest.TestCase):
+    """Регрессия на пилот: квота Kimi кончилась, процесс умирал на старте
+    (59 байт потока, секунды), а петля жгла об это по три раунда на задачу
+    и каскадом прошлась по очереди с диагнозом «слишком крупная»."""
+
+    def _run(self, failure, n_tasks=1):
+        state = _FakeState()
+        statuses = []
+        state.set_status = lambda tid, st, **k: statuses.append((tid, st, k))
+
+        class FakeAgents:
+            last_implement_failure = failure
+
+            def implement(self, task, feedback, iteration):
+                return None
+
+            def review(self, *a, **k):
+                raise AssertionError("до ревью дойти не должно")
+
+        loop = lp.Loop(state, {}, FakeAgents())
+        loop.gate = lambda task: (True, "OK")
+        loop.scope_check = lambda task: (True, [], [])
+        loop.cleanup = lambda task, reason: None
+        loop._sh = lambda cmd, timeout=900: type(
+            "R", (), {"stdout": "", "returncode": 0})()
+        return loop, statuses
+
+    def test_instant_crash_stops_instead_of_burning_rounds(self):
+        loop, statuses = self._run(
+            {"reason": "crash", "wall_s": 0.3, "events": 1,
+             "stderr": "403 usage limit"})
+        with self.assertRaises(lp.ExecutorUnavailableError) as ctx:
+            loop.run_task({"id": "t1", "title": "t", "paths": ["a.py"],
+                           "type": "feature"})
+        self.assertIn("403", str(ctx.exception),
+                      "stderr провайдера обязан дойти до человека")
+        self.assertIn(("t1", "pending",
+                       {"reason": "executor_unavailable"}), statuses,
+                      "задача ни в чём не виновата — обратно в очередь")
+
+    def test_slow_crash_still_burns_rounds(self):
+        """Авария в середине настоящей работы — не «недоступен»: процесс
+        жил, события шли. Такое честно стоит раунда (s2ky, раунд 3)."""
+        loop, _statuses = self._run(
+            {"reason": "crash", "wall_s": 300.0, "events": 58,
+             "stderr": ""})
+        result = loop.run_task({"id": "t1", "title": "t", "paths": ["a.py"],
+                                "type": "feature"})
+        self.assertEqual(result, "blocked")
+
+    def test_run_stops_queue_and_reports(self):
+        """Следующая задача умерла бы так же: очередь стоит, ключ _executor
+        в итогах говорит оператору, что чинить надо среду, а не задачи."""
+        loop, _ = self._run(
+            {"reason": "crash", "wall_s": 0.2, "events": 0,
+             "stderr": "403 usage limit"})
+        loop.state.ready_tasks = lambda: [
+            {"id": "t1", "title": "t", "paths": ["a.py"], "type": "feature"}]
+        loop.state.total_spend = lambda: 0.0
+        loop.refresh_board = lambda: None
+        results = loop.run()
+        self.assertEqual(results.get("_executor"), "unavailable")
+        self.assertNotIn("t1", results,
+                         "задача не получила ложного исхода")
+
+
 class TestScopeBurnoutDiagnosis(unittest.TestCase):
     """Регрессия на пилот: k3ad и s2ky сгорели на границах, а диагноз
     сказал «задача слишком крупная — расщепить». Расщепление не помогло

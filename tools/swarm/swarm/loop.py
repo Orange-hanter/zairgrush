@@ -89,6 +89,17 @@ QUOTA_MARKERS = ("session limit", "rate limit", "quota", "usage limit",
                  "429", "too many requests")
 
 
+class ExecutorUnavailableError(Exception):
+    """Исполнитель не запускается: мгновенная авария процесса.
+
+    Это окружение, а не работа: квота провайдера, битый бинарь, отозванный
+    токен. Жечь об это раунды и блокировать задачи с диагнозом «слишком
+    крупная» — вдвойне ложь; на пилоте каскад мгновенных аварий за минуты
+    прошёлся по трём задачам очереди. Прогон останавливается целиком,
+    задача возвращается в pending: она ни в чём не виновата.
+    """
+
+
 class QuotaExceededError(Exception):
     """Провайдер отказал по квоте: петля ждёт, а не блокирует задачу (§5.3)."""
 
@@ -697,6 +708,7 @@ class Loop:
         # Раунды, сгоревшие на границах: диагност обязан отличать «задача
         # не сходится» от «исполнитель бьётся о защищённый файл».
         scope_failures: list[list[str]] = []
+        instant_crashes = 0
         while iteration < self.max_iter + confirm_rounds:
             # Бюджет проверяется перед КАЖДОЙ итерацией, а не только между
             # задачами: проверка раз в задачу означала, что одна задача
@@ -723,6 +735,23 @@ class Loop:
             else:
                 report = self.agents.implement(task, feedback, iteration)
                 if report is None:
+                    fail = getattr(self.agents, "last_implement_failure",
+                                   None) or {}
+                    # Мгновенная смерть процесса (секунды, поток пуст) — не
+                    # неудачная работа, а невозможность работать. Два раза
+                    # подряд = устойчивое состояние среды: дальше жечь
+                    # раунды бессмысленно, и следующая задача умрёт так же.
+                    if (fail.get("reason") == "crash"
+                            and fail.get("wall_s", 1e9) < 10
+                            and fail.get("events", 1e9) <= 1):
+                        instant_crashes += 1
+                        if instant_crashes >= 2:
+                            self.state.set_status(
+                                tid, "pending",
+                                reason="executor_unavailable")
+                            raise ExecutorUnavailableError(
+                                fail.get("stderr")
+                                or "процесс исполнителя умирает на старте")
                     feedback = {"note": "предыдущий ответ не содержал валидного "
                                         "JSON-отчёта — повтори, соблюдая контракт"}
                     continue
@@ -983,6 +1012,16 @@ class Loop:
             # retry требовал blocked.
             try:
                 results[task["id"]] = self.run_task(task)
+            except ExecutorUnavailableError as e:
+                # Задача уже возвращена в pending внутри run_task.
+                self.state.log("executor_unavailable", task=task["id"],
+                               stderr=str(e)[:400])
+                results["_executor"] = "unavailable"
+                self.ui(f"\nИСПОЛНИТЕЛЬ НЕДОСТУПЕН — прогон остановлен.\n"
+                        f"    {str(e)[:200]}\n"
+                        f"    Задача {task['id']} возвращена в очередь; "
+                        f"продолжайте после устранения причины.")
+                break
             except KeyboardInterrupt:
                 self._rescue(task, "прервано человеком")
                 raise

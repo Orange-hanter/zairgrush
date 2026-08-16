@@ -114,6 +114,9 @@ class Agents:
         # голое None. «Кончился бюджет» и «модель ответила мусором» —
         # разные болезни с разным лечением.
         self.last_review_failure: str | None = None
+        # Почему не состоялся ПОСЛЕДНИЙ вызов исполнителя: причина, время,
+        # события, stderr. None = вызов удался.
+        self.last_implement_failure: dict[str, Any] | None = None
         # Жребий для пулов моделей и усилий. Отдельный экземпляр, а не
         # глобальный random: тесты подменяют его сидом, не трогая
         # состояние процесса.
@@ -249,6 +252,20 @@ write it in RUSSIAN.
                           reason=result.reason, wall_s=round(result.wall_s, 1),
                           report=bool(result.report), events=result.events)
         report: dict[str, Any] | None = result.report
+        if report is None or result.reason != "done":
+            # stderr — единственное место, где провайдер объясняет отказ.
+            # Пока он не сохранялся, диагноз «квота Kimi исчерпана» занял
+            # шесть запросов вместо чтения одной строки журнала: три
+            # мгновенные аварии подряд выглядели как «нет отчёта».
+            stderr = run.stderr_tail(400).strip()
+            self.last_implement_failure = {
+                "reason": result.reason, "wall_s": result.wall_s,
+                "events": result.events, "stderr": stderr}
+            self.state.log("executor_failed", task=task["id"], round=iteration,
+                           reason=result.reason, wall_s=round(result.wall_s, 1),
+                           events=result.events, stderr=stderr)
+        else:
+            self.last_implement_failure = None
         return report
 
     @staticmethod
