@@ -81,7 +81,7 @@ class TestReviewPromptOrdering(PromptCase):
 
     def test_rules_precede_task(self):
         p = self.prompt()
-        self.assertLess(p.index("## Правила ревью"), p.index("## Задача"),
+        self.assertLess(p.index("## Rules"), p.index("## Задача"),
                         "правила общие для всех задач и обязаны быть выше")
 
     def test_diff_precedes_gate_output(self):
@@ -112,7 +112,7 @@ class TestCachablePrefix(PromptCase):
         self.assertGreater(shared, 600,
                            "общий префикс схлопнулся: блок правил больше не "
                            "первый, и каждая задача пишет его в кэш заново")
-        self.assertIn("## Правила ревью", self.prompt()[:shared])
+        self.assertIn("## Rules", self.prompt()[:shared])
 
     def test_confirmation_round_reuses_almost_everything(self):
         """Подтверждающий раунд ревьюит ТОТ ЖЕ дифф.
@@ -152,14 +152,15 @@ class TestOutputBrevity(PromptCase):
 
     def test_prompt_asks_for_brevity(self):
         p = self.prompt()
-        self.assertIn("без воды", p)
+        self.assertIn("only what the reader needs", p)
 
     def test_brevity_rule_lives_with_the_other_rules(self):
         """Инструкция обязана быть в стабильном блоке, иначе она сама
         станет расходом: попадёт в изменчивую часть и будет писаться
         в кэш на каждом вызове."""
         p = self.prompt()
-        self.assertLess(p.index("без воды"), p.index("## Задача"))
+        self.assertLess(p.index("only what the reader needs"),
+                        p.index("## Задача"))
 
 
 class TestExecutorScopeDiscipline(unittest.TestCase):
@@ -179,12 +180,12 @@ class TestExecutorScopeDiscipline(unittest.TestCase):
         return self.agents.handoff(dict(task or self.TASK), None, None)
 
     def test_scope_discipline_is_stated(self):
-        self.assertIn("ровно то, что требует спека", self.handoff())
+        self.assertIn("Do exactly what the spec asks", self.handoff())
 
     def test_safety_is_carved_out(self):
         """Без этой оговорки инструкция режет то, что резать нельзя."""
         h = self.handoff()
-        for must in ("валидацию", "безопасност"):
+        for must in ("input validation", "security requirements"):
             self.assertIn(must, h, f"оговорка про {must} потеряна")
 
     def test_disagreement_routes_to_dispute(self):
@@ -194,8 +195,8 @@ class TestExecutorScopeDiscipline(unittest.TestCase):
     def test_constraints_are_intact(self):
         """Экономия объёма не должна вытеснить границы задачи."""
         h = self.handoff()
-        self.assertIn("Разрешено править ТОЛЬКО эти пути", h)
-        self.assertIn("git для тебя ТОЛЬКО на чтение", h)
+        self.assertIn("Editable paths, and only these", h)
+        self.assertIn("git is READ-ONLY for you", h)
 
 
 pl = _load("planner")

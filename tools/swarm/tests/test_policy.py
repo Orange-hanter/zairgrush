@@ -178,7 +178,7 @@ class TestVisibility(PolicyCase):
             "OK", "diff")
         self.assertNotIn("release notes вне scope", text,
                          "политика не должна попадать в промпт ревьюера")
-        self.assertIn("Сообщай ВСЕ находки", text)
+        self.assertIn("Report every finding", text)
 
 
 if __name__ == "__main__":
