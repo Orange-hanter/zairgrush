@@ -102,6 +102,12 @@ def condense_diff(diff: str, limit: int = DIFF_FILE_LIMIT,
 
 
 class Agents:
+    # Классовые дефолты кэшей: часть тестов собирает Agents через
+    # __new__ без __init__, и метод, споткнувшийся об отсутствующий
+    # атрибут, ломал бы им ревью из-за опционального слоя памяти.
+    _memory_cache: tuple[str, str] | None = None
+    _norms_cache: tuple[str, str] | None = None
+
     def __init__(self, state: Any, config: dict[str, Any]) -> None:
         self.state = state
         self.config = config
@@ -110,10 +116,11 @@ class Agents:
         self._helpers: ModuleType | None = None
         self._codemap: ModuleType | None = None
         self._map_cache: tuple[tuple[str, int], str] | None = None
-        # Блок памяти считается один раз на ЗАДАЧУ: между раундами он
-        # обязан быть байт-стабилен, иначе каждый раунд переписывает
+        # Блоки памяти считаются один раз на ЗАДАЧУ: между раундами они
+        # обязаны быть байт-стабильны, иначе каждый раунд переписывает
         # префикс-кэш промпта (§8 — экономика порядка блоков).
         self._memory_cache: tuple[str, str] | None = None
+        self._norms_cache: tuple[str, str] | None = None
         # Почему ревью не состоялось: оркестратору нужен диагноз, а не
         # голое None. «Кончился бюджет» и «модель ответила мусором» —
         # разные болезни с разным лечением.
@@ -178,6 +185,16 @@ class Agents:
         mem = _load("memory")
         block: str = mem.inject_block("executor", task, self.state, self.config)
         self._memory_cache = (tid, block)
+        return block
+
+    def norms_for(self, task: dict[str, Any]) -> str:
+        """Нормы репозитория для ревьюера (E9), байт-стабильные в задаче."""
+        tid = str(task.get("id") or "")
+        if self._norms_cache is not None and self._norms_cache[0] == tid:
+            return self._norms_cache[1]
+        mem = _load("memory")
+        block: str = mem.norms_block(self.state, self.config, task)
+        self._norms_cache = (tid, block)
         return block
 
     def handoff(self, task: dict[str, Any], feedback: str | None,
@@ -337,7 +354,7 @@ RUSSIAN.
     def review_prompt(self, task: dict[str, Any], gate_tail: str, diff: str,
                       want_verification: bool = False,
                       verify_results: list[dict[str, Any]] | None = None,
-                      ) -> str:
+                      memory: str = "") -> str:
         acc = "\n".join("- " + a for a in task.get("acceptance") or [])
         # Решения человека обязаны быть видны и РЕВЬЮЕРУ, иначе он
         # продолжает требовать то, что уже отклонено: на приёмке он трижды
@@ -349,6 +366,9 @@ RUSSIAN.
                 f"{task['human_answer']}\n"
                 "Эти решения приняты владельцем задачи и НЕ оспариваются: "
                 "не выноси по ним findings и не требуй отменённого.\n")
+        # Нормы репозитория (E9): стабильны в пределах задачи и стоят до
+        # диффа — самый изменчивый блок остаётся последним (§8, кэш).
+        norms = f"\n{memory.rstrip()}" if memory else ""
         # ADR-005: формулировка и есть механизм. «Ты можешь запросить» дало
         # ноль запросов, «перечисли, что проверил бы исполнением» — 39 на
         # девяти канарейках. Включается выборочно: recall не растёт, а
@@ -404,7 +424,7 @@ retelling of the diff; `issue` is what is wrong and why, with no preamble.
 Спецификация: {task.get('spec') or task['title']}
 Acceptance:
 {acc}
-{decisions}
+{decisions}{norms}
 ## Diff
 ```diff
 {diff}
@@ -512,7 +532,8 @@ Acceptance:
                    task, gate_tail, diff,
                    want_verification=(verify_results is None
                                       and self._wants_verification(task)),
-                   verify_results=verify_results),
+                   verify_results=verify_results,
+                   memory=self.norms_for(task)),
                "--output-format", "stream-json", "--verbose",
                "--include-partial-messages",
                "--json-schema", schema,

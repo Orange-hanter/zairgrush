@@ -507,5 +507,21 @@ class TestStandaloneMain(unittest.TestCase):
             self.assertEqual(roots["metric"], tmp)
 
 
+class TestMemoryInPlanPrompt(unittest.TestCase):
+    """Память (E9) в промпте планировщика: за флагом, байт-в-байт без неё."""
+
+    def test_prompt_unchanged_without_memory(self):
+        base = rp.plan_prompt("цель", [], "files", "ok")
+        self.assertEqual(base, rp.plan_prompt("цель", [], "files", "ok",
+                                              memory=""))
+
+    def test_memory_block_sits_after_goal(self):
+        text = rp.plan_prompt("цель", [], "files", "ok",
+                              memory="## Project memory\n[DATA]\n- урок")
+        self.assertLess(text.index("## Цель"), text.index("## Project memory"))
+        self.assertLess(text.index("## Project memory"),
+                        text.index("## Текущее состояние"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

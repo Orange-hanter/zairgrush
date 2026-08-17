@@ -151,12 +151,28 @@ class _FakeState:
         self.root = root
         self._tasks = {"goal": goal, "tasks": tasks or []}
         self.logged = []
+        self.asked = []
+        self._policies = []
+        self._questions = []
 
     def load_tasks(self):
         return self._tasks
 
     def log(self, kind, **payload):
         self.logged.append((kind, payload))
+
+    def ask(self, task, kind, question, **ctx):
+        self.asked.append((task, kind, question))
+        self._questions.append({"qid": f"q{len(self.asked):03d}",
+                                "task": task, "qkind": kind,
+                                "question": question, "status": "open"})
+        return self._questions[-1]["qid"]
+
+    def questions(self, only_open=False):
+        return list(self._questions)
+
+    def policies(self):
+        return list(self._policies)
 
 
 class TestRecordOutcome(MemCase):
@@ -474,6 +490,96 @@ class TestAnchorDecay(MemCase):
         reflected = next(p for k, p in state.logged
                          if k == "memory_reflect")
         self.assertEqual(reflected["unlinked"], 1)
+
+
+class TestNormsBlock(MemCase):
+    """Persona ревьюера: только принятые решения, никаких команд молчать."""
+
+    CFG = {"experiments": {"memory": "all"}}
+
+    def _seed(self):
+        self.store.append(lesson("констант в конфиге не заводить",
+                                 outcome="corrected"))
+        self.store.append(lesson("обычный урок", outcome="dead_end"))
+
+    def test_only_corrected_and_norm_tagged(self):
+        self._seed()
+        block = mem.norms_block(_FakeState(self.root), self.CFG, {"id": "t"})
+        self.assertIn("констант в конфиге", block)
+        self.assertNotIn("обычный урок", block,
+                         "тупики — исполнителю, ревьюеру — только нормы")
+
+    def test_block_never_orders_silence(self):
+        """Измерено (§4.2): команда «не выноси findings» роняет recall.
+        Блок обязан явно требовать сообщать всё."""
+        self._seed()
+        block = mem.norms_block(_FakeState(self.root), self.CFG, {"id": "t"})
+        self.assertIn("СООБЩАЙ ВСЁ", block)
+        self.assertNotIn("не выноси", block.lower())
+
+    def test_executor_mode_gives_reviewer_nothing(self):
+        self._seed()
+        cfg = {"experiments": {"memory": "executor"}}
+        self.assertEqual(
+            mem.norms_block(_FakeState(self.root), cfg, {"id": "t"}), "")
+
+
+class TestFpPromotion(MemCase):
+    """Промоция подавлений — только через человека: память не смеет
+    затыкать ревьюера сама."""
+
+    def _journal(self, rows):
+        self.store.journal_path.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        self.store.journal_path.write_text(
+            "".join(_json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+            encoding="utf-8")
+
+    SUPPRESSED = {"kind": "policy_suppressed", "task": "t", "items": [
+        {"policy": "p001", "severity": "minor",
+         "issue": "нет release note"}]}
+    POLICY = {"kind": "policy", "pid": "p001",
+              "text": "release notes не трогаем", "match": ["release"]}
+
+    def test_threshold_two(self):
+        self._journal([self.POLICY, self.SUPPRESSED])
+        state = _FakeState(self.root)
+        self.assertEqual(mem.fp_candidates(state), [],
+                         "единичное подавление — ещё не норма")
+        self._journal([self.POLICY, self.SUPPRESSED, self.SUPPRESSED])
+        cands = mem.fp_candidates(state)
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(cands[0]["count"], 2)
+        self.assertEqual(cands[0]["match"], ["release"])
+
+    def test_active_policy_excludes_candidate(self):
+        self._journal([self.POLICY, self.SUPPRESSED, self.SUPPRESSED])
+        state = _FakeState(self.root)
+        state._policies = [{"pid": "p009", "match": ["release note"]}]
+        self.assertEqual(mem.fp_candidates(state), [],
+                         "действующая политика уже покрывает")
+
+    def test_reflect_files_question_once(self):
+        self._journal([self.POLICY, self.SUPPRESSED, self.SUPPRESSED])
+        self.store.append(lesson("якорь дайджеста"))
+        state = _FakeState(self.root)
+        mem.reflect_after_run(state, {})
+        mem.reflect_after_run(state, {})
+        fp_questions = [a for a in state.asked if a[1] == "fp_promotion"]
+        self.assertEqual(len(fp_questions), 1,
+                         "открытый вопрос не дублируется")
+        self.assertIn("swarm policy add", fp_questions[0][2])
+
+
+class TestConsolidationSection(MemCase):
+    def test_digest_includes_labeled_llm_section(self):
+        self.store.append(lesson("урок раз"))
+        self.store.write_consolidation("тема — суть (abc123)")
+        text = self.store.digest_path.read_text()
+        self.assertIn("Сводка хелпера (LLM)", text)
+        self.assertIn("тема — суть (abc123)", text)
+        self.assertEqual(self.store.digest(), self.store.digest(),
+                         "детерминизм дайджеста сохранён")
 
 
 class TestNoFootprintOnRead(MemCase):

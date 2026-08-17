@@ -105,13 +105,16 @@ def repo_map(stand: str | pathlib.Path) -> tuple[str, str]:
 
 
 def plan_prompt(goal: str, tasks: list[dict[str, Any]], files: str,
-                suite: str) -> str:
+                suite: str, memory: str = "") -> str:
+    # Память (E9): уроки прошлых прогонов — сразу после цели, до
+    # изменчивых блоков. Пустая строка — промпт байт-в-байт прежний.
+    mem = f"\n{memory.rstrip()}\n" if memory else ""
     return f"""Ты — планировщик в автоматической петле разработки. \
 Ответ парсится механически.
 
 ## Цель
 {goal}
-
+{mem}
 ## Текущее состояние репозитория
 Файлы:
 {files}

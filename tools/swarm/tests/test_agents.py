@@ -103,6 +103,22 @@ class TestHandoff(AgentsCase):
         self.assertEqual(self.agents.memory_block(dict(TASK, id="t2")), "",
                          "смена задачи обязана пересчитать блок")
 
+    def test_review_prompt_unchanged_without_norms(self):
+        """Дефолт E9: без блока норм промпт ревьюера байт-в-байт прежний."""
+        base = self.agents.review_prompt(TASK, "OK", "diff")
+        self.assertEqual(base,
+                         self.agents.review_prompt(TASK, "OK", "diff",
+                                                   memory=""))
+
+    def test_norms_sit_before_diff(self):
+        """Нормы стабильны в пределах задачи и стоят ДО диффа: самый
+        изменчивый блок остаётся последним (§8, кэш)."""
+        text = self.agents.review_prompt(
+            TASK, "OK", "diff",
+            memory="## Нормы этого репозитория (память прошлых прогонов)\nx")
+        self.assertLess(text.index("## Задача"), text.index("## Нормы"))
+        self.assertLess(text.index("## Нормы"), text.index("## Diff"))
+
     def test_output_contract_names_the_dispute_field(self):
         """Петля читает report["dispute"], но промпт это поле не объявлял:
         оба реальных спора пилота (q001, q005) пришли с dispute=None, и вся

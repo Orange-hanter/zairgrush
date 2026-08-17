@@ -302,6 +302,30 @@ def embed_text(text: str, model: str) -> list[float] | None:
     return vec
 
 
+def consolidate_lessons(records: list[dict[str, Any]],
+                        max_themes: int = 6) -> str | None:
+    """Темы из уроков памяти (E9, этап 3). §7.2 буквально: хелпер готовит
+    текст, который проверяется механически, — строка без ссылки на
+    существующий id урока отбрасывается. Хелпер не имеет права добавлять
+    в память факты без происхождения.
+    """
+    known = {str(r.get("id") or "") for r in records} - {""}
+    if not known:
+        return None
+    listing = "\n".join(f"{r.get('id')}: {str(r.get('body') or '')[:200]}"
+                        for r in records[:40])
+    prompt = (f"Сгруппируй уроки в темы, не больше {max_themes} строк.\n"
+              "Формат строки: тема — суть (id, id). Обязательно указывай "
+              "id процитированных уроков в скобках. Только строки тем, "
+              "без преамбулы и пояснений.\n\n" + listing)
+    reply = ollama_chat(prompt, "consolidate", max_tokens=400)
+    if not reply:
+        return None
+    kept = [clean_markup(line.strip()) for line in reply.splitlines()
+            if line.strip() and any(k in line for k in known)]
+    return "\n".join(kept[:max_themes]) or None
+
+
 def fail_open(default: Any) -> Callable[[F], F]:
     """§7.3: ЛЮБОЕ падение хелпера гасится здесь. Наружу — только default.
 

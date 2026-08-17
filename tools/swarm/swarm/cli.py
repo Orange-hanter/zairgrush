@@ -998,12 +998,18 @@ def cmd_plan(args: argparse.Namespace) -> int:
     data = st.load_tasks()
     tasks = data.get("tasks", [])
     files, suite = planner.repo_map(pathlib.Path(args.root))
+    cfg = _config(args.root)
 
     if args.cmd == "plan":
         if not args.goal:
             print("нужна --goal", file=sys.stderr)
             return 2
-        prompt = planner.plan_prompt(args.goal, tasks, files, suite)
+        # Память (E9): уроки прошлых прогонов по этой цели — тупики
+        # прошлых декомпозиций дороже всего именно планировщику.
+        mem_block = _load("memory").inject_block(
+            "planner", {"id": "*", "title": args.goal, "paths": []}, st, cfg)
+        prompt = planner.plan_prompt(args.goal, tasks, files, suite,
+                                     memory=mem_block)
     else:
         task = next((t for t in tasks if t["id"] == args.task), None)
         if task is None:
@@ -1013,8 +1019,6 @@ def cmd_plan(args: argparse.Namespace) -> int:
         if args.dispute:
             dispute = json.loads(pathlib.Path(args.dispute).read_text())
         prompt = planner.replan_prompt(task, dispute, tasks, files, suite)
-
-    cfg = _config(args.root)
     diff, errs, reason = planner.plan_with_retry(
         prompt, args.cmd, tasks, root=args.root,
         budget=cfg.get("plan_budget_usd"),

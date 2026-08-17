@@ -570,6 +570,33 @@ class TestFailOpenContract(HelperTestCase):
         self.assertIsNone(hp.summarize_log(["a"]))
 
 
+class TestConsolidateLessons(HelperTestCase):
+    """§7.2 буквально: строка сводки без ссылки на существующий id урока
+    отбрасывается — хелпер не добавляет в память факты без происхождения."""
+
+    RECORDS = [{"id": "aaa111", "body": "урок раз"},
+               {"id": "bbb222", "body": "урок два"}]
+
+    def test_uncited_lines_are_dropped(self):
+        self.reply("Тема гейта — суть (aaa111)\n"
+                   "Выдумка без единой ссылки\n"
+                   "Ещё тема (bbb222)")
+        out = hp.consolidate_lessons(self.RECORDS)
+        self.assertIn("aaa111", out)
+        self.assertIn("bbb222", out)
+        self.assertNotIn("Выдумка", out)
+
+    def test_helper_down_is_none(self):
+        self.reply(None)
+        self.assertIsNone(hp.consolidate_lessons(self.RECORDS))
+
+    def test_no_records_means_no_call(self):
+        called = []
+        hp.ollama_chat = lambda *a, **k: called.append(1) or "x"
+        self.assertIsNone(hp.consolidate_lessons([]))
+        self.assertEqual(called, [], "без уроков модель не зовём (§7.1)")
+
+
 class TestEmbedText(unittest.TestCase):
     """Эмбеддер памяти (E9): опционален по построению, любой сбой -> None.
 
