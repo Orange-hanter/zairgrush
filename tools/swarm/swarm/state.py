@@ -330,9 +330,16 @@ class SwarmState:
                 continue
             for row in path.read_text(encoding="utf-8").splitlines():
                 try:
-                    total += json.loads(row).get("cost_usd") or 0
+                    rec = json.loads(row)
                 except ValueError:
                     continue
+                # Валидный JSON — ещё не запись, а число — не любой
+                # cost_usd: строка `"x"` или строковая цена из чужого
+                # инструмента роняли ровно ту команду, которой считают
+                # деньги. Журнал читается как данные, а не как контракт.
+                cost = rec.get("cost_usd") if isinstance(rec, dict) else None
+                if isinstance(cost, int | float):
+                    total += cost
         return round(total, 2)
 
     def metric(self, **payload: Any) -> None:

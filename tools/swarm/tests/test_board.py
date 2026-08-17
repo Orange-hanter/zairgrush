@@ -154,6 +154,93 @@ class TestCollectFacts(unittest.TestCase):
                          [{"policy": "шум", "issue": "мелочь"}])
 
 
+class TestRunLevelIsVisible(unittest.TestCase):
+    """Остановка по бюджету и шаги без исхода жили только в свёрнутой
+    хронике: прогон, встав по деньгам или упав посреди коммита, выглядел
+    на доске спокойным. То, что объясняет тишину очереди, обязано быть
+    видно без раскопок."""
+
+    def test_budget_stop_and_unfinished_step_are_on_the_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, journal=[
+                {"kind": "budget_exhausted", "spent": 80.0, "budget": 80.0,
+                 "ts": "2026-08-17T10:00:00+00:00"},
+                {"kind": "step_intent", "step_id": "x:commit:1",
+                 "task": "aaaa", "action": "commit"},
+            ])
+            page = bd.render(bd.collect(root))
+        self.assertIn("События прогона", page)
+        self.assertIn(bd.vocab.KIND_RU["budget_exhausted"], page)
+        self.assertIn("Шаги без исхода", page)
+
+    def test_reconciled_step_failed_is_not_unfinished(self):
+        """Копия формулы незавершённости закрывала шаг только по
+        step_done — разобранный step_failed висел на доске вечно."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, journal=[
+                {"kind": "step_intent", "step_id": "x:commit:1",
+                 "task": "aaaa", "action": "commit"},
+                {"kind": "step_failed", "step_id": "x:commit:1",
+                 "task": "aaaa", "action": "commit", "reconciled": True},
+            ])
+            board = bd.collect(root)
+        self.assertEqual(board["unfinished"], [])
+
+    def test_plan_failed_reaches_run_level(self):
+        """Закрытый перечень видов терял plan_failed — событие, ради
+        которого блок и существует. Фильтр — по признаку «без задачи»,
+        наружу не идёт только бухгалтерия."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, journal=[
+                {"kind": "plan_failed", "mode": "plan", "reason": "timeout"},
+                {"kind": "state_written", "sha": "abc"},
+            ])
+            board = bd.collect(root)
+        kinds = [r.get("kind") for r in board["run_level"]]
+        self.assertIn("plan_failed", kinds)
+        self.assertNotIn("state_written", kinds,
+                         "бухгалтерия хоронит под собой редкие события")
+
+
+class TestSpendOneFormula(unittest.TestCase):
+    """Сумма округлённых — не округлённая сумма: доска расходилась с
+    total_spend на центы, и cmd_go печатал два «итога» одного прогона."""
+
+    def test_total_is_rounded_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, metrics=[
+                {"task": "a", "phase": "review", "cost_usd": 0.004},
+                {"task": "b", "phase": "review", "cost_usd": 0.004}])
+            board = bd.collect(root)
+        self.assertEqual(board["total"], 0.01)
+
+    def test_string_cost_is_data_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, metrics=[
+                {"task": "a", "cost_usd": "дорого"},
+                {"task": "a", "cost_usd": 1.0}])
+            board = bd.collect(root)
+        self.assertEqual(board["total"], 1.0)
+
+
+class TestVerdictOrderIsNumeric(unittest.TestCase):
+    """Лексикографика ставила i10 раньше i2: «последний вердикт» на доске
+    и в why с десятого раунда оказывался не последним."""
+
+    def test_round_ten_sorts_after_round_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            log = root / ".swarm" / "log"
+            for stem in ("i2-a1", "i10-a1"):
+                (log / f"aaaa-{stem}-review.json").write_text(
+                    json.dumps({"structured_output": {
+                        "verdict": "approve", "findings": []}}),
+                    encoding="utf-8")
+            rounds = [v["round"]
+                      for v in bd._verdicts(root / ".swarm", "aaaa")]
+        self.assertEqual(rounds, ["i2-a1", "i10-a1"])
+
+
 class TestRenderSafety(unittest.TestCase):
     """Страница встраивает данные из файлов — эскейпинг это граница."""
 

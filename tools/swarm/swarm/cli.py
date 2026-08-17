@@ -230,22 +230,34 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # ставится древняя реализация без JSON и ролей
     ctags = shutil.which("ctags")
     if ctags:
-        ver = subprocess.run([ctags, "--version"], capture_output=True,
-                             text=True, check=False).stdout
-        if "Universal Ctags" in ver:
-            checks.append((True, "ctags", ver.splitlines()[0]))
+        try:
+            # Таймаут тот же, что у kimi/claude выше: доктор без таймаута
+            # сам становился зависшим инструментом, который диагностирует.
+            ver = subprocess.run([ctags, "--version"], capture_output=True,
+                                 text=True, timeout=30, check=False).stdout
+        except (OSError, subprocess.SubprocessError) as e:
+            checks.append((False, "ctags", f"ошибка запуска: {e}"))
         else:
-            checks.append((False, "ctags",
-                           ("Exuberant/BSD — нужен universal-ctags "
-                            "(brew unlink ctags && brew install "
-                            "universal-ctags)")))
+            if "Universal Ctags" in ver:
+                checks.append((True, "ctags", ver.splitlines()[0]))
+            else:
+                checks.append((False, "ctags",
+                               ("Exuberant/BSD — нужен universal-ctags "
+                                "(brew unlink ctags && brew install "
+                                "universal-ctags)")))
     else:
         checks.append((None, "ctags", "не установлен (опционально)"))
 
+    # find_spec сообщает об отсутствии модуля значением None, а не
+    # исключением: проверка через try ловила пустоту, и доктор объявлял
+    # tree-sitter доступным на любой машине.
     try:
-        importlib.util.find_spec("tree_sitter")
-        checks.append((True, "tree-sitter", "доступен"))
+        ts_spec = importlib.util.find_spec("tree_sitter")
     except Exception:  # noqa: BLE001 — доктор обязан досказать список до конца
+        ts_spec = None
+    if ts_spec is not None:
+        checks.append((True, "tree-sitter", "доступен"))
+    else:
         checks.append((None, "tree-sitter", "не установлен (опционально)"))
 
     for ok, name, note in checks:
@@ -989,24 +1001,28 @@ def cmd_run(args: argparse.Namespace) -> int:
 ORCHESTRATOR_EMAIL = "orchestrator@swarm.local"
 
 
-def _reconcile_commit_step(st: Any, row: dict[str, Any],
-                           root: str | pathlib.Path) -> str | None:
-    """Доиграть или откатить незавершённый интент коммита (§5.6).
+def _reconcile_decision(row: dict[str, Any],
+                        root: str | pathlib.Path) -> tuple[str, str] | None:
+    """Механическое решение по незавершённому интенту коммита (§5.6).
 
     Интент без done означает падение между действием и записью о нём.
     Повторять вслепую нельзя (дубль коммита), бросать тоже (задача висит).
     Сравнение записанного в интенте `head` с фактической историей отвечает
     на вопрос механически:
 
-    - HEAD не сдвинулся → коммита не было: интент закрывается как
-      проваленный, задача возвращается в очередь;
+    - HEAD не сдвинулся → коммита не было: интент закрыть как
+      проваленный, задачу вернуть в очередь;
     - первый коммит после записанного `head` сделан оркестратором →
       действие состоялось, падение пришлось на запись статуса: интент
-      закрывается как выполненный, задача — done.
+      закрыть как выполненный, задача — done.
 
-    Возвращает описание исхода или None, если решить механически нельзя
-    (интент без `head` — старый журнал; первый коммит чужой; история
-    переписана). Тогда действует прежний путь: эскалация человеку.
+    Возвращает ("rollback", "") или ("complete", sha), либо None, если
+    решить механически нельзя (интент без `head` — старый журнал; первый
+    коммит чужой; история переписана) — тогда эскалация человеку.
+
+    Решение отделено от применения намеренно: --dry-run обязан УЗНАТЬ
+    исход, ничего не записывая, — прежде «сухой» прогон писал в журнал и
+    переписывал tasks.json до всякой проверки флага.
     """
     head_before = row.get("head")
     if row.get("action") != "commit" or not head_before:
@@ -1016,6 +1032,26 @@ def _reconcile_commit_step(st: Any, row: dict[str, Any],
     if cur.returncode != 0:
         return None
     if cur.stdout.strip() == head_before:
+        return ("rollback", "")
+    # Смотрим ПЕРВЫЙ коммит после записанной точки, а не HEAD: после
+    # падения поверх могли коммитить и оператор, и следующий прогон.
+    after = subprocess.run(["git", "log", "--reverse", "--format=%H %ce",
+                            f"{head_before}..HEAD"], cwd=root,
+                           capture_output=True, text=True, check=False)
+    first = (after.stdout.strip().splitlines() or [""])[0].split()
+    if after.returncode != 0 or len(first) < 2 or first[1] != ORCHESTRATOR_EMAIL:
+        return None
+    return ("complete", first[0][:8])
+
+
+def _reconcile_commit_step(st: Any, row: dict[str, Any],
+                           root: str | pathlib.Path) -> str | None:
+    """Применить решение реконсиляции: журнал + статус задачи (§5.6)."""
+    decision = _reconcile_decision(row, root)
+    if decision is None:
+        return None
+    outcome, sha = decision
+    if outcome == "rollback":
         st.log("step_failed", step_id=row["step_id"], task=row["task"],
                action="commit", reconciled=True,
                error="реконсиляция resume: HEAD не сдвинулся, коммита не было")
@@ -1026,15 +1062,6 @@ def _reconcile_commit_step(st: Any, row: dict[str, Any],
                 t.pop("reason", None)
         st.save_tasks(data)
         return "коммита не было — задача возвращена в очередь"
-    # Смотрим ПЕРВЫЙ коммит после записанной точки, а не HEAD: после
-    # падения поверх могли коммитить и оператор, и следующий прогон.
-    after = subprocess.run(["git", "log", "--reverse", "--format=%H %ce",
-                            f"{head_before}..HEAD"], cwd=root,
-                           capture_output=True, text=True, check=False)
-    first = (after.stdout.strip().splitlines() or [""])[0].split()
-    if after.returncode != 0 or len(first) < 2 or first[1] != ORCHESTRATOR_EMAIL:
-        return None
-    sha = first[0][:8]
     st.log("step_done", step_id=row["step_id"], task=row["task"],
            action="commit", reconciled=True, commit=sha)
     data = st.load_tasks()
@@ -1073,7 +1100,23 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
     unfinished = st.unfinished_steps()
     leftover = []
+    previewed = 0
     for row in unfinished:
+        if args.dry_run:
+            # Сухой прогон обещает не трогать состояние, а реконсиляция
+            # пишет в журнал и переписывает tasks.json — поэтому здесь
+            # только решение, без применения.
+            decision = _reconcile_decision(row, args.root)
+            if decision is None:
+                leftover.append(row)
+                continue
+            previewed += 1
+            kind, sha = decision
+            would = ("коммита не было — задача вернётся в очередь"
+                     if kind == "rollback"
+                     else f"коммит {sha} состоялся — задача закроется")
+            print(f"реконсиляция (dry-run): {row['task']}: {would}")
+            continue
         outcome = _reconcile_commit_step(st, row, args.root)
         if outcome:
             print(f"реконсиляция: {row['task']}: {outcome}")

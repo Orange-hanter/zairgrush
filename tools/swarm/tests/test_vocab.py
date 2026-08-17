@@ -130,5 +130,34 @@ class TestOneVocabularyForAllSurfaces(unittest.TestCase):
         self.assertEqual(board.STATUS_RU, vocab.STATUS_RU)
 
 
+class TestEveryEmittedKindIsNamed(unittest.TestCase):
+    """Страж дрейфа: одно событие — одно имя (§9.3).
+
+    Четыре вида журнала (gate_failed, scope_violation,
+    executor_unavailable, state_written) жили без имени, и report/board
+    показывали оператору сырой английский код ровно на тех событиях,
+    которые он разбирает. Список ниже — ВСЕ виды, которые код петли
+    пишет в журнал; новый log(...) обязан принести имя в KIND_RU.
+    """
+
+    EMITTED = [
+        "answer", "baseline_red", "budget_exhausted", "commit_message",
+        "executor_failed", "executor_unavailable", "gate_failed",
+        "integrity_violation", "paths_extended", "plan_applied",
+        "plan_failed", "policy", "policy_dropped", "policy_suppressed",
+        "pre_existing_dirt", "preflight_forced", "question", "quota_pause",
+        "quota_wait", "restore_failed", "retry", "review_budget_exhausted",
+        "review_failed", "round", "scope_violation", "stash_failed",
+        "state_written", "step_done", "step_failed", "step_intent",
+        "task_crashed", "verification", "verification_inconclusive",
+    ]
+
+    def test_every_emitted_kind_has_a_russian_name(self):
+        missing = [k for k in self.EMITTED if k not in vocab.KIND_RU]
+        self.assertEqual(missing, [],
+                         "вид журнала без имени: поверхность покажет "
+                         "сырой код")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

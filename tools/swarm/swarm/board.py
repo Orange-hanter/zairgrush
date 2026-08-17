@@ -12,6 +12,7 @@
 import html
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -22,6 +23,7 @@ _HERE = str(pathlib.Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import state as state_mod  # noqa: E402 — каталог добавлен строкой выше
 import vocab  # noqa: E402 — каталог добавлен строкой выше
 
 # Словарь у доски и у терминала обязан быть ОДИН: пока он лежал здесь,
@@ -47,15 +49,32 @@ def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
         return rows
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
-            rows.append(json.loads(line))
+            row = json.loads(line)
         except ValueError:
             continue
+        # Валидный JSON — ещё не запись: строка `"x"` или `[1]` (ручная
+        # правка, чужой инструмент) роняла доску на первом же .get.
+        if isinstance(row, dict):
+            rows.append(row)
     return rows
 
 
 def _git(root: pathlib.Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=root, capture_output=True,
                           text=True, check=False).stdout
+
+
+def _round_key(stem: str) -> tuple[int, int, str, int, str]:
+    """Порядок раундов — числовой, а не алфавитный.
+
+    Лексикографика ставит `i10-…` раньше `i2-…`, и с десятого раунда
+    «последний вердикт» в `why` и на доске оказывался не последним.
+    Неразбираемое имя уходит в конец: о нём нельзя утверждать порядок.
+    """
+    m = re.fullmatch(r"i(\d+)-([a-z])(\d+)", stem)
+    if not m:
+        return (1, 0, "", 0, stem)
+    return (0, int(m.group(1)), m.group(2), int(m.group(3)), stem)
 
 
 def _verdicts(swarm_dir: pathlib.Path, tid: str) -> list[dict[str, Any]]:
@@ -65,11 +84,20 @@ def _verdicts(swarm_dir: pathlib.Path, tid: str) -> list[dict[str, Any]]:
     где фаза `a` — обычный проход, `v` — повторный после проверок.
     """
     out = []
-    for path in sorted((swarm_dir / "log").glob(f"{tid}-i*-review.json")):
+    paths = sorted(
+        (swarm_dir / "log").glob(f"{tid}-i*-review.json"),
+        key=lambda p: _round_key(
+            p.stem.replace(f"{tid}-", "").replace("-review", "")))
+    for path in paths:
         stem = path.stem.replace(f"{tid}-", "").replace("-review", "")
         try:
             env = json.loads(path.read_text(encoding="utf-8"))
-        except OSError:
+        except OSError as err:
+            # Нечитаемый файл — та же история, что и нечитаемый ответ ниже:
+            # раунд был, а вердикта нет. Молчаливый пропуск противоречил
+            # собственному правилу доски и прятал самое интересное.
+            out.append({"round": stem, "failed": True,
+                        "why": f"файл вердикта не прочитан: {err}"})
             continue
         except ValueError:
             # Нечитаемый ответ — САМОЕ интересное для оператора: раунд был,
@@ -102,6 +130,10 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
         data = json.loads((swarm / "tasks.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {"goal": "", "tasks": []}
+    if not isinstance(data, dict):
+        # Валидный JSON не значит очередь: файл правят руками, и список
+        # или строка на месте объекта не должны ронять доску.
+        data = {"goal": "", "tasks": []}
     # Оба потока метрик: без plan-metrics доска показывала $38.43 там,
     # где страж бюджета видел $40.12 — два авторитета на одну цифру
     # (пилот). Считать деньги обязана одна формула: как total_spend().
@@ -109,10 +141,19 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
                + _read_jsonl(swarm / "plan-metrics.jsonl"))
     journal = _read_jsonl(swarm / "log" / "run.jsonl")
 
-    spend: dict[str, float] = {}
+    # Арифметика денег — та же, что у state.total_spend(): сырая сумма и
+    # ОДНО округление в конце. Округление на каждом сложении давало сумму
+    # округлённых, а не округлённую сумму — и cmd_go печатал два «итога»
+    # прогона, расходящихся на центы. Строка вместо числа в cost_usd —
+    # данные, а не контракт: пропускаем, а не падаем.
+    spend_raw: dict[str, float] = {}
+    total_raw = 0.0
     for m in metrics:
-        if m.get("cost_usd"):
-            spend[_key(m)] = round(spend.get(_key(m), 0) + m["cost_usd"], 2)
+        cost = m.get("cost_usd")
+        if isinstance(cost, int | float) and cost:
+            spend_raw[_key(m)] = spend_raw.get(_key(m), 0.0) + cost
+            total_raw += cost
+    spend = {k: round(v, 2) for k, v in spend_raw.items()}
 
     questions = {}
     for row in journal:
@@ -171,28 +212,32 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
 
     # Записи без задачи — это события ПРОГОНА, а не чьи-то: сгруппировать их
     # «по задачам» значит потерять ровно то, что объясняет остановку очереди.
+    # Фильтр открытый, а не список видов: закрытый перечень молча терял
+    # plan_failed — событие, ради которого блок и существует. Наружу не
+    # идёт только бухгалтерия (state_written): она сопровождает каждую
+    # запись состояния и хоронила бы под собой редкие события.
     run_level = [r for r in journal
-                 if not r.get("task") and r.get("kind") in (
-                     "budget_exhausted", "preflight_forced", "plan_applied",
-                     "policy", "policy_dropped")]
+                 if not r.get("task")
+                 and r.get("kind") not in vocab.BOOKKEEPING_KINDS]
 
     # Хроника — фразами, а не дампом: `{"kind":"round","round":1,…}` человек
     # разбирает медленнее, чем «раунд 1 → request_changes, находок 3», и
     # ровно так же медленно он разбирал её здесь до появления vocab.
-    events = [{"ts": r.get("ts", "")[11:19], "kind": r.get("kind"),
+    # `ts: null` — тоже данные: str(… or "") вместо веры в строку.
+    events = [{"ts": str(r.get("ts") or "")[11:19], "kind": r.get("kind"),
                "kind_ru": vocab.ru(KIND_RU, r.get("kind")),
                "task": r.get("task"), "detail": vocab.narrate(r)}
               for r in journal]
 
-    unfinished = [r for r in journal if r.get("kind") == "step_intent"
-                  and not any(d.get("kind") == "step_done"
-                              and d.get("step_id") == r.get("step_id")
-                              for d in journal)]
+    # Незавершённость шага считает state.unfinished_steps(), а не копия
+    # формулы: копия закрывала шаг только по step_done, и разобранный
+    # step_failed висел на доске «незавершённым» вечно.
+    unfinished = state_mod.SwarmState(root).unfinished_steps()
 
     return {"goal": data.get("goal", ""), "tasks": tasks,
             "questions": list(questions.values()), "events": events,
             "run_level": run_level, "unfinished": unfinished,
-            "spend": spend, "total": round(sum(spend.values()), 2),
+            "spend": spend, "total": round(total_raw, 2),
             "root": str(root), "swarm_dir": str(swarm),
             "built": time.strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -293,11 +338,13 @@ JS = """
 const D = JSON.parse(document.getElementById('data').textContent);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const SEV = {blocker:'блокер', major:'важное', minor:'мелочь'};
-const CAT = {correctness:'корректность', tests:'тесты', style:'стиль',
-             scope:'границы', architecture:'архитектура'};
-const ST = {pending:'в очереди', in_progress:'в работе', in_review:'на ревью',
-            done:'закрыта', blocked:'заблокирована'};
+// Имена — из vocab через payload, а не третьей копией здесь: копия уже
+// разошлась (исход раунда шёл по-английски, пока why говорил по-русски).
+const V = D.vocab || {};
+const SEV = V.severity || {};
+const CAT = V.category || {};
+const ST = V.status || {};
+const OUT = V.outcome || {};
 const CLS = {done:'b-done', blocked:'b-blocked', pending:'b-pending',
              in_progress:'b-progress', in_review:'b-progress'};
 
@@ -307,6 +354,12 @@ function copy(text, btn) {
     setTimeout(() => btn.textContent = was, 1200);
   });
 }
+// Команда для копирования лежит в data-атрибуте: inline-onclick с JSON
+// внутри одинарных кавычек разрывался апострофом в пути корня.
+document.addEventListener('click', ev => {
+  const btn = ev.target.closest('button.copy');
+  if (btn) copy(btn.dataset.cmd, btn);
+});
 
 function findings(list) {
   if (!list.length) return '';
@@ -341,7 +394,7 @@ function taskBody(t) {
       <table><tr><th>раунд</th><th>вердикт</th><th>исход</th>
       <th class="num">находок</th><th class="num">о замысле</th></tr>` +
       t._rounds.map(r => `<tr><td>${esc(r.round)}</td><td>${esc(r.verdict)}</td>
-        <td>${esc(r.outcome)}</td><td class="num">${esc(r.findings ?? '')}</td>
+        <td>${esc(OUT[r.outcome] || r.outcome)}</td><td class="num">${esc(r.findings ?? '')}</td>
         <td class="num">${esc(r.intent ?? '')}</td></tr>`).join('') +
       `</table></div><div class="hint">убывает число находок — работа сходится;
        стоит на месте — петля топчется</div></div>`;
@@ -378,7 +431,7 @@ function taskBody(t) {
       <div>${esc(q.question)}</div>
       ${q.answer ? `<div class="ans">→ ${esc(q.answer)}</div>` :
         `<div class="cmd"><code>${esc(cmd)}</code>
-         <button onclick='copy(${JSON.stringify(cmd)}, this)'>скопировать</button></div>`}
+         <button class="copy" data-cmd="${esc(cmd)}">скопировать</button></div>`}
     </div></div>`;
   });
 
@@ -453,11 +506,16 @@ def render(board: dict[str, Any]) -> str:
     for t in board["tasks"]:
         by[t.get("status")] = by.get(t.get("status"), 0) + 1
 
+    unfinished = board.get("unfinished") or []
+    run_level = board.get("run_level") or []
     kpis = [(by.get("done", 0), "закрыто", ""),
             (by.get("pending", 0), "в очереди", ""),
             (by.get("blocked", 0), "заблокировано", ""),
             (len(open_q), "ждут вас", "alert" if open_q else ""),
-            (f"${board['total']}", "ревьюер стоил", "")]
+            # Подпись из vocab: «ревьюер стоил» врала — в сумме и планировщик.
+            (f"${board['total']}", vocab.SPEND_LABEL, "")]
+    if unfinished:
+        kpis.append((len(unfinished), "шагов без исхода", "alert"))
 
     parts = [f"<title>Доска прогона</title><style>{CSS}</style>",
              '<div class="wrap">', "<h1>Прогон петли агентов</h1>",
@@ -465,8 +523,34 @@ def render(board: dict[str, Any]) -> str:
              '<div class="grid">']
     for n, label, cls in kpis:
         parts.append(f'<div class="kpi {cls}"><div class="n">{e(str(n))}</div>'
-                     f'<div class="l">{label}</div></div>')
+                     f'<div class="l">{e(str(label))}</div></div>')
     parts.append("</div>")
+
+    # События уровня прогона и шаги без исхода — не хроника: остановку по
+    # бюджету, сорванное планирование и падение посреди коммита доска
+    # прятала за кнопкой «показать хронику», и прогон, встав, выглядел
+    # спокойным. То, что объясняет тишину очереди, обязано быть видно сразу.
+    if run_level:
+        parts.append("<h2>События прогона</h2>")
+        parts.append('<div class="card"><div class="body" style="display:block">')
+        parts.extend(
+            f'<div class="ev"><span class="tm">'
+            f'{e(str(r.get("ts") or "")[11:19])}</span>'
+            f'<span class="kd">{e(vocab.ru(KIND_RU, r.get("kind")))}</span>'
+            f'<span class="dt">{e(vocab.narrate(r))}</span></div>'
+            for r in run_level)
+        parts.append("</div></div>")
+    if unfinished:
+        parts.append("<h2>Шаги без исхода — прогон падал</h2>")
+        parts.append('<div class="card"><div class="body" style="display:block">')
+        parts.extend(
+            f'<div class="ev"><span class="kd">{e(str(r.get("task") or ""))}'
+            f'</span><span class="dt">{e(vocab.narrate(r))}</span></div>'
+            for r in unfinished)
+        parts.append(f'<div class="hint">интент без записи о завершении: '
+                     f'<code>swarm --root {e(board["root"])} resume</code> '
+                     f'разберётся</div>')
+        parts.append("</div></div>")
 
     if open_q:
         parts.append("<h2>Ждут вашего решения</h2>")
@@ -478,7 +562,10 @@ def render(board: dict[str, Any]) -> str:
                 f'{e(str(q.get("task")))} · {e(str(q.get("qkind", "")))}</div>'
                 f'<div>{e(str(q.get("question", "")))}</div>'
                 f'<div class="cmd"><code>{e(cmd)}</code>'
-                f"<button onclick='copy({json.dumps(cmd)}, this)'>скопировать</button>"
+                # Команда — в data-атрибуте, а не в inline-onclick: JSON
+                # экранирует кавычки, но не апостроф, и путь корня с «'»
+                # разрывал одинарно-кавыченный атрибут (инъекция разметки).
+                f'<button class="copy" data-cmd="{e(cmd)}">скопировать</button>'
                 f'</div><div class="hint">если решение требует тронуть файл вне '
                 f'границ задачи — добавьте <code>--add-path путь</code></div>'
                 f"</div></div></div>")
@@ -518,7 +605,15 @@ def render(board: dict[str, Any]) -> str:
         f'<code>swarm --root {e(board["root"])} board</code>.<br>'
         f'Собрано: {e(board["built"])}</div></div>')
 
-    payload = json.dumps(board, ensure_ascii=False).replace("</", "<\\/")
+    # Словари имён едут на страницу ИЗ vocab, а не живут третьей копией в
+    # JS: копия уже разошлась — исход раунда доска показывала по-английски,
+    # пока `why` говорил по-русски.
+    payload = json.dumps(
+        dict(board, vocab={"severity": vocab.SEVERITY_RU,
+                           "category": vocab.CATEGORY_RU,
+                           "status": vocab.STATUS_RU,
+                           "outcome": vocab.OUTCOME_RU}),
+        ensure_ascii=False).replace("</", "<\\/")
     parts.append(f'<script type="application/json" id="data">{payload}</script>')
     parts.append(f"<script>{JS}</script>")
     return "\n".join(parts)

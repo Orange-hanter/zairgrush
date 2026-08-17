@@ -57,7 +57,22 @@ KIND_RU = {
     "task_accepted_by_operator": "принято оператором",
     "quota_wait": "ожидание квоты провайдера",
     "quota_pause": "пауза по квоте провайдера",
+    "gate_failed": "гейт красный",
+    "scope_violation": "нарушение границ",
+    "executor_unavailable": "исполнитель недоступен",
+    "state_written": "состояние записано",
+    "pre_existing_dirt": "чужая грязь в дереве",
+    "executor_failed": "вызов исполнителя не состоялся",
 }
+# Записи-бухгалтерия: сопровождают каждую запись состояния и событием
+# прогона не являются. В блоках «прогон в целом» они хоронили под собой
+# редкие и важные записи (бюджет, план) — поверхности вывода их фильтруют,
+# сырьё (`--json`, журнал) остаётся полным.
+BOOKKEEPING_KINDS = frozenset({"state_written"})
+# Подпись к сумме потраченного — одна на все поверхности. Доска писала
+# «ревьюер стоил», хотя в сумме сидел и планировщик: подпись врала ровно
+# там, где человек сверяет счёт.
+SPEND_LABEL = "дорогие роли (ревью+план)"
 # Вид вопроса в инбоксе — почему петля позвала человека.
 QKIND_RU = {
     "intent": "находка о замысле", "dispute": "спор исполнителя",
@@ -313,6 +328,31 @@ def _paths_extended(r: dict[str, Any]) -> tuple[str, set[str]]:
             + (f" (по {r['qid']})" if r.get("qid") else ""), {"path", "qid"})
 
 
+def _gate_failed(r: dict[str, Any]) -> tuple[str, set[str]]:
+    # Хвост вывода тестов уже обрезан писателем записи; здесь он нужен,
+    # потому что именно по нему оператор понимает, ЧЕМ гейт красный.
+    text = f"гейт красный в раунде {r.get('round')}"
+    if r.get("tail"):
+        text += f": {_s(r['tail'])}"
+    return text, {"round", "tail"}
+
+
+def _scope_violation(r: dict[str, Any]) -> tuple[str, set[str]]:
+    bits = [f"границы задачи нарушены в раунде {r.get('round')}"]
+    unexpected = _seq(r.get("unexpected"))
+    if unexpected:
+        bits.append(f"вне границ: {', '.join(map(str, unexpected))}")
+    protected = _seq(r.get("protected"))
+    if protected:
+        bits.append(f"тронуты защищённые тесты: {', '.join(map(str, protected))}")
+    return "; ".join(bits), {"round", "unexpected", "protected"}
+
+
+def _executor_unavailable(r: dict[str, Any]) -> tuple[str, set[str]]:
+    return (f"исполнитель недоступен, прогон остановлен: {_s(r.get('stderr'))}",
+            {"stderr"})
+
+
 NARRATORS: dict[str, Narrator] = {
     "round": _round,
     "question": _question,
@@ -344,6 +384,23 @@ NARRATORS: dict[str, Narrator] = {
     "restore_failed": lambda r: (
         f"откат к лучшему раунду не состоялся: {_s(r.get('stderr'))}",
         {"stderr"}),
+    "gate_failed": _gate_failed,
+    "scope_violation": _scope_violation,
+    "executor_unavailable": _executor_unavailable,
+    "state_written": lambda r: (
+        f"состояние записано (отпечаток {r.get('sha')})", {"sha"}),
+    # Запуск --force поверх незакоммиченных правок: страж границ эти файлы
+    # дальше не судит, и оператор обязан видеть, ЧТО задача пошла поверх них.
+    "pre_existing_dirt": lambda r: (
+        "задача пошла поверх незакоммиченных правок (--force), страж границ "
+        "их не судит: " + ", ".join(map(str, _seq(r.get("files")) or ["?"])),
+        {"files"}),
+    # stderr — единственное место, где провайдер объясняет отказ: ради него
+    # запись и заведена (диагноз «квота кончилась» стоил шести запросов).
+    "executor_failed": lambda r: (
+        (f"вызов исполнителя не состоялся в раунде {r.get('round')} "
+         f"({_s(r.get('reason'))}): {_s(r.get('stderr')) or 'stderr пуст'}"),
+        {"round", "reason", "stderr"}),
 }
 
 

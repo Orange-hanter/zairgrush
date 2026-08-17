@@ -163,6 +163,19 @@ class TestPersistence(StateCase):
         self.assertEqual(len(rows), 2)
 
 
+class TestSpendSurvivesGarbage(StateCase):
+    """Журнал метрик читается как данные, а не как контракт: валидная
+    JSON-строка не-объект и строковый cost_usd роняли total_spend —
+    то есть именно ту формулу, которой сверяют деньги."""
+
+    def test_non_dict_rows_and_string_costs_are_skipped(self):
+        self.state.metric(task="aaaa", phase="review", cost_usd=1.25)
+        with self.state.metrics_path.open("a", encoding="utf-8") as f:
+            f.write('"строка"\n[1, 2]\n{"cost_usd": "дорого"}\n'
+                    '{"cost_usd": 0.25}\nне json\n')
+        self.assertEqual(self.state.total_spend(), 1.5)
+
+
 class TestAnswerDoneGuard(StateCase):
     """Ответ на залежавшийся вопрос не воскрешает закрытую задачу:
     безусловный pending отправлял done-работу на повторное исполнение."""

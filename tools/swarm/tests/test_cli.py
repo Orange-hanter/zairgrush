@@ -147,6 +147,13 @@ class TestResumeReconciliation(CliCase):
         self.state.log("step_intent", step_id="aaaa:commit:1", task="aaaa",
                        action="commit", head=head)
 
+    def _stub_run(self):
+        """Хвост resume — обычный `run`; здесь проверяется реконсиляция,
+        и живой цикл с вызовом агентов ей только мешает."""
+        original = cli.cmd_run
+        cli.cmd_run = lambda args: 0
+        self.addCleanup(setattr, cli, "cmd_run", original)
+
     def _head(self):
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root,
                               capture_output=True, text=True,
@@ -155,13 +162,34 @@ class TestResumeReconciliation(CliCase):
     def test_no_commit_rolls_back_to_pending(self):
         self.state.set_status("aaaa", "in_progress")
         self._intent(self._head())          # HEAD не сдвигался: коммита не было
-        code, out = run_cli("--root", str(self.root), "resume", "--dry-run")
+        self._stub_run()
+        code, out = run_cli("--root", str(self.root), "resume")
         self.assertEqual(code, 0, out)
         self.assertIn("реконсиляция", out)
         task = next(t for t in self.state.load_tasks()["tasks"]
                     if t["id"] == "aaaa")
         self.assertEqual(task["status"], "pending",
                          "интент без действия обязан откатиться в очередь")
+
+    def test_dry_run_previews_without_touching_state(self):
+        """Сухой прогон обещает не трогать состояние — а реконсиляция
+        писала step_failed в журнал и переписывала tasks.json до всякой
+        проверки флага: оператор хотел ПОСМОТРЕТЬ, что сделает resume, и
+        получал уже сделанное."""
+        self.state.set_status("aaaa", "in_progress")
+        self._intent(self._head())
+        journal_before = self.state.journal_path.read_text()
+        tasks_before = self.state.tasks_path.read_text()
+        self._stub_run()
+        code, out = run_cli("--root", str(self.root), "resume", "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertIn("dry-run", out)
+        self.assertIn("вернётся в очередь", out,
+                      "оператору обязаны сказать, ЧТО сделает resume")
+        self.assertEqual(self.state.journal_path.read_text(), journal_before,
+                         "сухой прогон не имеет права писать в журнал")
+        self.assertEqual(self.state.tasks_path.read_text(), tasks_before,
+                         "сухой прогон не имеет права менять очередь")
 
     def test_orchestrator_commit_completes_the_task(self):
         self.state.set_status("aaaa", "in_progress")
@@ -174,7 +202,8 @@ class TestResumeReconciliation(CliCase):
                "GIT_COMMITTER_EMAIL": "orchestrator@swarm.local"}
         subprocess.run(["git", "commit", "-qam", "aaaa: работа"],
                        cwd=self.root, env=env, check=True)
-        code, out = run_cli("--root", str(self.root), "resume", "--dry-run")
+        self._stub_run()
+        code, out = run_cli("--root", str(self.root), "resume")
         self.assertEqual(code, 0, out)
         task = next(t for t in self.state.load_tasks()["tasks"]
                     if t["id"] == "aaaa")
@@ -259,6 +288,18 @@ class TestDoctor(CliCase):
         (self.root / "src" / "new.py").write_text("x = 1\n")
         _, out = run_cli("--root", str(self.root), "doctor")
         self.assertIn("изменённых файлов", out)
+
+    def test_missing_tree_sitter_is_reported_honestly(self):
+        """find_spec сообщает об отсутствии top-level модуля значением
+        None, а не исключением: проверка через try ловила пустоту, и
+        доктор объявлял tree-sitter доступным на ЛЮБОЙ машине — ровно
+        тот класс лжи о среде, ради которого doctor заведён."""
+        original = cli.importlib.util.find_spec
+        cli.importlib.util.find_spec = lambda name: None
+        self.addCleanup(setattr, cli.importlib.util, "find_spec", original)
+        _, out = run_cli("--root", str(self.root), "doctor")
+        line = next(ln for ln in out.splitlines() if "tree-sitter" in ln)
+        self.assertIn("не установлен", line)
 
 
 class TestReport(CliCase):
