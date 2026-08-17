@@ -60,6 +60,23 @@ class CliCase(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def fake_loop(self, results):
+        """Подставная петля с заготовленными исходами.
+
+        Проверяется обвязка вокруг петли (коды возврата, итоговая
+        строка), а не сама петля — живые агенты здесь не нужны.
+        """
+        class FakeLoop:
+            def __init__(self, *a, **kw):
+                pass
+
+            def run(self, limit=None):
+                return dict(results)
+
+        original = cli.loop_mod.Loop
+        cli.loop_mod.Loop = FakeLoop
+        self.addCleanup(setattr, cli.loop_mod, "Loop", original)
+
 
 class TestStatus(CliCase):
     def test_shows_goal_and_tasks(self):
@@ -550,6 +567,218 @@ class TestLoopOutputIsVisible(unittest.TestCase):
                if hasattr(cli, "__file__") else "")
         self.assertNotIn("ui=print", src,
                          "петля обязана получать печать со сбросом буфера")
+
+
+class TestRunExitCodes(CliCase):
+    """Коды возврата прогона — машинный контракт, а не украшение.
+
+    loop.py объявляет EXIT_* «машинным контрактом для внешнего скрипта»,
+    но ни `run`, ни `go` исходы петли в код процесса не отображали:
+    прогон, вставший по бюджету или на недоступном исполнителе, выходил
+    с нулём, и скрипт поверх не мог отличить «сделано» от «встало».
+    """
+
+    def test_budget_stop_gets_its_own_code(self):
+        self.fake_loop({"aaaa": "done", "_budget": "exhausted"})
+        code, out = run_cli("--root", str(self.root), "run")
+        self.assertEqual(code, cli.EXIT_BUDGET, out)
+
+    def test_blocked_outcome_needs_human(self):
+        self.fake_loop({"aaaa": "blocked"})
+        code, _ = run_cli("--root", str(self.root), "run")
+        self.assertEqual(code, cli.EXIT_NEEDS_HUMAN)
+
+    def test_ask_user_outcome_needs_human(self):
+        self.fake_loop({"aaaa": "ask_user"})
+        code, _ = run_cli("--root", str(self.root), "run")
+        self.assertEqual(code, cli.EXIT_NEEDS_HUMAN)
+
+    def test_executor_unavailable_gets_its_own_code(self):
+        self.fake_loop({"_executor": "unavailable"})
+        code, _ = run_cli("--root", str(self.root), "run")
+        self.assertEqual(code, cli.EXIT_NO_EXECUTOR)
+
+    def test_all_done_is_zero(self):
+        self.fake_loop({"aaaa": "done", "bbbb": "done"})
+        code, _ = run_cli("--root", str(self.root), "run")
+        self.assertEqual(code, cli.EXIT_QUEUE_DONE)
+
+    def test_go_uses_the_same_mapping(self):
+        """Одна формула на обе команды: своя копия в `go` разъехалась бы
+        с `run` при первом же новом исходе петли."""
+        self.fake_loop({"aaaa": "blocked"})
+        code, _ = run_cli("--root", str(self.root), "go")
+        self.assertEqual(code, cli.EXIT_NEEDS_HUMAN)
+
+    def test_go_prints_run_events_in_summary(self):
+        """`go` фильтровал ключи с «_» и печатал `итог: {}` у прогона,
+        вставшего по бюджету, — причина остановки пряталась ровно из
+        той строки, где её ищут (в `run` она при этом была видна)."""
+        self.fake_loop({"_budget": "exhausted"})
+        code, out = run_cli("--root", str(self.root), "go")
+        self.assertIn("_budget", out, "причина остановки не служебный шум")
+        self.assertEqual(code, cli.EXIT_BUDGET)
+
+    def test_epilog_documents_the_contract(self):
+        _, out = run_cli("--help")
+        self.assertIn("коды возврата", out)
+        self.assertIn("12", out)
+
+
+class TestGoGoalGuard(CliCase):
+    """`go --goal` при непустой очереди молча пропускал планирование.
+
+    data["goal"] при этом не обновлялся: status и доска показывали
+    старую цель, а policies() фильтруют решения человека по цели — под
+    чужой вывеской они молча теряют силу. Расхождение целей — повод
+    отказаться, а не продолжить не под тем флагом.
+    """
+
+    def test_different_goal_is_refused_loudly(self):
+        code, out = run_cli("--root", str(self.root), "go",
+                            "--goal", "совсем другая цель")
+        self.assertEqual(code, 2)
+        self.assertIn("тестовая цель", out, "старая цель названа")
+        self.assertIn("совсем другая цель", out, "новая цель названа")
+        self.assertIn("plan --goal", out, "выход подсказан")
+        goal = cli.state_mod.SwarmState(self.root).load_tasks()["goal"]
+        self.assertEqual(goal, "тестовая цель",
+                         "цель не должна подменяться молча")
+
+    def test_same_goal_proceeds(self):
+        self.fake_loop({"aaaa": "done", "bbbb": "done"})
+        code, out = run_cli("--root", str(self.root), "go",
+                            "--goal", "тестовая цель")
+        self.assertEqual(code, 0, out)
+        self.assertIn("планирование пропущено", out)
+
+
+class TestNextStepAfterCrash(CliCase):
+    """_print_next не знал про оборванную работу.
+
+    После аварии сводка либо молчала, либо звала «работа закончена —
+    остался просмотр глазами» — прямо под блоком НЕЗАВЕРШЁННЫЕ ШАГИ,
+    который печатался строкой выше и звал в `resume`.
+    """
+
+    def test_in_progress_recommends_resume(self):
+        self.state.set_status("aaaa", "in_progress")
+        self.state.set_status("bbbb", "done")
+        _, out = run_cli("--root", str(self.root), "status")
+        tail = out.split("дальше:")[1]
+        self.assertIn("resume", tail)
+        self.assertNotIn("просмотр глазами", tail)
+
+    def test_in_review_recommends_resume(self):
+        self.state.set_status("aaaa", "in_review")
+        self.state.set_status("bbbb", "done")
+        _, out = run_cli("--root", str(self.root), "status")
+        self.assertIn("resume", out.split("дальше:")[1])
+
+    def test_unfinished_step_outranks_done_review(self):
+        for tid in ("aaaa", "bbbb"):
+            self.state.set_status(tid, "done")
+        self.state.log("step_intent", step_id="aaaa:commit:1", task="aaaa",
+                       action="commit")
+        _, out = run_cli("--root", str(self.root), "status")
+        tail = out.split("дальше:")[1]
+        self.assertIn("resume", tail)
+        self.assertNotIn("просмотр глазами", tail)
+
+
+class TestStatusSpeaksHuman(CliCase):
+    """status печатал сырые коды состояния и причины.
+
+    «invalid_verdict» — буквальный антипример из комментария к словарю
+    причин в vocab.py: человек читает его в момент, когда прогон уже
+    встал, и код ему в этот момент не помогает.
+    """
+
+    def test_reason_is_translated(self):
+        self.state.set_status("aaaa", "blocked", reason="invalid_verdict")
+        _, out = run_cli("--root", str(self.root), "status")
+        self.assertIn("вердикт не разобран", out)
+        self.assertNotIn("invalid_verdict", out)
+
+    def test_status_bucket_is_translated(self):
+        _, out = run_cli("--root", str(self.root), "status")
+        self.assertIn("в очереди (2)", out)
+        self.assertNotIn("pending (", out)
+
+
+class TestStatusSurvivesHandEditedQueue(CliCase):
+    """Правленный руками tasks.json ронял status голой трассировкой.
+
+    Доска любое содержимое `.swarm/` переживает — сводка падала на
+    первом же t["status"]. Запись не той формы уходит в «прочее», а не
+    в никуда: иначе задача с опечаткой в статусе числится в «задач: N»,
+    но не видна нигде.
+    """
+
+    def test_broken_rows_degrade_not_crash(self):
+        raw = {"goal": "тестовая цель", "tasks": [
+            {"id": "aaaa", "title": "первая", "status": "pending"},
+            {"id": "xxxx", "title": "опечатка", "status": "half-done"},
+            {"id": "yyyy", "status": "pending"},
+            {"title": "без id и статуса"},
+            "просто строка",
+        ]}
+        self.state.tasks_path.write_text(
+            json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        code, out = run_cli("--root", str(self.root), "status")
+        self.assertEqual(code, 0, out)
+        self.assertIn("задач: 5", out)
+        self.assertIn("yyyy", out, "задача без title видна в своей группе")
+        self.assertIn("прочее", out)
+        self.assertIn("xxxx", out)
+        self.assertIn("half-done", out, "нелегальный статус назван, не спрятан")
+        self.assertIn("просто строка", out, "неразобранная запись показана")
+
+
+class TestPolicyCli(CliCase):
+    def test_add_without_text_is_refused(self):
+        """nargs="?" с умолчанием "" пропускал пустую политику: pid
+        занят, в журнале запись, а решения в ней нет."""
+        code, out = run_cli("--root", str(self.root), "policy", "add",
+                            "--match", "release")
+        self.assertEqual(code, 2)
+        self.assertIn("текст", out)
+
+    def test_string_match_is_not_scattered_into_letters(self):
+        """`", ".join` строку рассыпает в буквы: match="release" из
+        старого журнала печатался как «r, e, l, e, a, s, e»."""
+        self.state.log("policy", pid="p001", text="release notes не трогаем",
+                       match="release", goal="тестовая цель")
+        code, out = run_cli("--root", str(self.root), "policy", "list")
+        self.assertEqual(code, 0, out)
+        self.assertIn("совпадение по: release", out)
+        self.assertNotIn("r, e, l", out)
+
+
+class TestReportRunLevelBlock(CliCase):
+    """Блок «прогон в целом» — редкие события, а не бухгалтерия."""
+
+    def test_bookkeeping_does_not_bury_run_events(self):
+        """state_written сопровождает КАЖДУЮ запись состояния и в блоке
+        прогона хоронил под собой редкие события — бюджет, план. Доска
+        фильтрует его через BOOKKEEPING_KINDS — отчёт обязан так же;
+        сырьё через --json остаётся полным."""
+        self.state.log("budget_exhausted", spent=51, budget=50,
+                       stopped_before="aaaa")
+        _, out = run_cli("--root", str(self.root), "report")
+        self.assertIn("бюджет прогона исчерпан", out)
+        self.assertNotIn("состояние записано", out)
+        _, raw = run_cli("--root", str(self.root), "report", "--json")
+        self.assertIn("state_written", raw, "сырьё не фильтруется")
+
+    def test_plan_failed_lands_in_run_block(self):
+        """Фильтр блока открытый — «запись без задачи», не список видов:
+        закрытый перечень молча терял plan_failed (как когда-то доска)."""
+        self.state.log("plan_failed", mode="plan", reason="invalid",
+                       errors=["схема не прошла"])
+        _, out = run_cli("--root", str(self.root), "report")
+        self.assertIn("прогон в целом", out)
+        self.assertIn("планирование не удалось", out)
 
 
 if __name__ == "__main__":

@@ -110,34 +110,59 @@ def _ui(*args: object) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    vocab = _load("vocab")
     st = state_mod.SwarmState(args.root)
     data = st.load_tasks()
     tasks = data.get("tasks", [])
     if not tasks:
         print("очередь пуста (.swarm/tasks.json отсутствует или без задач)")
         return 0
+    # tasks.json правят и руками: запись не той формы — повод показать её
+    # в «прочем», а не упасть трассировкой в момент, когда состояние и так
+    # разбирают. Доска любое содержимое переживает — сводка обязана не хуже.
+    rows = [t for t in tasks if isinstance(t, dict)]
+    broken = [t for t in tasks if not isinstance(t, dict)]
     by_status: dict[str, list[dict[str, Any]]] = {}
-    for t in tasks:
-        by_status.setdefault(t["status"], []).append(t)
+    for t in rows:
+        by_status.setdefault(str(t.get("status")), []).append(t)
     print(f"цель: {data.get('goal') or '(не задана)'}")
     print(f"задач: {len(tasks)}")
-    for status in ("in_progress", "in_review", "pending", "blocked", "done"):
+    known = ("in_progress", "in_review", "pending", "blocked", "done")
+    for status in known:
         group = by_status.get(status, [])
         if not group:
             continue
-        print(f"\n{status} ({len(group)}):")
+        print(f"\n{vocab.ru(vocab.STATUS_RU, status)} ({len(group)}):")
         for t in group:
             extra = []
             if t.get("iterations"):
                 extra.append(f"итераций {t['iterations']}")
             if t.get("reason"):
-                extra.append(t["reason"])
+                # Через общий словарь: голый «invalid_verdict» — буквальный
+                # антипример, ради которого словарь причин и заведён.
+                extra.append(vocab.ru(vocab.REASON_RU, t["reason"]))
             if t.get("stash"):
                 extra.append(f"stash {t['stash']}")
             if t.get("commit"):
                 extra.append(t["commit"])
             tail = f"  [{', '.join(extra)}]" if extra else ""
-            print(f"  {t['id']}  {t['title'][:60]}{tail}")
+            print(f"  {t.get('id') or '(без id)'}  "
+                  f"{str(t.get('title') or '')[:60]}{tail}")
+
+    # Нелегальный статус — в «прочее», а не в никуда: счёт «задач: N»
+    # обязан сходиться с тем, что показано ниже, иначе задача с опечаткой
+    # в статусе числится в сумме, но не видна нигде.
+    strange = [t for s, g in sorted(by_status.items())
+               if s not in known for t in g]
+    if strange or broken:
+        print(f"\nпрочее ({len(strange) + len(broken)}) — записи вне "
+              f"словаря петли, проверьте tasks.json:")
+        for t in strange:
+            print(f"  {t.get('id') or '(без id)'}  "
+                  f"{str(t.get('title') or '')[:60]}"
+                  f"  [статус {t.get('status')!r}]")
+        for b in broken:
+            print(f"  (запись не разобрана: {str(b)[:60]})")
 
     policies = st.policies()
     if policies:
@@ -165,23 +190,34 @@ def cmd_status(args: argparse.Namespace) -> int:
     cost = st.total_spend()
     if cost:
         print(f"\nпотрачено дорогими ролями: ${cost:.2f}")
-    _print_next(args.root, tasks, open_q)
+    _print_next(args.root, rows, open_q, unfinished)
     return 0
 
 
 def _print_next(root: str, tasks: list[dict[str, Any]],
-                open_q: list[dict[str, Any]]) -> None:
+                open_q: list[dict[str, Any]],
+                unfinished: list[dict[str, Any]]) -> None:
     """Одна строка «дальше» вместо необходимости помнить весь набор команд.
 
     Сводка состояния отвечает на вопрос «что происходит», но человек
     приходит с другим — «что мне теперь делать». Ответ выводится из того
     же состояния и не требует держать в голове руководство оператора.
+
+    Оборванная работа (in_progress/in_review, незавершённые шаги)
+    распознаётся раньше остального: после аварии подсказка «работа
+    закончена — остался просмотр глазами» стояла прямо под списком
+    НЕЗАВЕРШЁННЫХ ШАГОВ и звала человека мимо `resume`.
     """
     pre = _prefix(root)
     by_status: dict[str, list[dict[str, Any]]] = {}
     for t in tasks:
         by_status.setdefault(str(t.get("status")), []).append(t)
-    if open_q:
+    halfway = by_status.get("in_progress") or by_status.get("in_review")
+    if unfinished or halfway:
+        nxt = (f"{pre} resume",
+               ("есть работа, оборванная на полпути, — resume разберёт "
+                "незакрытые шаги (если прогон ещё идёт, просто дождитесь)"))
+    elif open_q:
         nxt = (f'{pre} answer {open_q[0]["qid"]} "…"',
                (f"вас ждут {len(open_q)} вопрос(ов) — очередь не пойдёт "
                 f"дальше без решения"))
@@ -425,7 +461,13 @@ def cmd_report(args: argparse.Namespace) -> int:
     for r in rows:
         groups.setdefault(str(r.get("task") or ""), []).append(r)
 
-    run_level = groups.pop("", [])
+    # Блок прогона — открытый фильтр «запись без задачи», а не список
+    # видов (то же правило, что у board.collect). Бухгалтерия
+    # (BOOKKEEPING_KINDS) наружу не идёт: state_written сопровождает
+    # каждую запись состояния и хоронил под собой редкие события —
+    # бюджет, план; сырьё через --json остаётся полным.
+    run_level = [r for r in groups.pop("", [])
+                 if r.get("kind") not in vocab.BOOKKEEPING_KINDS]
     if run_level:
         print("=== прогон в целом ===")
         for r in run_level:
@@ -628,6 +670,7 @@ def cmd_why(args: argparse.Namespace) -> int:
 
 def cmd_inbox(args: argparse.Namespace) -> int:
     """Накопившиеся вопросы к человеку — разбираются пачкой."""
+    vocab = _load("vocab")
     st = state_mod.SwarmState(args.root)
     questions = st.questions(only_open=not args.all)
     if not questions:
@@ -635,13 +678,32 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         return 0
     for q in questions:
         mark = "?" if q["status"] == "open" else "v"
-        print(f"[{mark}] {q['qid']}  задача {q['task']}  ({q['qkind']})")
-        print(f"     {q['question'][:150]}")
-        if q.get("findings"):
-            for f in q["findings"][:3]:
-                print(f"       - [{f.get('category')}] {str(f.get('issue'))[:110]}")
+        print(f"[{mark}] {q['qid']}  задача {q.get('task')}  "
+              f"({vocab.ru(vocab.QKIND_RU, q.get('qkind'))})")
+        print(f"     {str(q.get('question') or '')[:150]}")
+        dispute = q.get("dispute")
+        if dispute:
+            # Спор исполнителя целиком: решение о плане принимается по
+            # полному доводу, а не по одной строке вопроса. Журнал —
+            # данные: не-строку показываем компактным JSON, а не падаем
+            # на splitlines.
+            body = (dispute if isinstance(dispute, str)
+                    else json.dumps(dispute, ensure_ascii=False))
+            print("     довод исполнителя:")
+            for line in body.splitlines():
+                print(f"       {line}")
+        findings = q.get("findings")
+        if findings and not isinstance(findings, list):
+            findings = [findings]
+        for f in (findings or [])[:3]:
+            # Через тот же словарь, что report и why: находка без
+            # тяжести и места — половина находки.
+            if isinstance(f, dict):
+                print(f"       - {vocab.finding(f)}")
                 if f.get("suggestion"):
                     print(f"         предложение: {str(f['suggestion'])[:100]}")
+            else:
+                print(f"       - {str(f)[:110]}")
         if q.get("mechanical_left"):
             print(f"     механических находок (чинятся сами): {q['mechanical_left']}")
         if q.get("stash"):
@@ -713,6 +775,15 @@ def cmd_answer(args: argparse.Namespace) -> int:
     except state_mod.StateError as e:
         print(f"{e}", file=sys.stderr)
         return 2
+    if task_id == "*":
+        # Вопрос уровня прогона (plan_failed и т.п.): задачи за ним нет,
+        # и фраза «задача * возвращена в очередь» была ложью — ничего не
+        # менялось и ничего не перезапустится само. Честный итог: ответ
+        # лежит в журнале, петлю перезапускают руками.
+        print(f"вопрос {args.qid} закрыт — ответ записан в журнал")
+        print("это вопрос уровня прогона, задач он не возвращает; "
+              'перезапустите `swarm plan --goal "…"` или `swarm go`')
+        return 0
     print(f"вопрос {args.qid} закрыт, задача {task_id} возвращена в очередь")
     if args.add_path:
         print(f"границы задачи расширены: {', '.join(args.add_path)}")
@@ -731,7 +802,12 @@ def cmd_policy(args: argparse.Namespace) -> int:
         print(f"активные политики (цель: {st.load_tasks().get('goal', '')[:60]}):")
         for p in policies:
             print(f"  {p['pid']}  {p['text']}")
-            print(f"        совпадение по: {', '.join(p['match'])}")
+            # Журнал — данные: match могла оставить строка вместо списка
+            # (прежний формат, правка руками), и `", ".join` рассыпал бы
+            # её в буквы «r, e, l, e, a, s, e».
+            match = p.get("match")
+            words = match if isinstance(match, list) else [match] if match else []
+            print(f"        совпадение по: {', '.join(str(m) for m in words)}")
         # честность важнее удобства: видно, сколько находок уже подавлено
         total = 0
         if st.journal_path.exists():
@@ -747,6 +823,12 @@ def cmd_policy(args: argparse.Namespace) -> int:
                   f"(`swarm report` покажет какие)")
         return 0
     if args.action == "add":
+        if not args.text.strip():
+            # nargs="?" с умолчанием "" пропускал пустую политику: она
+            # ничего не выражает, но занимает pid и место в журнале.
+            print('нужен текст политики: policy add "текст" --match слово',
+                  file=sys.stderr)
+            return 2
         if not args.match:
             print('нужны ключевые слова: --match "release note"', file=sys.stderr)
             return 2
@@ -756,15 +838,16 @@ def cmd_policy(args: argparse.Namespace) -> int:
         print("ревьюер по-прежнему их сообщает — фильтрует оркестратор, "
               "подавленное видно в `swarm report`")
         return 0
-    if args.action == "remove":
-        try:
-            st.drop_policy(args.text)
-        except state_mod.StateError as e:
-            print(f"{e}", file=sys.stderr)
-            return 2
-        print(f"политика {args.text} снята")
-        return 0
-    return 2
+    # Осталось только remove: argparse через choices уже закрыл
+    # пространство действий, и хвостовой `return 2` изображал обработку
+    # ошибки, которой не бывает.
+    try:
+        st.drop_policy(args.text)
+    except state_mod.StateError as e:
+        print(f"{e}", file=sys.stderr)
+        return 2
+    print(f"политика {args.text} снята")
+    return 0
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -830,6 +913,46 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+# Коды возврата `run`/`go` — машинный контракт для скрипта поверх петли.
+# Продолжение EXIT_* из loop.py: те объявлены контрактом, но до кода
+# процесса не доезжали, и `swarm go` возвращал 0 что на закрытой очереди,
+# что на исчерпанном бюджете — снаружи «сделано» и «встало» совпадали.
+# 2 (usage/отказ на входе), 3 (нет готовых задач), 4 (квота) заняты;
+# 11 совпадает по смыслу с EXIT_ASK_USER петли. Таблица — в EPILOG.
+EXIT_QUEUE_DONE = 0    # очередь отработана: все взятые задачи done
+EXIT_NEEDS_HUMAN = 11  # есть исходы blocked/ask_user — нужен человек
+EXIT_BUDGET = 12       # прогон остановлен по бюджету
+EXIT_NO_EXECUTOR = 13  # исполнитель недоступен, прогон остановлен
+
+
+def _run_verdict(results: dict[str, str]) -> int:
+    """Код возврата прогона из исходов петли — один на `run` и `go`.
+
+    Порядок веток: сперва причина остановки очереди (`_executor`,
+    `_budget` объясняют, ПОЧЕМУ петля прервалась), затем состояние
+    взятых задач.
+    """
+    if results.get("_executor") == "unavailable":
+        return EXIT_NO_EXECUTOR
+    if (results.get("_budget") == "exhausted"
+            or "budget_stop" in results.values()):
+        return EXIT_BUDGET
+    if any(v in ("blocked", "ask_user") for k, v in results.items()
+           if not k.startswith("_")):
+        return EXIT_NEEDS_HUMAN
+    return EXIT_QUEUE_DONE
+
+
+def _print_results(results: dict[str, str]) -> None:
+    """Итог прогона печатается целиком, включая ключи-события с «_».
+
+    `go` фильтровал `_budget`/`_executor` и показывал `итог: {}` у
+    прогона, вставшего по бюджету: причина остановки — не служебный шум,
+    а главное в последней строке. `run` и `go` печатают одинаково.
+    """
+    _ui("\nитог: " + json.dumps(results, ensure_ascii=False))
+
+
 def cmd_go(args: argparse.Namespace) -> int:
     """От А до Я: рой сам декомпозирует цель и сам её исполняет.
 
@@ -845,8 +968,23 @@ def cmd_go(args: argparse.Namespace) -> int:
     if not _preflight(st, getattr(args, "force", False)):
         return 2
 
-    existing = st.load_tasks().get("tasks", [])
+    data = st.load_tasks()
+    existing = data.get("tasks", [])
     pending = [t for t in existing if t.get("status") == "pending"]
+    stored_goal = str(data.get("goal") or "")
+    if args.goal and pending and args.goal != stored_goal:
+        # Очередь не пуста — планирование пропустится, и переданная цель
+        # НИКУДА не записалась бы: status и доска продолжали бы показывать
+        # старую, а policies() фильтруют решения человека по цели — под
+        # чужой вывеской они молча теряют силу. Честнее отказаться, чем
+        # молча продолжить не под тем флагом.
+        print("цель очереди и переданная --goal расходятся:", file=sys.stderr)
+        print(f"  в очереди: {stored_goal or '(не задана)'}", file=sys.stderr)
+        print(f"  передана:  {args.goal}", file=sys.stderr)
+        print("продолжить старую очередь — `swarm go` без --goal; "
+              'новая цель — `swarm plan --goal "…"`, затем `swarm go`',
+              file=sys.stderr)
+        return 2
     if args.goal and not pending:
         print(f"== планирование: {args.goal}\n")
         rc = cmd_plan(argparse.Namespace(
@@ -870,8 +1008,7 @@ def cmd_go(args: argparse.Namespace) -> int:
     board_mod = _load("board")
     out, board = board_mod.build(args.root)
     open_q = [q for q in board["questions"] if q["status"] == "open"]
-    print("\nитог:", json.dumps({k: v for k, v in results.items()
-                                 if not k.startswith("_")}, ensure_ascii=False))
+    _print_results(results)
     print(f"потрачено ${board['total']}"
           + (f" из ${budget}" if budget else ""))
     print(f"доска: {out}")
@@ -891,7 +1028,7 @@ def cmd_go(args: argparse.Namespace) -> int:
                 print(f"  {t['id']}  {str(t.get('title', ''))[:60]}")
             print(f"  разобрать: {_prefix(str(args.root))} "
                   f"why {stuck[0]['id']}")
-    return 0
+    return _run_verdict(results)
 
 
 def cmd_board(args: argparse.Namespace) -> int:
@@ -994,8 +1131,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         agents = _load("agents").Agents(st, cfg)
         loop = loop_mod.Loop(st, cfg, agents, ui=_ui)
         results = loop.run(limit=args.limit)
-        print("\nитог:", json.dumps(results, ensure_ascii=False))
-    return 0
+        _print_results(results)
+    return _run_verdict(results)
 
 
 ORCHESTRATOR_EMAIL = "orchestrator@swarm.local"
@@ -1153,6 +1290,15 @@ EPILOG = """
   report --task <id>          хроника задачи связным текстом
   report --json               то же сырьём, без обрезки
   retry <задача> --note "…"   вернуть в очередь с указанием
+
+коды возврата run/go — машинный контракт для скрипта поверх петли:
+  0   очередь отработана: все взятые задачи done
+  2   ошибка использования или отказ на входе (preflight, границы, цель)
+  3   нет задач, готовых к запуску (run)
+  4   пауза по квоте провайдера — повторить, когда квота отпустит
+  11  есть исходы blocked/ask_user — нужен человек: inbox -> answer, why
+  12  прогон остановлен по бюджету
+  13  исполнитель недоступен — прогон остановлен
 
 первое правило разбора: подозревайте обвязку, а не модель.
 """

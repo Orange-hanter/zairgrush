@@ -562,5 +562,79 @@ class TestAnswerPathGuardEscape(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+class TestRunLevelAnswer(InboxCase):
+    """Ответ на вопрос уровня прогона (task="*") ничего не перезапускает.
+
+    cmd_answer печатал «задача * возвращена в очередь», хотя за вопросом
+    plan_failed задачи нет: состояние не менялось и само ничего не
+    перезапустится — оператор ждал продолжения, которого не будет.
+    """
+
+    def test_star_answer_tells_the_truth(self):
+        qid = self.state.ask("*", "plan_failed", "план не прошёл схему")
+        code, out = run_cli("--root", str(self.root), "answer", qid,
+                            "цель уточнена, пробуем снова")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("возвращена в очередь", out)
+        self.assertIn("журнал", out, "сказано, куда лёг ответ")
+        self.assertIn("swarm plan", out, "сказано, что перезапуск ручной")
+
+    def test_star_answer_is_recorded(self):
+        qid = self.state.ask("*", "plan_failed", "план не прошёл схему")
+        run_cli("--root", str(self.root), "answer", qid, "ответ")
+        q = next(q for q in self.state.questions() if q["qid"] == qid)
+        self.assertEqual(q["status"], "answered")
+
+
+class TestDisputeBodyInInbox(InboxCase):
+    """Полный довод исполнителя доходит до оператора.
+
+    Вопрос-спор нёс поле dispute с полным аргументом из отчёта
+    исполнителя, но инбокс печатал только однострочную сводку — решение
+    о пересмотре плана принималось вслепую.
+    """
+
+    def test_dispute_body_is_shown(self):
+        self.state.ask(
+            "aaaa", "dispute", "задача невыполнима как поставлена",
+            dispute=("Полный аргумент: критерий приёмки противоречит "
+                     "границам,\nнужно менять план."))
+        _, out = run_cli("--root", str(self.root), "inbox")
+        self.assertIn("Полный аргумент", out)
+        self.assertIn("нужно менять план", out)
+
+    def test_dispute_of_wrong_shape_does_not_crash(self):
+        """Журнал — данные: dispute-словарь из чужой версии оркестратора
+        показывается как JSON, а не роняет команду на splitlines."""
+        self.state.ask("aaaa", "dispute", "вопрос",
+                       dispute={"text": "аргумент словарём"})
+        code, out = run_cli("--root", str(self.root), "inbox")
+        self.assertEqual(code, 0, out)
+        self.assertIn("аргумент словарём", out)
+
+
+class TestInboxSpeaksHuman(InboxCase):
+    """Инбокс печатал сырой qkind и терял поля находок."""
+
+    def test_qkind_is_translated(self):
+        self.state.ask("aaaa", "intent", "вопрос?")
+        _, out = run_cli("--root", str(self.root), "inbox")
+        self.assertIn("находка о замысле", out)
+        self.assertNotIn("(intent)", out)
+
+    def test_findings_keep_severity_and_place(self):
+        """Печатались только категория и суть: severity/file/line
+        терялись, а решение о замысле принимается по тяжести и месту.
+        Фраза находки — общая с report/why (vocab.finding)."""
+        self.state.ask("aaaa", "intent", "вопрос?", findings=[
+            {"severity": "major", "category": "architecture",
+             "file": "src/a.py", "line": 10, "issue": "лишний слой"}])
+        _, out = run_cli("--root", str(self.root), "inbox")
+        self.assertIn("важное", out)
+        self.assertIn("архитектура", out)
+        self.assertIn("src/a.py:10", out)
+        self.assertIn("лишний слой", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
