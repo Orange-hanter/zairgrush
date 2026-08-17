@@ -5,9 +5,13 @@
 если он пропускает мусор, петля исполняет мусор. Запуск:
     python3 -m unittest test_plan_validator -v
 """
+import contextlib
 import importlib.util
+import io
+import json
 import pathlib
 import sys
+import tempfile
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
@@ -50,6 +54,14 @@ class TestValidPlans(unittest.TestCase):
                   "task": task("bbbb", status="pending"), "reason": "r"})
         self.assertEqual(rp.validate_plan_diff(d, QUEUE), [])
 
+    def test_partial_update_status_only_is_valid(self):
+        """Дефект: валидатор требовал paths+acceptance в КАЖДОМ update,
+        хотя применение сливает поля и частичный дифф законен — минимальный
+        {"status": "pending"} отвергался на корректном плане."""
+        d = diff({"op": "update", "id": "bbbb",
+                  "task": {"status": "pending"}, "reason": "r"})
+        self.assertEqual(rp.validate_plan_diff(d, QUEUE), [])
+
     def test_dep_on_added_task_is_valid(self):
         d = diff(add(task("cccc")), add(task("dddd", deps=["cccc"])))
         self.assertEqual(rp.validate_plan_diff(d, QUEUE), [])
@@ -90,7 +102,12 @@ class TestRejectedPlans(unittest.TestCase):
         bad = task("bbbb")
         bad["acceptance"] = []
         d = diff({"op": "update", "id": "bbbb", "task": bad, "reason": "r"})
-        self.assertRejected(d, "обнуляет paths/acceptance")
+        self.assertRejected(d, "обнуляет acceptance")
+
+    def test_update_wiping_paths(self):
+        d = diff({"op": "update", "id": "bbbb", "task": {"paths": []},
+                  "reason": "r"})
+        self.assertRejected(d, "обнуляет paths")
 
     def test_dep_on_nonexistent_task(self):
         self.assertRejected(diff(add(task(deps=["zzzz"]))), "не существует")
@@ -267,6 +284,227 @@ class TestConflictingOps(unittest.TestCase):
         out[-1]["paths"].append("hack.py")
         self.assertEqual(d["ops"][0]["task"]["paths"], ["c.py"],
                          "правка результата не должна менять сам дифф")
+
+
+class TestGarbageResilience(unittest.TestCase):
+    """Мусор от модели обязан становиться СПИСКОМ ОШИБОК, а не исключением:
+    TypeError/KeyError пролетал сквозь plan_with_retry и убивал `swarm go`
+    вместо честной повторной попытки."""
+
+    def assertRejected(self, d, needle):
+        errs = rp.validate_plan_diff(d, QUEUE)
+        self.assertTrue(errs, "дифф должен быть отвергнут")
+        self.assertTrue(any(needle in e for e in errs),
+                        f"{needle!r} не найдено в {errs}")
+
+    def test_add_without_id_is_error_not_crash(self):
+        """add без id раньше проскакивал валидацию (tid=None обходил
+        touched и уникальность), а применение падало KeyError."""
+        self.assertRejected(diff({"op": "add", "task": task(), "reason": "r"}),
+                            "без id")
+
+    def test_update_without_id_is_error(self):
+        self.assertRejected(
+            diff({"op": "update", "task": {"status": "pending"}, "reason": "r"}),
+            "без id")
+
+    def test_non_string_id_is_error(self):
+        self.assertRejected(diff({"op": "remove", "id": 7, "reason": "r"}),
+                            "без id")
+
+    def test_empty_string_id_is_error(self):
+        self.assertRejected(diff({"op": "remove", "id": "", "reason": "r"}),
+                            "без id")
+
+    def test_added_id_must_match_promised_format(self):
+        """Промпт обещает id в 4 символа латиницы+цифр — обещание без
+        механической проверки остаётся пожеланием."""
+        self.assertRejected(diff(add(task("task-01"))), "4 символа")
+
+    def test_unhashable_deps_element_is_error_not_typeerror(self):
+        """dict внутри deps ронял валидатор TypeError на `d not in universe`."""
+        d = diff(add(task("cccc", deps=[{"id": "aaaa"}])))
+        errs = rp.validate_plan_diff(d, QUEUE)  # главное — не исключение
+        self.assertTrue(any("deps" in e for e in errs), errs)
+
+    def test_non_list_deps_is_error(self):
+        d = diff(add(task("cccc", deps="aaaa")))
+        errs = rp.validate_plan_diff(d, QUEUE)
+        self.assertTrue(any("deps" in e for e in errs), errs)
+
+    def test_non_dict_op_is_error(self):
+        errs = rp.validate_plan_diff(diff("строка"), QUEUE)
+        self.assertTrue(any("не объект" in e for e in errs), errs)
+
+
+class TestDoneIsOrchestratorsOnly(unittest.TestCase):
+    """Дефект: список легальных статусов включал done — план-дифф мог
+    добавить задачу сразу «сделанной» или перевести её в done, объявляя
+    работу выполненной в обход gate и ревью."""
+
+    def assertRejected(self, d, needle):
+        errs = rp.validate_plan_diff(d, QUEUE)
+        self.assertTrue(any(needle in e for e in errs),
+                        f"{needle!r} не найдено в {errs}")
+
+    def test_add_with_done_rejected(self):
+        self.assertRejected(diff(add(task(status="done"))),
+                            "недопустимый статус")
+
+    def test_update_to_done_rejected(self):
+        d = diff({"op": "update", "id": "bbbb", "task": {"status": "done"},
+                  "reason": "r"})
+        self.assertRejected(d, "недопустимый статус")
+
+    def test_schema_enum_agrees_with_validator(self):
+        """Схема — обещание модели: done не должен предлагаться в enum."""
+        schema = json.loads(rp.SCHEMA)
+        enum = (schema["properties"]["ops"]["items"]["properties"]
+                ["task"]["properties"]["status"]["enum"])
+        self.assertEqual(set(enum), rp.PLAN_STATUS)
+
+
+class TestRepoMap(unittest.TestCase):
+    """Карта репозитория: список файлов и состояние сьюта, оба идут прямо
+    в промпт планировщика."""
+
+    def setUp(self):
+        self.orig_run = rp.subprocess.run
+        self.tmp = tempfile.TemporaryDirectory()
+        self.stand = pathlib.Path(self.tmp.name)
+        (self.stand / "app.py").write_text("x = 1\n")
+
+    def tearDown(self):
+        rp.subprocess.run = self.orig_run
+        self.tmp.cleanup()
+
+    def fake_suite(self):
+        seen = {}
+
+        def fake(cmd, **kw):
+            seen.update(kw)
+            return type("R", (), {"stdout": "OK\n", "stderr": ""})()
+        rp.subprocess.run = fake
+        return seen
+
+    def test_suite_run_is_bounded_in_time(self):
+        """Дефект: у прогона сьюта не было timeout — один зависший тест
+        стенда держал `swarm plan`/`go` вечно и молча."""
+        seen = self.fake_suite()
+        rp.repo_map(self.stand)
+        self.assertEqual(seen.get("timeout"), rp.SUITE_TIMEOUT)
+
+    def test_hanging_suite_degrades_to_honest_unknown(self):
+        def hang(cmd, **kw):
+            raise rp.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        rp.subprocess.run = hang
+        files, suite = rp.repo_map(self.stand)
+        self.assertIn("неизвестно", suite,
+                      "в промпт идёт честное «неизвестно», а не зависание")
+        self.assertIn("app.py", files, "список файлов не теряется")
+
+    def test_junk_dirs_excluded_from_listing(self):
+        """Дефект: rglob без исключений уносил в промпт весь .venv стенда
+        — тысячи файлов site-packages жгли бюджет планировщика."""
+        for junk in (".venv/lib/site.py", "node_modules/m/i.py",
+                     ".swarm/raw/x.py", "build/gen.py"):
+            p = self.stand / junk
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("pass\n")
+        self.fake_suite()
+        files, _ = rp.repo_map(self.stand)
+        self.assertEqual(files, "app.py")
+
+
+class TestRetryMessaging(unittest.TestCase):
+    """Дефект: на таймауте первой попытки UI объявлял «план-дифф
+    невалиден» (ложный класс диагноза), а промпт ретрая получал инструкцию
+    ОПЕРАТОРУ «подними plan_timeout в swarm.toml», адресованную модели."""
+
+    def setUp(self):
+        self.orig = rp.call_planner
+        self.calls = []
+        self.ui = []
+
+    def tearDown(self):
+        rp.call_planner = self.orig
+
+    def planner_replies(self, results):
+        seq = iter(results)
+
+        def fake(prompt, mode, attempt=1, **kw):
+            self.calls.append(prompt)
+            return next(seq)
+        rp.call_planner = fake
+
+    def test_timeout_is_not_reported_as_invalid_diff(self):
+        good = diff(add(task()))
+        self.planner_replies([(None, "timeout"), (good, None)])
+        got, errs, _ = rp.plan_with_retry("П", "plan", QUEUE,
+                                          ui=self.ui.append)
+        self.assertIs(got, good)
+        self.assertEqual(errs, [])
+        self.assertTrue(any("timeout" in m for m in self.ui), self.ui)
+        self.assertFalse(any("невалиден" in m for m in self.ui), self.ui)
+
+    def test_timeout_retry_keeps_prompt_clean(self):
+        self.planner_replies([(None, "timeout"), (diff(add(task())), None)])
+        rp.plan_with_retry("ПРОМПТ", "plan", QUEUE, ui=lambda s: None)
+        self.assertEqual(self.calls[1], "ПРОМПТ",
+                         "модели нечего исправлять — повтор с исходным "
+                         "промптом, без советов оператору")
+
+    def test_invalid_diff_still_feeds_errors_back(self):
+        bad = diff({"op": "reorder", "id": "aaaa", "reason": "r"})
+        good = diff(add(task()))
+        self.planner_replies([(bad, None), (good, None)])
+        got, _, _ = rp.plan_with_retry("П", "plan", QUEUE, ui=self.ui.append)
+        self.assertIs(got, good)
+        self.assertTrue(any("невалиден" in m for m in self.ui), self.ui)
+        self.assertIn("Ошибки прошлой попытки", self.calls[1])
+
+
+class TestStandaloneMain(unittest.TestCase):
+    """Дефект: standalone main() не передавал root=stand — claude
+    запускался в каталоге процесса, а артефакты и метрики падали в каталог
+    пакета; CLI петли root передаёт, и два входа молча расходились."""
+
+    def setUp(self):
+        self.orig_pwr = rp.plan_with_retry
+        self.orig_metric = rp.metric
+        self.orig_map = rp.repo_map
+        self.orig_argv = sys.argv
+
+    def tearDown(self):
+        rp.plan_with_retry = self.orig_pwr
+        rp.metric = self.orig_metric
+        rp.repo_map = self.orig_map
+        sys.argv = self.orig_argv
+
+    def test_main_routes_artifacts_to_stand(self):
+        roots = {}
+
+        def fake_pwr(prompt, mode, tasks, root=None, **kw):
+            roots["plan"] = root
+            return None, ["стоп"], "no_output"
+
+        def fake_metric(root=None, **row):
+            roots["metric"] = root
+        rp.plan_with_retry = fake_pwr
+        rp.metric = fake_metric
+        rp.repo_map = lambda stand: ("", "OK")
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_file = pathlib.Path(tmp) / "tasks.json"
+            tasks_file.write_text('{"tasks": []}')
+            sys.argv = ["planner", "plan", "--stand", tmp,
+                        "--tasks", str(tasks_file),
+                        "--out", str(pathlib.Path(tmp) / "out.json"),
+                        "--goal", "g"]
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                rp.main()
+            self.assertEqual(roots["plan"], tmp)
+            self.assertEqual(roots["metric"], tmp)
 
 
 if __name__ == "__main__":

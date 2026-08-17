@@ -7,6 +7,7 @@
 — правку.
 """
 import importlib.util
+import json
 import pathlib
 import sys
 import tempfile
@@ -123,6 +124,108 @@ class TestHonesty(HybridCase):
         self.assertIn("helper", text)
         # счётчик «зовут» строится только на точных ссылках
         self.assertIn("[зовут: 1]", text)
+
+
+class TestCtagsPathNormalization(unittest.TestCase):
+    """Разбор вывода ctags: пути и состав команды."""
+
+    def setUp(self):
+        self.orig_have = hi.have_ctags
+        self.orig_run = hi.subprocess.run
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+
+    def tearDown(self):
+        hi.have_ctags = self.orig_have
+        hi.subprocess.run = self.orig_run
+        self.tmp.cleanup()
+
+    def fake_ctags(self, *tags):
+        hi.have_ctags = lambda: "/usr/bin/ctags"
+        out = "\n".join(json.dumps(t) for t in tags)
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return type("R", (), {"stdout": out, "returncode": 0})()
+        hi.subprocess.run = fake_run
+        return seen
+
+    def test_leading_dot_directory_survives(self):
+        """Дефект: lstrip("./") ест ЛЮБЫЕ ведущие точки и слэши — путь
+        ".github/wf.py" превращался в "github/wf.py" и расходился
+        с реальным деревом."""
+        self.fake_ctags({"_type": "tag", "name": "deploy",
+                         "path": "./.github/wf.py", "line": 3,
+                         "kind": "function", "language": "Python"})
+        idx = hi.HybridIndex(self.root)
+        files = {s["file"] for s in idx.symbols.values()}
+        self.assertIn(".github/wf.py", files)
+        self.assertNotIn("github/wf.py", files)
+
+    def test_ordinary_dot_slash_prefix_still_stripped(self):
+        self.fake_ctags({"_type": "tag", "name": "f",
+                         "path": "./pkg/mod.py", "line": 1,
+                         "kind": "function", "language": "Python"})
+        idx = hi.HybridIndex(self.root)
+        self.assertIn("pkg/mod.py", {s["file"] for s in idx.symbols.values()})
+
+    def test_ctags_invocation_excludes_junk_dirs(self):
+        """Дефект: ctags -R без --exclude честно индексировал .venv и
+        node_modules стенда — тысячи чужих символов поверх сотни своих."""
+        seen = self.fake_ctags()
+        hi.HybridIndex(self.root)
+        self.assertIn("--exclude=.venv", seen["cmd"])
+        self.assertIn("--exclude=node_modules", seen["cmd"])
+        self.assertIn("--exclude=.git", seen["cmd"])
+
+
+class TestQualifiedSymbolKeys(unittest.TestCase):
+    """Дефект: ключ file::name сливал одноимённые символы одного файла —
+    из двух __init__ двух классов молча выживал последний."""
+
+    def test_same_named_methods_both_survive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "m.py").write_text(
+                "class A:\n    def __init__(self):\n        self.x = 1\n\n\n"
+                "class B:\n    def __init__(self):\n        self.y = 2\n")
+            idx = hi.HybridIndex(root)
+            inits = [s for s in idx.symbols.values()
+                     if s["name"] == "__init__"]
+            self.assertEqual(len(inits), 2,
+                             "оба одноимённых символа обязаны выжить")
+            self.assertEqual({s.get("qualified") for s in inits},
+                             {"m.A.__init__", "m.B.__init__"})
+
+
+class TestNameGuessHonesty(unittest.TestCase):
+    """Дефект: fallback «единственный кандидат по голому имени» получал
+    высшую достоверность RESOLVED — доктрину честности уровней модуль
+    нарушал сам."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = pathlib.Path(self.tmp.name)
+        (root / "a.py").write_text("def helper():\n    return 1\n")
+        # Вызов без импорта: разрешить его можно только догадкой по имени.
+        (root / "b.py").write_text("def use():\n    return helper()\n")
+        self.idx = hi.HybridIndex(root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_fallback_is_not_stamped_resolved(self):
+        guesses = [e for e in self.idx.edges
+                   if e["kind"] == "resolved-by-name"]
+        self.assertTrue(guesses, "фикстура обязана дать догадку по имени")
+        for e in guesses:
+            self.assertEqual(e["confidence"], hi.NAME_GUESS)
+
+    def test_impact_labels_guess_distinctly(self):
+        text = self.idx.impact("helper")
+        self.assertIn("догадка", text)
+        self.assertNotIn("точно", text)
 
 
 class TestCtagsVersionGuard(unittest.TestCase):

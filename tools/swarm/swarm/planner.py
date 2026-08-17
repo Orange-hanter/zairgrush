@@ -8,8 +8,9 @@
 Планировщик выдаёт НЕ новый tasks.json, а дифф к нему (add/update/remove).
 Оркестратор валидирует дифф механически и только потом применяет:
 схема, уникальность id, существование целей update/remove, разрешимость
-deps, отсутствие циклов, обязательность paths/acceptance, легальность
-статусов. Невалидный дифф = одна повторная попытка, затем эскалация.
+deps, отсутствие циклов, paths/acceptance обязательны в add и не могут
+обнуляться в update, легальность статусов (done недоступен плану).
+Невалидный дифф = одна повторная попытка, затем эскалация.
 
 Артефакты: plan-metrics.jsonl, raw/<mode>-<n>.json, применённый tasks.json.
 """
@@ -17,6 +18,7 @@ import argparse
 import copy
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -33,12 +35,14 @@ if _HERE not in sys.path:
 # копия не нужна; см. loop.quota_exception о цене лишних копий.
 import loop  # noqa: E402 — каталог добавлен строкой выше
 import obs  # noqa: E402 — каталог добавлен строкой выше
+import pyindex  # noqa: E402 — каталог добавлен строкой выше
 
 PLAN = pathlib.Path(__file__).resolve().parent
 SCHEMA = (PLAN.parent / "schemas" / "plan-diff.schema.json").read_text()
-METRICS = PLAN / "plan-metrics.jsonl"
-RAW = PLAN / "raw"
-LEGAL_STATUS = {"pending", "blocked", "done"}
+# Статусы, доступные план-диффу. `done` намеренно исключён: «сделано»
+# ставит только оркестратор после approve, а план, объявляющий работу
+# готовой, обходил бы и gate, и ревью.
+PLAN_STATUS = {"pending", "blocked"}
 
 # Планировщику нужен тот же запас, что и ревьюеру: на реальном проекте
 # зашитые $1.50 обрубали ОБЕ попытки (PILOT-1: $1.63 и $1.67, ops=0), и
@@ -49,6 +53,10 @@ DEFAULT_PLAN_BUDGET = 4.0
 # у планировщика subprocess.run шёл вовсе без timeout: зависший claude
 # держал бы `swarm go` вечно и молча.
 DEFAULT_PLAN_TIMEOUT = 900
+
+# Потолок на прогон сьюта стенда при сборке карты: зависший тест держал
+# бы `swarm plan`/`go` вечно тем же молчанием, что и зависший claude.
+SUITE_TIMEOUT = 300
 
 
 def artifacts_dir(root: str | pathlib.Path | None = None) -> pathlib.Path:
@@ -75,14 +83,23 @@ def metric(root: str | pathlib.Path | None = None, **row: Any) -> None:
 def repo_map(stand: str | pathlib.Path) -> tuple[str, str]:
     """Карта репозитория для планировщика: модули, тесты, размер сьюта."""
     stand = pathlib.Path(stand)
+    # Общий набор исключений (pyindex.EXCLUDED_DIRS): без него список файлов
+    # стенда уносил в промпт весь .venv — тысячи строк site-packages.
     files = sorted(p.relative_to(stand).as_posix()
                    for p in stand.rglob("*.py")
-                   if "__pycache__" not in p.parts and ".git" not in p.parts)
+                   if not pyindex.excluded(p, stand))
     # Красный сьют — не ошибка вызова, а факт о стенде, который
     # планировщику как раз и нужно знать: он идёт в промпт.
-    r = subprocess.run(["python3", "-m", "unittest", "discover",
-                        "-s", "tests", "-t", "."],
-                       capture_output=True, text=True, cwd=stand, check=False)
+    try:
+        r = subprocess.run(["python3", "-m", "unittest", "discover",
+                            "-s", "tests", "-t", "."],
+                           capture_output=True, text=True, cwd=stand,
+                           timeout=SUITE_TIMEOUT, check=False)
+    except subprocess.TimeoutExpired:
+        # Зависший сьют не имеет права вешать `swarm plan`/`go`: в промпт
+        # идёт честное «неизвестно» вместо вечного молчаливого ожидания.
+        return "\n".join(files), (f"неизвестно — прогон тестов не уложился "
+                                  f"в {SUITE_TIMEOUT}с и был остановлен")
     tail = (r.stdout + r.stderr).strip().splitlines()[-2:]
     return "\n".join(files), " ".join(tail)
 
@@ -301,22 +318,44 @@ def plan_with_retry(prompt: str, mode: str, tasks: list[dict[str, Any]],
                                 model=model, effort=effort, timeout=timeout)
     if reason in TERMINAL_REASONS:
         return None, [PLAN_DIAGNOSIS[reason]], reason
-    errs = validate_plan_diff(diff, tasks) if diff else [
-        PLAN_DIAGNOSIS.get(reason or "", "план-дифф не получен")]
-    if not errs:
-        return diff, [], None
-    ui("план-дифф невалиден, повторная попытка:")
-    for e in errs:
-        ui(f"  {e}")
+    if diff is None:
+        # Плана нет вовсе (timeout/no_output) — это НЕ ошибка формата, и
+        # модели нечего «исправлять»: повтор идёт с исходным промптом.
+        # Раньше сюда шло «план-дифф невалиден» (ложный класс диагноза), а
+        # в промпт ретрая попадала инструкция оператору про swarm.toml.
+        ui(f"план не получен ({reason or 'нет ответа'}), повторная попытка")
+        retry_prompt = prompt
+    else:
+        errs = validate_plan_diff(diff, tasks)
+        if not errs:
+            return diff, [], None
+        ui("план-дифф невалиден, повторная попытка:")
+        for e in errs:
+            ui(f"  {e}")
+        retry_prompt = (prompt + "\n\n## Ошибки прошлой попытки\n"
+                        + "\n".join(errs))
     diff, reason = call_planner(
-        prompt + "\n\n## Ошибки прошлой попытки\n" + "\n".join(errs),
-        mode, attempt=2, root=root, budget=budget, model=model,
+        retry_prompt, mode, attempt=2, root=root, budget=budget, model=model,
         effort=effort, timeout=timeout)
     if reason in TERMINAL_REASONS:
         return None, [PLAN_DIAGNOSIS[reason]], reason
     errs = validate_plan_diff(diff, tasks) if diff else [
         PLAN_DIAGNOSIS.get(reason or "", "план-дифф не получен")]
     return (diff, [], None) if not errs else (None, errs, reason)
+
+
+# Формат id из промпта планировщика: 4 символа, латиница+цифры. Проверяется
+# механически на add — иначе обещание промпта остаётся пожеланием.
+_ID_RE = re.compile(r"[A-Za-z0-9]{4}")
+
+
+def _bad_deps(t: dict[str, Any]) -> bool:
+    """deps обязаны быть списком строк: dict внутри `d not in universe`
+    ронял валидатор TypeError, и мусор улетал исключением вместо ошибки."""
+    deps = t.get("deps")
+    return deps is not None and (
+        not isinstance(deps, list)
+        or any(not isinstance(d, str) for d in deps))
 
 
 def validate_plan_diff(diff: dict[str, Any] | None,
@@ -336,8 +375,16 @@ def validate_plan_diff(diff: dict[str, Any] | None,
     removed = set()
     touched: dict[str, Any] = {}
     for i, op in enumerate(diff["ops"]):
+        if not isinstance(op, dict):
+            errs.append(f"ops[{i}]: операция не объект")
+            continue
         kind, tid = op.get("op"), op.get("id")
         where = f"ops[{i}] {kind} {tid}"
+        # id проверяется ПЕРВЫМ: без него не работают ни touched, ни
+        # уникальность, а применение падало KeyError уже после валидации.
+        if not isinstance(tid, str) or not tid:
+            errs.append(f"{where}: операция без id")
+            continue
         # `reason` печатается и уходит в журнал: без него падает вывод.
         if not op.get("reason"):
             errs.append(f"{where}: операция без reason")
@@ -346,9 +393,10 @@ def validate_plan_diff(diff: dict[str, Any] | None,
         if tid in touched:
             errs.append(f"{where}: повторная операция над задачей "
                         f"(уже {touched[tid]})")
-        if tid is not None:
-            touched[tid] = kind
+        touched[tid] = kind
         if kind == "add":
+            if not _ID_RE.fullmatch(tid):
+                errs.append(f"{where}: id не 4 символа латиницы/цифр")
             if tid in existing or tid in added:
                 errs.append(f"{where}: id уже существует")
             t = op.get("task")
@@ -361,8 +409,12 @@ def validate_plan_diff(diff: dict[str, Any] | None,
                 errs.append(f"{where}: пустой paths")
             if not t.get("acceptance"):
                 errs.append(f"{where}: пустой acceptance")
-            if t.get("status") not in LEGAL_STATUS:
-                errs.append(f"{where}: недопустимый статус {t.get('status')}")
+            if t.get("status") not in PLAN_STATUS:
+                errs.append(f"{where}: недопустимый статус {t.get('status')!r}"
+                            " (плану доступны pending/blocked; done ставит "
+                            "только оркестратор после approve)")
+            if _bad_deps(t):
+                errs.append(f"{where}: deps не список строк")
             added.add(tid)
         elif kind in ("update", "remove"):
             if tid not in existing:
@@ -378,10 +430,19 @@ def validate_plan_diff(diff: dict[str, Any] | None,
                 # ключ очереди рассогласованным с телом задачи.
                 if "id" in t and t["id"] != tid:
                     errs.append(f"{where}: update меняет id на {t['id']}")
-                if not t.get("paths") or not t.get("acceptance"):
-                    errs.append(f"{where}: update обнуляет paths/acceptance")
-                if "status" in t and t["status"] not in LEGAL_STATUS:
-                    errs.append(f"{where}: недопустимый статус {t['status']}")
+                # Частичный update законен — применение сливает поля.
+                # Запрещено не ОТСУТСТВИЕ paths/acceptance, а их ОБНУЛЕНИЕ:
+                # прежняя проверка отвергала минимальный {"status": ...}.
+                zeroed = [k for k in ("paths", "acceptance")
+                          if k in t and not t[k]]
+                if zeroed:
+                    errs.append(f"{where}: update обнуляет {'/'.join(zeroed)}")
+                if "status" in t and t["status"] not in PLAN_STATUS:
+                    errs.append(f"{where}: недопустимый статус {t['status']!r}"
+                                " (плану доступны pending/blocked; done "
+                                "ставит только оркестратор после approve)")
+                if _bad_deps(t):
+                    errs.append(f"{where}: deps не список строк")
         else:
             errs.append(f"{where}: неизвестная операция")
     # deps: ссылки только на существующие/добавляемые, без циклов.
@@ -391,15 +452,23 @@ def validate_plan_diff(diff: dict[str, Any] | None,
     graph = {t["id"]: list(t.get("deps") or [])
              for t in tasks if t["id"] not in removed}
     for op in diff["ops"]:
+        if not isinstance(op, dict):
+            continue
         t = op.get("task")
         # id берётся из операции: частичный update законно не повторяет его
         # в теле задачи, и обращение к t["id"] роняло валидатор.
         tid = op.get("id")
-        if isinstance(t, dict) and tid is not None and tid not in removed:
-            if "deps" in t:
-                graph[tid] = list(t.get("deps") or [])
-            else:
-                graph.setdefault(tid, [])
+        if not (isinstance(t, dict) and isinstance(tid, str) and tid
+                and tid not in removed):
+            continue
+        if "deps" in t:
+            deps = t["deps"]
+            # Мусор в deps уже назван ошибкой выше; граф строится только из
+            # строк — unhashable элемент в `in universe` давал TypeError.
+            graph[tid] = ([d for d in deps if isinstance(d, str)]
+                          if isinstance(deps, list) else [])
+        else:
+            graph.setdefault(tid, [])
     errs.extend(f"deps {tid} -> {d}: задача не существует"
                 for tid, deps in graph.items()
                 for d in deps if d not in universe)
@@ -465,10 +534,15 @@ def main() -> int:
         dispute = json.loads(pathlib.Path(args.dispute).read_text())
         prompt = replan_prompt(task, dispute, tasks, files, suite)
 
-    diff, errs, reason = plan_with_retry(prompt, args.mode, tasks)
+    # root обязателен и здесь: standalone-вход без него запускал claude в
+    # каталоге процесса, а артефакты и метрики падали в каталог пакета —
+    # CLI петли передавал root корректно, и два входа молча расходились.
+    diff, errs, reason = plan_with_retry(prompt, args.mode, tasks,
+                                         root=args.stand)
     if errs or diff is None:
         print("ЭСКАЛАЦИЯ:", *errs, sep="\n  ")
-        metric(mode=args.mode, result="escalation", errors=errs, reason=reason)
+        metric(root=args.stand, mode=args.mode, result="escalation",
+               errors=errs, reason=reason)
         raise SystemExit(2)
 
     print(f"analysis: {diff['analysis'][:400]}\n")
@@ -480,7 +554,8 @@ def main() -> int:
     data["tasks"] = apply_plan_diff(diff, tasks)
     blob = json.dumps(data, ensure_ascii=False, indent=1)
     pathlib.Path(args.out).write_text(blob + "\n")
-    metric(mode=args.mode, result="applied", tasks_after=len(data["tasks"]))
+    metric(root=args.stand, mode=args.mode, result="applied",
+           tasks_after=len(data["tasks"]))
     print(f"\nприменено -> {args.out} ({len(data['tasks'])} задач)")
     return 0
 

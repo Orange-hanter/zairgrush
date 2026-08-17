@@ -112,6 +112,29 @@ class TestPython(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_TS, "tree-sitter не установлен (опционален)")
+class TestJunkDirsExcluded(unittest.TestCase):
+    def test_shared_exclusion_set_applied(self):
+        """Дефект: собственный фильтр знал только .venv (и то подстрокой по
+        всему пути), а rglob("*") материализовался в sorted целиком —
+        вместе с потрохами .git. Набор исключений теперь общий
+        (pyindex.EXCLUDED_DIRS), фильтр стоит до сортировки."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "app.py").write_text("def mine():\n    pass\n")
+            junk = {"node_modules/x/i.py": "def alien():\n    pass\n",
+                    ".swarm/raw/x.py": "def alien():\n    pass\n",
+                    "build/gen.py": "def alien():\n    pass\n",
+                    "target/debug/gen.rs": "fn alien() {}\n"}
+            for rel, src in junk.items():
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(src)
+            symbols, _ = ts.index_project(root)
+            self.assertEqual({s["name"] for s in symbols.values()}, {"mine"},
+                             "служебные каталоги не индексируются")
+
+
+@unittest.skipUnless(HAVE_TS, "tree-sitter не установлен (опционален)")
 class TestPrecisionLimit(unittest.TestCase):
     """Главное ограничение: tree-sitter решает задачу ПАРСИНГА, но не
     задачу РАЗРЕШЕНИЯ ИМЁН — счётчик вызовов остаётся приблизительным."""

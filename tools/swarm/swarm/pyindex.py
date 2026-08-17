@@ -19,8 +19,32 @@ occurrences. Полноценный SCIP-индексатор дал бы ещё
 """
 import ast
 import pathlib
+import sys
 from collections.abc import Iterator
 from typing import Any
+
+# Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
+_HERE = str(pathlib.Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import obs  # noqa: E402 — каталог добавлен строкой выше
+
+log = obs.get_logger("pyindex")
+
+# Служебные каталоги, чужие для любого обхода дерева. Набор один на всех
+# (планировщик, ast-индекс, ctags, tree-sitter) — расходящиеся списки уже
+# дали течь: tsindex знал про .venv, планировщик — нет, и список файлов
+# стенда уносил в промпт весь site-packages.
+EXCLUDED_DIRS = frozenset({
+    ".venv", "venv", "node_modules", ".git", ".swarm",
+    "__pycache__", "build", "dist", "target",
+})
+
+
+def excluded(path: pathlib.Path, root: pathlib.Path) -> bool:
+    """Лежит ли путь внутри служебного каталога (относительно root)."""
+    return any(part in EXCLUDED_DIRS for part in path.relative_to(root).parts)
 
 
 class Symbol:
@@ -68,6 +92,19 @@ def _module_name(path: pathlib.Path, root: pathlib.Path) -> str:
     return ".".join(parts)
 
 
+def _package_of(path: pathlib.Path, root: pathlib.Path) -> str:
+    """Пакет, от которого отсчитываются относительные импорты.
+
+    Считается по ПУТИ, а не по имени модуля: имя `pkg/sub/__init__.py` —
+    уже `pkg.sub` (без `__init__`), и арифметика уровней по нему уводила
+    относительный импорт на пакет выше, чем написал автор.
+    """
+    parts = list(path.relative_to(root).with_suffix("").parts)
+    if parts:
+        parts.pop()  # __init__ — сам пакет; обычный модуль — его каталог
+    return ".".join(parts)
+
+
 def _sig(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     a = node.args
     names = [x.arg for x in a.posonlyargs + a.args]
@@ -101,7 +138,7 @@ class Index:
 
     def _files(self) -> Iterator[pathlib.Path]:
         for p in sorted(self.root.rglob("*.py")):
-            if "__pycache__" in p.parts or ".git" in p.parts:
+            if excluded(p, self.root):
                 continue
             yield p
 
@@ -109,8 +146,16 @@ class Index:
         trees: dict[pathlib.Path, ast.Module] = {}
         for path in self._files():
             try:
-                trees[path] = ast.parse(path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):
+                src = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                # Битый симлинк или гонка с удалением — беда одного файла,
+                # а не индекса: раньше OSError убивал построение целиком.
+                log.warning("файл не прочитан индексом, пропущен: %s", path,
+                            exc_info=True)
+                continue
+            try:
+                trees[path] = ast.parse(src)
+            except (SyntaxError, ValueError):
                 continue
         for path, tree in trees.items():
             self._collect_defs(path, tree)
@@ -146,28 +191,43 @@ class Index:
 
         walk(tree, module)
 
-    def _imports(self, tree: ast.Module, module: str) -> dict[str, str]:
+    def _imports(self, tree: ast.Module, package: str) -> dict[str, str]:
         """Локальное имя -> квалифицированный id (насколько можно вывести)."""
-        table = {}
+        table: dict[str, str] = {}
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                base = node.module
+            if isinstance(node, ast.ImportFrom):
                 if node.level:                       # относительный импорт
-                    pkg = module.rsplit(".", node.level)[0] if "." in module else ""
-                    base = f"{pkg}.{node.module}" if pkg else node.module
+                    parts = package.split(".") if package else []
+                    # level=1 — текущий пакет, каждый следующий — пакет выше;
+                    # выход за корень проекта разрешать нечем.
+                    parts = (parts[:len(parts) - (node.level - 1)]
+                             if node.level - 1 <= len(parts) else [])
+                    base = ".".join(parts)
+                    if node.module:
+                        base = f"{base}.{node.module}" if base else node.module
+                else:
+                    base = node.module or ""
                 for alias in node.names:
                     local = alias.asname or alias.name
-                    table[local] = f"{base}.{alias.name}"
+                    # `from . import stats` (module=None) тоже связывает имя —
+                    # раньше такие импорты игнорировались целиком.
+                    table[local] = f"{base}.{alias.name}" if base else alias.name
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    local = alias.asname or alias.name.split(".")[0]
-                    table[local] = alias.name
+                    if alias.asname:
+                        table[alias.asname] = alias.name
+                    else:
+                        # `import a.b` связывает в области видимости имя `a`,
+                        # и `a.attr` — атрибут пакета a, а не модуля a.b:
+                        # привязка головы к a.b давала ложные ссылки.
+                        head = alias.name.split(".")[0]
+                        table[head] = head
         return table
 
     def _collect_refs(self, path: pathlib.Path, tree: ast.Module) -> None:
         module = _module_name(path, self.root)
         rel = path.relative_to(self.root).as_posix()
-        imports = self._imports(tree, module)
+        imports = self._imports(tree, _package_of(path, self.root))
 
         def walk(node: ast.AST, prefix: str) -> None:
             for child in ast.iter_child_nodes(node):

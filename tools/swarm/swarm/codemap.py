@@ -34,6 +34,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 # Уровни достоверности ссылки, от сильного к слабому.
 RESOLVED = "resolved"        # разрешён импорт, известен вызывающий символ
 IMPORT = "import"            # известно, что модуль/имя импортируется
+NAME_GUESS = "name-guess"    # догадка ast-слоя: единственный кандидат по имени
 NAME_MATCH = "name-match"    # совпадение по голому имени, возможны ложные
 
 
@@ -49,6 +50,9 @@ def _load(name: str, filename: str) -> ModuleType:
 
 obs = _load("obs", "obs.py")
 log = obs.get_logger("codemap")
+# Общий набор исключаемых каталогов живёт в pyindex: обходы дерева обязаны
+# совпадать у всех слоёв, иначе ctags индексирует .venv, который ast не видит.
+pyindex = _load("pyindex", "pyindex.py")
 
 
 def have_ctags() -> str | None:
@@ -93,6 +97,9 @@ class HybridIndex:
         # +l — язык символа, +r — роли (без него `roles` не приходит вовсе,
         # и импортные рёбра теряются молча
         cmd = [exe, "--output-format=json", "--fields=+nKSlzr", "--extras=+r",
+               # Без --exclude ctags -R честно индексирует .venv и node_modules
+               # стенда — тысячи чужих символов поверх сотни своих.
+               *(f"--exclude={d}" for d in sorted(pyindex.EXCLUDED_DIRS)),
                "-R", "-f", "-", "."]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True,
@@ -111,7 +118,9 @@ class HybridIndex:
             name, path = tag.get("name"), tag.get("path")
             if not name or not path:
                 continue
-            path = path.lstrip("./")
+            # removeprefix, не lstrip: lstrip("./") ест ЛЮБЫЕ точки и слэши
+            # в начале и превращал ".github/x.py" в "github/x.py".
+            path = path.removeprefix("./")
             roles = tag.get("roles") or ""
             if "imported" in roles:
                 # ctags знает, кто импортирует символ, но не кто зовёт
@@ -137,24 +146,33 @@ class HybridIndex:
         """Для Python поднимаем достоверность до RESOLVED: настоящие вызовы
         с позициями, полученные разбором импортов."""
         try:
-            sc = _load("pyindex", "pyindex.py")
-            idx = sc.Index(self.root)
+            idx = pyindex.Index(self.root)
         except Exception:
             log.warning("точный слой (ast) не отработал", exc_info=True)
             return
         for sid, sym in idx.symbols.items():
-            key = f"{sym.file}::{sym.name}"
-            entry = self.symbols.get(key, {})
+            # Ключ несёт квалификацию (sid), а не голое имя: по `file::name`
+            # два `__init__` двух классов одного файла сливались в один,
+            # и последний молча затирал первого.
+            key = f"{sym.file}::{sid}"
+            # Запись слоя ctags знает символ только по имени — забираем её
+            # как основу, чтобы не плодить дубликат того же определения.
+            entry = self.symbols.pop(f"{sym.file}::{sym.name}", {})
+            merged = bool(entry)
             entry.update({"name": sym.name, "file": sym.file, "line": sym.line,
                           "kind": sym.kind, "lang": "Python",
                           "sig": sym.sig or entry.get("sig", ""),
                           "doc": sym.doc, "qualified": sid,
-                          "source": "ctags+ast" if entry else "ast"})
+                          "source": "ctags+ast" if merged else "ast"})
             self.symbols[key] = entry
         for ref in idx.references:
+            # Догадка «единственный кандидат по голому имени» — не разрешённый
+            # импорт: выдавать её за RESOLVED значит нарушать собственную
+            # доктрину честности уровней.
+            conf = NAME_GUESS if ref.how == "resolved-by-name" else RESOLVED
             self.edges.append({"from": ref.from_symbol, "to": ref.symbol_id,
                                "file": ref.file, "line": ref.line,
-                               "confidence": RESOLVED, "kind": ref.how})
+                               "confidence": conf, "kind": ref.how})
         if idx.symbols:
             self.sources.append(f"ast({len(idx.symbols)} симв., "
                                 f"{len(idx.references)} точных ссылок)")
@@ -169,6 +187,10 @@ class HybridIndex:
             log.warning("слой tree-sitter не отработал", exc_info=True)
             return
         for s in symbols.values():
+            # Python уже покрыт ast-слоем (его ключи квалифицированы):
+            # setdefault по голому имени создал бы дубликаты его символов.
+            if s["file"].endswith(".py"):
+                continue
             self.symbols.setdefault(f"{s['file']}::{s['name']}", {
                 "name": s["name"], "file": s["file"], "line": s["line"],
                 "kind": "function", "lang": s["lang"], "sig": s["sig"],
@@ -195,7 +217,7 @@ class HybridIndex:
         Сортировка от точного к приблизительному: агент должен сначала
         увидеть то, что известно наверняка.
         """
-        order = {RESOLVED: 0, IMPORT: 1, NAME_MATCH: 2}
+        order = {RESOLVED: 0, IMPORT: 1, NAME_GUESS: 2, NAME_MATCH: 3}
         hits = [e for e in self.edges
                 if e["to"] == symbol_name_or_id
                 or e["to"].endswith("." + symbol_name_or_id)]
@@ -240,7 +262,8 @@ class HybridIndex:
                 continue
             if shown >= max_rows:
                 continue
-            note = {RESOLVED: "точно", IMPORT: "импорт", NAME_MATCH: "по имени"}[
+            note = {RESOLVED: "точно", IMPORT: "импорт",
+                    NAME_GUESS: "догадка по имени", NAME_MATCH: "по имени"}[
                 e["confidence"]]
             lines.append(f"  {e['file']}:{e['line']} ({e['from']}, {note})")
             shown += 1

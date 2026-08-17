@@ -164,6 +164,106 @@ class TestReferenceResolution(IndexCase):
                              "вызовы внешних библиотек не выдумываются")
 
 
+class TestImportEdgeCases(unittest.TestCase):
+    """Способы соврать, найденные в разрешении импортов: каждый случай
+    ниже давал либо потерянную, либо ложную ссылку — тихо."""
+
+    def _project(self, files):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name)
+        for rel, src in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(src)
+        return px.Index(root)
+
+    def test_from_dot_import_module_resolved(self):
+        """Дефект: `from . import stats` (module=None) игнорировался
+        целиком — вызовы через такой импорт не попадали в граф."""
+        idx = self._project({
+            "pkg/__init__.py": "",
+            "pkg/stats.py": "def word_freq():\n    return {}\n",
+            "pkg/use.py": ("from . import stats\n\n\n"
+                           "def go():\n    return stats.word_freq()\n"),
+        })
+        callers = {r.from_symbol for r in idx.callers("pkg.stats.word_freq")}
+        self.assertEqual(callers, {"pkg.use.go"})
+
+    def test_relative_import_from_package_init_stays_at_level(self):
+        """Дефект: имя модуля `pkg/sub/__init__.py` — уже pkg.sub (без
+        __init__), и арифметика уровней по ИМЕНИ уводила `from .impl`
+        на пакет выше. Соперник-однофамилец обязателен: без него дыру
+        маскирует fallback «единственный кандидат по имени»."""
+        idx = self._project({
+            "pkg/__init__.py": "",
+            "pkg/sub/__init__.py": ("from .impl import f\n\n\n"
+                                    "def entry():\n    return f()\n"),
+            "pkg/sub/impl.py": "def f():\n    return 1\n",
+            "pkg/other.py": "def f():\n    return 2\n",
+        })
+        callers = {r.from_symbol for r in idx.callers("pkg.sub.impl.f")}
+        self.assertEqual(callers, {"pkg.sub.entry"},
+                         "импорт из __init__ разрешается в СВОЙ пакет")
+        self.assertEqual(idx.callers("pkg.other.f"), [],
+                         "однофамилец не получает ложную ссылку")
+
+    def test_import_submodule_binds_head_name(self):
+        """Дефект: `import a.b` связывал имя a с модулем a.b — и вызов
+        `a.top()` приписывался a.b.top вместо a.top."""
+        idx = self._project({
+            "a/__init__.py": "def top():\n    return 1\n",
+            "a/b.py": "def top():\n    return 2\n",
+            "c.py": "import a.b\n\n\ndef use():\n    return a.top()\n",
+        })
+        self.assertEqual({r.from_symbol for r in idx.callers("a.top")},
+                         {"c.use"})
+        self.assertEqual(idx.callers("a.b.top"), [],
+                         "подмодуль не присваивает себе вызовы пакета")
+
+    def test_dotted_import_with_alias_still_resolves(self):
+        idx = self._project({
+            "a/__init__.py": "",
+            "a/b.py": "def top():\n    return 2\n",
+            "c.py": ("import a.b as ab\n\n\n"
+                     "def use():\n    return ab.top()\n"),
+        })
+        self.assertEqual({r.from_symbol for r in idx.callers("a.b.top")},
+                         {"c.use"})
+
+
+class TestUnreadableFiles(unittest.TestCase):
+    def test_broken_symlink_does_not_kill_index(self):
+        """Дефект: read_text шёл без обработки OSError — один битый
+        симлинк (или файл, удалённый в гонке) ронял построение целиком."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "ok.py").write_text("def fine():\n    return 1\n")
+            (root / "dead.py").symlink_to(root / "нет_такого.py")
+            idx = px.Index(root)
+            self.assertIn("ok.fine", idx.symbols,
+                          "живые файлы индексируются несмотря на битый")
+
+
+class TestJunkDirsExcluded(unittest.TestCase):
+    def test_venv_not_indexed(self):
+        """Дефект: обход исключал только __pycache__/.git — .venv стенда
+        разбирался целиком, site-packages попадал в индекс проекта."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "app.py").write_text("def mine():\n    return 1\n")
+            for junk in (".venv/lib/site.py", "node_modules/m/i.py",
+                         "build/gen.py", ".swarm/raw/x.py"):
+                p = root / junk
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("def alien():\n    return 0\n")
+            idx = px.Index(root)
+            self.assertIn("app.mine", idx.symbols)
+            self.assertFalse([s for s in idx.symbols.values()
+                              if s.name == "alien"],
+                             "служебные каталоги не индексируются")
+
+
 class TestTestDetection(IndexCase):
     def test_tests_are_marked(self):
         self.assertTrue(self.idx.is_test("tests.test_core.test_api"))

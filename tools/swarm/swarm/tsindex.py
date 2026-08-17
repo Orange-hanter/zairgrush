@@ -19,11 +19,22 @@
 (в петле — опционально: без него работает ast-индекс для Python).
 """
 import pathlib
+import sys
 from typing import Any
 
 import tree_sitter_python
 import tree_sitter_rust
 from tree_sitter import Language, Parser, Query, QueryCursor
+
+# Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
+_HERE = str(pathlib.Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+# Набор исключаемых каталогов общий для всех обходов дерева (см. pyindex):
+# собственный список здесь уже разошёлся с остальными — знал про .venv,
+# но не про node_modules и .swarm.
+from pyindex import excluded  # noqa: E402 — каталог добавлен строкой выше
 
 LANGS = {
     ".py": (Language(tree_sitter_python.language()), "python"),
@@ -95,10 +106,11 @@ def index_project(root: str | pathlib.Path,
     root = pathlib.Path(root)
     symbols: dict[str, dict[str, Any]] = {}
     calls: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*")):
-        if path.suffix not in suffixes or "__pycache__" in path.parts \
-                or ".git" in path.parts or ".venv" in str(path):
-            continue
+    # Фильтр — ДО sorted: материализовать rglob("*") целиком значило бы
+    # держать в памяти всё содержимое .git и .venv ради его выбрасывания.
+    files = sorted(p for p in root.rglob("*")
+                   if p.suffix in suffixes and not excluded(p, root))
+    for path in files:
         defs, cs = index_file(path)
         rel = path.relative_to(root).as_posix()
         for d in defs:
