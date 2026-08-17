@@ -402,8 +402,18 @@ class SwarmState:
         if questions[qid]["status"] == "answered":
             raise StateError(f"вопрос {qid!r} уже отвечен")
         task_id = questions[qid]["task"]
-        self.log("answer", qid=qid, task=task_id, text=text)
         data = self.load_tasks()
+        target = next((t for t in data["tasks"] if t["id"] == task_id), None)
+        if target is not None and target.get("status") == "done":
+            # Ответ на залежавшийся вопрос не имеет права воскрешать
+            # закрытую задачу: безусловный pending отправлял done-работу
+            # на повторное исполнение. Проверка ДО записи в журнал —
+            # иначе вопрос числился бы отвеченным при неслучившемся ответе.
+            raise StateError(
+                f"вопрос {qid} принадлежит завершённой задаче {task_id!r}: "
+                f"ответ не возвращает её в очередь. Переоткрыть — "
+                f"`swarm retry {task_id}` или план-диффом")
+        self.log("answer", qid=qid, task=task_id, text=text)
         for t in data["tasks"]:
             if t["id"] == task_id:
                 # Ответ уходит в handoff следующей итерации. Решения

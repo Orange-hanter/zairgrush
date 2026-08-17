@@ -59,6 +59,15 @@ class TestHandoff(AgentsCase):
         text = self.agents.handoff(TASK, None, None)
         self.assertIn("NOT listed above are", text)
 
+    def test_output_contract_names_the_dispute_field(self):
+        """Петля читает report["dispute"], но промпт это поле не объявлял:
+        оба реальных спора пилота (q001, q005) пришли с dispute=None, и вся
+        аргументация исполнителя доезжала до оператора одним усечённым
+        предложением summary."""
+        text = self.agents.handoff(TASK, None, None)
+        self.assertIn('"dispute"', text,
+                      "контракт отчёта обязан объявлять поле для спора")
+
     def test_test_task_forbids_production_code(self):
         text = self.agents.handoff(dict(TASK, type="test-task"), None, None)
         self.assertIn("production code is", text)

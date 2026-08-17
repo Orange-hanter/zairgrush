@@ -228,9 +228,12 @@ one that happens to correlate with it.
 Finish with EXACTLY one JSON object, no markdown fence:
   {{"status": "done | no_change_needed | dispute",
     "summary": "одно предложение ПО-РУССКИ",
-    "evidence": {{"tests": "последняя строка прогона"}}}}
-Free text you write (`summary`, the body of a `dispute`) is read by a human —
-write it in RUSSIAN.
+    "evidence": {{"tests": "последняя строка прогона"}},
+    "dispute": "ONLY when status=dispute: полное обоснование ПО-РУССКИ —
+     что именно невыполнимо или противоречиво, какие paths понадобились бы,
+     какие требования сталкиваются"}}
+Free text you write (`summary`, `dispute`) is read by a human — write it in
+RUSSIAN.
 """
 
     def implement(self, task: dict[str, Any], feedback: str | None,

@@ -163,6 +163,23 @@ class TestPersistence(StateCase):
         self.assertEqual(len(rows), 2)
 
 
+class TestAnswerDoneGuard(StateCase):
+    """Ответ на залежавшийся вопрос не воскрешает закрытую задачу:
+    безусловный pending отправлял done-работу на повторное исполнение."""
+
+    def test_answer_to_done_task_refuses(self):
+        qid = self.state.ask("aaaa", "intent", "вопрос по замыслу")
+        self.state.set_status("aaaa", "done")
+        with self.assertRaises(st.StateError):
+            self.state.answer(qid, "поздний ответ")
+        q = {x["qid"]: x for x in self.state.questions()}[qid]
+        self.assertEqual(q["status"], "open",
+                         "неслучившийся ответ не должен закрыть вопрос")
+        task = {t["id"]: t
+                for t in self.state.load_tasks()["tasks"]}["aaaa"]
+        self.assertEqual(task["status"], "done")
+
+
 class TestConcurrentWriters(StateCase):
     """Lost update между процессами: `swarm answer`/`retry` зовут во время
     прогона — так задуман инбокс, — и их load→modify→save гонялся с
