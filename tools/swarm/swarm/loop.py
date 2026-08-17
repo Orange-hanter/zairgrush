@@ -28,6 +28,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import board  # noqa: E402 — каталог добавлен строкой выше
+import memory as memory_mod  # noqa: E402
 import obs  # noqa: E402
 
 log = obs.get_logger("loop")
@@ -289,6 +290,27 @@ class Loop:
             # Граница деградации: запись с трассировкой обязательна (§6.7).
             log.exception("доска не обновлена",
                           extra={"swarm_phase": "board"})
+
+    def _memory_record(self, task: dict[str, Any]) -> None:
+        """Урок из терминального исхода. Память — наблюдение, не работа:
+        её сбой оставляет трассировку и не стоит прогона (правило доски).
+
+        Запись идёт ВСЕГДА, независимо от флага инъекции: память копится
+        и до того, как её начали подмешивать, — посевной прогон E9
+        строится ровно на этом свойстве.
+        """
+        try:
+            memory_mod.record_task_outcome(self.state, task, self.config)
+        except Exception:
+            log.exception("память: урок не записан",
+                          extra={"swarm_task": task.get("id")})
+
+    def _memory_reflect(self) -> None:
+        """«Сновидение» после прогона: дайджест пересобран, факт записан."""
+        try:
+            memory_mod.reflect_after_run(self.state, self.config)
+        except Exception:
+            log.exception("память: рефлексия не состоялась")
 
     def _sh(self, cmd: list[str],
             timeout: float = 900) -> subprocess.CompletedProcess[str]:
@@ -1070,6 +1092,7 @@ class Loop:
             # retry требовал blocked.
             try:
                 results[task["id"]] = self.run_task(task)
+                self._memory_record(task)
             except ExecutorUnavailableError as e:
                 # Задача уже возвращена в pending внутри run_task.
                 self.state.log("executor_unavailable", task=task["id"],
@@ -1096,6 +1119,7 @@ class Loop:
                 # убивать очередь; задача обязана остаться разбираемой
                 log.exception("задача упала", extra={"swarm_task": task["id"]})
                 results[task["id"]] = self._rescue(task, f"{type(e).__name__}: {e}")
+                self._memory_record(task)
                 self.refresh_board()
                 break
             self.refresh_board()
@@ -1106,6 +1130,8 @@ class Loop:
                 break
             if limit and len(results) >= limit:
                 break
+        if results:
+            self._memory_reflect()
         return results
 
     def _rescue(self, task: dict[str, Any], reason: str) -> str:

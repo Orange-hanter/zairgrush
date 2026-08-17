@@ -63,6 +63,11 @@ KIND_RU = {
     "state_written": "состояние записано",
     "pre_existing_dirt": "чужая грязь в дереве",
     "executor_failed": "вызов исполнителя не состоялся",
+    "memory_written": "память пополнена",
+    "memory_injected": "память подмешана в промпт",
+    "memory_reflect": "память переосмыслена",
+    "memory_unavailable": "хранилище памяти недоступно",
+    "memory_forgotten": "урок забыт",
 }
 # Записи-бухгалтерия: сопровождают каждую запись состояния и событием
 # прогона не являются. В блоках «прогон в целом» они хоронили под собой
@@ -401,6 +406,22 @@ NARRATORS: dict[str, Narrator] = {
         (f"вызов исполнителя не состоялся в раунде {r.get('round')} "
          f"({_s(r.get('reason'))}): {_s(r.get('stderr')) or 'stderr пуст'}"),
         {"round", "reason", "stderr"}),
+    # Прозрачность инъекции: оператор обязан видеть, ЧТО и СКОЛЬКО
+    # подмешано в промпт, — id уроков прослеживаются до записей памяти.
+    "memory_injected": lambda r: (
+        (f"в промпт роли {_s(r.get('role'))} подмешано "
+         f"{r.get('count')} урок(а) ({r.get('chars')} символов): "
+         + ", ".join(map(str, _seq(r.get("ids")) or ["?"]))),
+        {"role", "count", "chars", "ids"}),
+    "memory_written": lambda r: (
+        (f"память пополнена уроком {_s(r.get('lesson'))} "
+         f"({_s(r.get('outcome'))})"),
+        {"lesson", "outcome"}),
+    "memory_reflect": lambda r: (
+        f"дайджест памяти пересобран: уроков {r.get('lessons')}",
+        {"lessons"}),
+    "memory_forgotten": lambda r: (
+        f"урок {_s(r.get('lesson'))} затомбстоунен", {"lesson"}),
 }
 
 

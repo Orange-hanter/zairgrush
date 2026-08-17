@@ -110,6 +110,10 @@ class Agents:
         self._helpers: ModuleType | None = None
         self._codemap: ModuleType | None = None
         self._map_cache: tuple[tuple[str, int], str] | None = None
+        # Блок памяти считается один раз на ЗАДАЧУ: между раундами он
+        # обязан быть байт-стабилен, иначе каждый раунд переписывает
+        # префикс-кэш промпта (§8 — экономика порядка блоков).
+        self._memory_cache: tuple[str, str] | None = None
         # Почему ревью не состоялось: оркестратору нужен диагноз, а не
         # голое None. «Кончился бюджет» и «модель ответила мусором» —
         # разные болезни с разным лечением.
@@ -162,8 +166,22 @@ class Agents:
 
     # --- исполнитель ------------------------------------------------------
 
+    def memory_block(self, task: dict[str, Any]) -> str:
+        """Уроки прошлых прогонов для исполнителя (E9, за флагом).
+
+        Пустая строка — норма: флаг выключен, память пуста или хранилище
+        недоступно. Любой из этих случаев не отличается для handoff.
+        """
+        tid = str(task.get("id") or "")
+        if self._memory_cache is not None and self._memory_cache[0] == tid:
+            return self._memory_cache[1]
+        mem = _load("memory")
+        block: str = mem.inject_block("executor", task, self.state, self.config)
+        self._memory_cache = (tid, block)
+        return block
+
     def handoff(self, task: dict[str, Any], feedback: str | None,
-                repo_map: str | None) -> str:
+                repo_map: str | None, memory: str | None = None) -> str:
         allowed = ", ".join(task.get("paths") or [])
         protected = {
             "test-task": ("This is a test-task: production code is "
@@ -181,12 +199,13 @@ class Agents:
             fb = ("\n## Feedback — you must address it\n"
                   + json.dumps(feedback, ensure_ascii=False, indent=1) + "\n")
         mp = f"\n## Repository map\n```\n{repo_map}\n```\n" if repo_map else ""
+        mem = f"\n{memory.rstrip()}\n" if memory else ""
         return f"""You are the executor in an automated dev loop. Your reply is
 parsed by machine.
 
 ## Goal
 {self.state.load_tasks().get('goal', '')}
-
+{mem}
 ## Task
 {task['id']}: {task.get('spec') or task['title']}
 
@@ -238,7 +257,8 @@ RUSSIAN.
 
     def implement(self, task: dict[str, Any], feedback: str | None,
                   iteration: int) -> dict[str, Any] | None:
-        prompt = self.handoff(task, feedback, self.repo_map(task))
+        prompt = self.handoff(task, feedback, self.repo_map(task),
+                              memory=self.memory_block(task) or None)
         cmd = ["kimi", "-p", prompt, "--output-format", "stream-json"]
         model = self.config.get("executor_model")
         if model:

@@ -67,7 +67,12 @@ KNOWN_CONFIG_KEYS = frozenset({
     "review_model", "review_effort", "review_model_pool", "review_effort_pool",
     "confirm_model", "confirm_effort", "confirm_model_pool",
     "confirm_effort_pool",
+    "memory_db", "memory_budget_chars", "memory_top_k", "experiments",
 })
+
+# Экспериментальные флаги (06-док, §1): та же семантика, что у основного
+# списка, — опечатка в имени флага молча включала бы умолчание.
+KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation"})
 
 
 def _config(root: str | pathlib.Path) -> dict[str, Any]:
@@ -91,6 +96,13 @@ def _config(root: str | pathlib.Path) -> dict[str, Any]:
                       f"({', '.join(unknown)}) — петля их не читает; "
                       f"если это настройка петли, проверь имя",
                       file=sys.stderr)
+            exp = parsed.get("experiments")
+            if isinstance(exp, dict):
+                unknown_exp = sorted(set(exp) - KNOWN_EXPERIMENT_KEYS)
+                if unknown_exp:
+                    print(f"ВНИМАНИЕ: {path}: незнакомые флаги "
+                          f"[experiments] ({', '.join(unknown_exp)}) — "
+                          f"петля их не читает", file=sys.stderr)
             cfg.update(parsed)
     return cfg
 
@@ -295,6 +307,24 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         checks.append((True, "tree-sitter", "доступен"))
     else:
         checks.append((None, "tree-sitter", "не установлен (опционально)"))
+
+    # Память (E9) — опциональна: её отсутствие деградирует поиск уроков,
+    # а не петлю. Доктор называет точные команды настройки, но не
+    # выполняет их сам: базу и роль создаёт владелец.
+    if shutil.which("psql"):
+        mem_mod = _load("memory")
+        cfg_doc = _config(args.root)
+        ok_pg, out_pg = mem_mod.pg(cfg_doc, "SELECT version();")
+        if ok_pg:
+            checks.append((True, "memory-pg",
+                           out_pg.split(" on ")[0][:40] or "доступен"))
+        else:
+            checks.append((None, "memory-pg",
+                           ("недоступен (опционально): создать — "
+                            "createdb swarm_memory; уроки при этом "
+                            "копятся в файлах")))
+    else:
+        checks.append((None, "memory-pg", "psql не установлен (опционально)"))
 
     for ok, name, note in checks:
         mark = {True: "  ok ", False: "ПРОБЛ", None: " опц "}[ok]
@@ -789,6 +819,112 @@ def cmd_answer(args: argparse.Namespace) -> int:
         print(f"границы задачи расширены: {', '.join(args.add_path)}")
     print("решение уйдёт исполнителю следующим запуском `swarm run`")
     return 0
+
+
+def _memory_anchor(root: pathlib.Path, ref: str) -> dict[str, str]:
+    """Якорь из операторской строки: вид определяется тем, что резолвится.
+
+    Порядок проверок — от дешёвого к дорогому; ничего не резолвится —
+    честный path-якорь, который страж памяти отклонит с причиной.
+    """
+    if (root / ref).exists():
+        return {"kind": "path", "ref": ref}
+    probe = subprocess.run(["git", "cat-file", "-e", f"{ref}^{{commit}}"],
+                           cwd=root, capture_output=True, check=False)
+    if probe.returncode == 0:
+        return {"kind": "commit", "ref": ref}
+    journal = pathlib.Path(root) / ".swarm" / "log" / "run.jsonl"
+    if journal.exists() and f'"task": "{ref}"' in journal.read_text(
+            encoding="utf-8"):
+        return {"kind": "task", "ref": ref}
+    return {"kind": "path", "ref": ref}
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Память между прогонами (E9): уроки, поиск, дайджест, индекс."""
+    mem = _load("memory")
+    st = state_mod.SwarmState(args.root)
+    cfg = _config(args.root)
+    store = mem.MemoryStore(args.root)
+    root = pathlib.Path(args.root)
+    repo, stand = mem.repo_identity(args.root)
+
+    if args.mem_cmd == "add":
+        anchors = [_memory_anchor(root, a) for a in (args.anchor or [])]
+        record = {"repo": repo, "stand": stand,
+                  "goal": st.load_tasks().get("goal", ""),
+                  "source": "operator", "outcome": args.outcome,
+                  "body": args.text, "anchors": anchors}
+        ok, why = mem.admissible(record, root, store.journal_path)
+        if not ok:
+            print(why, file=sys.stderr)
+            return 2
+        lesson_id = store.append(record)
+        st.log("memory_written", lesson=lesson_id, outcome=args.outcome)
+        if mem.ensure_schema(cfg):
+            stored = next((r for r in store.records()
+                           if r.get("id") == lesson_id), None)
+            if stored is not None:
+                mem.upsert(cfg, [dict(stored, repo=repo, stand=stand)])
+        print(f"урок {lesson_id} записан ({args.outcome})")
+        return 0
+
+    if args.mem_cmd == "search":
+        hits = mem.retrieve(st, cfg, args.query, role="operator",
+                            k=args.k)
+        if args.json:
+            print(json.dumps(hits, ensure_ascii=False, indent=1))
+            return 0
+        if not hits:
+            print("ничего не найдено")
+            return 0
+        for h in hits:
+            count = int(h.get("count", 1))
+            mark = mem.OUTCOME_RU.get(str(h.get("outcome")), "урок")
+            print(f"[{mark}, {count}×] {h.get('id')}  "
+                  f"{str(h.get('body') or '')[:120]}")
+        return 0
+
+    if args.mem_cmd == "show":
+        rec = next((r for r in store.records()
+                    if str(r.get("id")) == args.id), None)
+        if rec is None:
+            print(f"урок {args.id!r} не найден", file=sys.stderr)
+            return 2
+        print(json.dumps(rec, ensure_ascii=False, indent=1))
+        return 0
+
+    if args.mem_cmd == "forget":
+        rec = next((r for r in store.records()
+                    if str(r.get("id")) == args.id), None)
+        if rec is None:
+            print(f"урок {args.id!r} не найден", file=sys.stderr)
+            return 2
+        store.tombstone(args.id)
+        mem.pg(cfg, "UPDATE lessons SET tombstone = true "
+                    "WHERE id = :'lid';", {"lid": args.id})
+        st.log("memory_forgotten", lesson=args.id)
+        print(f"урок {args.id} затомбстоунен (файл — источник истины, "
+              f"reindex воспроизведёт)")
+        return 0
+
+    if args.mem_cmd == "reflect":
+        mem.reflect_after_run(st, cfg)
+        records = store.records()
+        print(f"дайджест пересобран: {store.digest_path} "
+              f"(уроков {len(records)})")
+        return 0
+
+    if args.mem_cmd == "reindex":
+        ok_ix, n = mem.reindex(cfg, store, repo, stand)
+        if not ok_ix:
+            print("индекс не пересобран: PG недоступен (уроки целы в "
+                  "файлах; поиск работает локальным сканом)",
+                  file=sys.stderr)
+            return 2
+        print(f"индекс пересобран: {n} строк(и) для стенда {stand}")
+        return 0
+    return 2
 
 
 def cmd_policy(args: argparse.Namespace) -> int:
@@ -1392,6 +1528,26 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--note", help="указание исполнителю")
     p.add_argument("--add-path", action="append", default=[])
     p.set_defaults(func=cmd_retry)
+
+    p = sub.add_parser("memory", help="память между прогонами (E9)")
+    mem_sub = p.add_subparsers(dest="mem_cmd", required=True)
+    mp = mem_sub.add_parser("add", help="записать урок вручную")
+    mp.add_argument("text")
+    mp.add_argument("--outcome", choices=["useful", "dead_end", "corrected"],
+                    default="useful")
+    mp.add_argument("--anchor", action="append", default=[],
+                    help="якорь: путь, коммит или id задачи (можно повторять)")
+    mp = mem_sub.add_parser("search", help="поиск по урокам")
+    mp.add_argument("query")
+    mp.add_argument("-k", type=int, default=5)
+    mp.add_argument("--json", action="store_true")
+    mp = mem_sub.add_parser("show", help="урок целиком по id")
+    mp.add_argument("id")
+    mp = mem_sub.add_parser("forget", help="затомбстоунить урок")
+    mp.add_argument("id")
+    mem_sub.add_parser("reflect", help="пересобрать дайджест LESSONS.md")
+    mem_sub.add_parser("reindex", help="пересобрать PG-индекс из файлов")
+    p.set_defaults(func=cmd_memory)
 
     p = sub.add_parser("ab", help="сводка по рукам замера (модель/усилие)",
                        description=inspect.getdoc(cmd_ab),

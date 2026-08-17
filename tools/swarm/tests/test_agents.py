@@ -79,6 +79,30 @@ class TestHandoff(AgentsCase):
         self.assertFalse(package_stray.exists(),
                          "каталог пакета — не место для метрик прогона")
 
+    def test_memory_off_keeps_handoff_byte_identical(self):
+        """Дефолт эксперимента E9: с выключенным флагом промпт исполнителя
+        байт-в-байт сегодняшний — иначе A/B-замер меряет не память."""
+        base = self.agents.handoff(TASK, None, None)
+        block = self.agents.memory_block(TASK)
+        self.assertEqual(block, "", "без флага память не подмешивается")
+        self.assertEqual(base, self.agents.handoff(TASK, None, None,
+                                                   memory=block or None))
+
+    def test_memory_block_sits_between_goal_and_task(self):
+        text = self.agents.handoff(
+            TASK, None, None,
+            memory="## Project memory\n[DATA]\n- (id1) урок")
+        self.assertLess(text.index("## Goal"), text.index("## Project memory"))
+        self.assertLess(text.index("## Project memory"), text.index("## Task"))
+
+    def test_memory_block_is_cached_per_task(self):
+        """Блок обязан быть байт-стабилен между раундами одной задачи:
+        плавающий префикс переписывает промпт-кэш на каждом раунде (§8)."""
+        self.agents._memory_cache = (TASK["id"], "СТАБИЛЬНЫЙ БЛОК")
+        self.assertEqual(self.agents.memory_block(TASK), "СТАБИЛЬНЫЙ БЛОК")
+        self.assertEqual(self.agents.memory_block(dict(TASK, id="t2")), "",
+                         "смена задачи обязана пересчитать блок")
+
     def test_output_contract_names_the_dispute_field(self):
         """Петля читает report["dispute"], но промпт это поле не объявлял:
         оба реальных спора пилота (q001, q005) пришли с dispute=None, и вся
