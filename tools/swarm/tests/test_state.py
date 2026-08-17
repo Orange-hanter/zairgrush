@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -160,6 +161,42 @@ class TestPersistence(StateCase):
         self.state.metric(task="aaaa", phase="review", ok=False)
         rows = self.state.metrics_path.read_text().strip().splitlines()
         self.assertEqual(len(rows), 2)
+
+
+class TestConcurrentWriters(StateCase):
+    """Lost update между процессами: `swarm answer`/`retry` зовут во время
+    прогона — так задуман инбокс, — и их load→modify→save гонялся с
+    set_status бегущей петли. Пропавшую запись не ловит даже проверка
+    целостности: последний отпечаток объявлен честно, он просто собран из
+    устаревшего чтения. Замок записи (mutate) обязан сериализовать
+    транзакции так, чтобы не терялось НИЧЕГО."""
+
+    WORKER = r"""
+import importlib.util, sys
+state_py, root, tag, n = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("state", state_py)
+mod = importlib.util.module_from_spec(spec)
+sys.modules["state"] = mod
+spec.loader.exec_module(mod)
+s = mod.SwarmState(root)
+for i in range(int(n)):
+    s.set_status("aaaa", "pending", **{f"mark_{tag}_{i}": True})
+"""
+
+    def test_parallel_set_status_loses_nothing(self):
+        n = 20
+        procs = [subprocess.Popen(
+            [sys.executable, "-c", self.WORKER,
+             str(ROOT / "swarm" / "state.py"), str(self.root), tag, str(n)])
+            for tag in ("a", "b")]
+        for p in procs:
+            self.assertEqual(p.wait(timeout=120), 0)
+        task = {t["id"]: t
+                for t in self.state.load_tasks()["tasks"]}["aaaa"]
+        missing = [f"mark_{tag}_{i}" for tag in ("a", "b")
+                   for i in range(n) if f"mark_{tag}_{i}" not in task]
+        self.assertEqual(missing, [],
+                         "потерянные записи конкурирующих писателей")
 
 
 if __name__ == "__main__":

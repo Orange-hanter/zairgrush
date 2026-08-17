@@ -24,6 +24,7 @@
 """
 import argparse
 import contextlib
+import fnmatch
 import importlib.util
 import inspect
 import itertools
@@ -158,13 +159,12 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"  {row['task']}: {row['action']} (нет записи о завершении)")
         print("  -> `swarm resume` разберётся с ними")
 
-    if st.metrics_path.exists():
-        cost = 0.0
-        for line in st.metrics_path.read_text().splitlines():
-            with contextlib.suppress(ValueError):
-                cost += json.loads(line).get("cost_usd") or 0
-        if cost:
-            print(f"\nпотрачено дорогими ролями: ${cost:.2f}")
+    # Одна величина — одна формула: собственный цикл по metrics.jsonl не
+    # видел плановый поток, и status расходился со стражем бюджета ровно
+    # на стоимость планирования (рецидив «$38.43 против $40.12» с пилота).
+    cost = st.total_spend()
+    if cost:
+        print(f"\nпотрачено дорогими ролями: ${cost:.2f}")
     _print_next(args.root, tasks, open_q)
     return 0
 
@@ -650,11 +650,24 @@ def _paths_mentioned(text: str, allowed: list[str]) -> list[str]:
     Ответ вроде «вынеси в _utils.py» невыполним, если этого файла нет в
     `paths`: исполнитель попробует, SCOPE-CHECK откатит, раунд сгорит.
     Дешевле предупредить человека сразу.
+
+    Сверка — тем же fnmatch, что и настоящий SCOPE-CHECK. Собственная
+    формула на суффиксах ошибалась в обе стороны: `tests/*` требовал
+    --force за файл внутри границ, а тёзка по хвосту («vocab.py» против
+    «ab.py») молча проходил. Страж с другой формулой границ — не страж.
+    Голое имя без пути дополнительно сверяется с именем файла в паттерне:
+    «поправь _utils.py» при paths=[«swarm/_utils.py»] — внутри границ.
     """
     found = set(re.findall(r"[\w/.-]+\.(?:py|rs|ts|js|go|toml|md)", text))
-    return sorted(f for f in found
-                  if not any(f.endswith(a.lstrip("*")) or a.endswith(f)
-                             for a in allowed))
+
+    def inside(mention: str) -> bool:
+        m = mention.removeprefix("./")
+        if any(fnmatch.fnmatch(m, a) for a in allowed):
+            return True
+        return "/" not in m and any(
+            fnmatch.fnmatch(m, pathlib.PurePath(a).name) for a in allowed)
+
+    return sorted(f for f in found if not inside(f))
 
 
 def cmd_answer(args: argparse.Namespace) -> int:
@@ -790,10 +803,15 @@ def cmd_plan(args: argparse.Namespace) -> int:
     if args.dry_run:
         print("\ndry-run: план не применён")
         return 0
-    if args.cmd == "plan" and args.goal:
-        data["goal"] = args.goal
-    data["tasks"] = planner.apply_plan_diff(diff, tasks)
-    st.save_tasks(data)
+    # Применение — под замком записи и на СВЕЖЕЙ очереди: планирование
+    # длится минуты, и статусы, изменившиеся за это время (бегущий прогон,
+    # ответ оператора), нельзя затирать снимком из начала команды.
+    with st.mutate():
+        data = st.load_tasks()
+        if args.cmd == "plan" and args.goal:
+            data["goal"] = args.goal
+        data["tasks"] = planner.apply_plan_diff(diff, data["tasks"])
+        st.save_tasks(data)
     st.log("plan_applied", mode=args.cmd, ops=len(diff["ops"]),
            tasks_after=len(data["tasks"]))
     print(f"\nприменено: в очереди {len(data['tasks'])} задач(и)")
@@ -886,26 +904,31 @@ def cmd_retry(args: argparse.Namespace) -> int:
     границами.
     """
     st = state_mod.SwarmState(args.root)
-    data = st.load_tasks()
-    task = next((t for t in data["tasks"] if t["id"] == args.task), None)
-    if task is None:
-        print(f"задача {args.task!r} не найдена", file=sys.stderr)
-        return 2
-    # in_progress означает, что прогон умер на этой задаче (таймаут гейта,
-    # отказ по квоте, сетевой сбой). Без этого выхода задача застревала
-    # навсегда: ready_tasks берёт только pending, а retry требовал blocked.
-    if task["status"] not in ("blocked", "in_progress"):
-        print(f"задача {args.task} в статусе {task['status']}, возвращать нечего",
-              file=sys.stderr)
-        return 2
-    task["status"] = "pending"
-    task.pop("reason", None)
-    if args.note:
-        task["human_answer"] = args.note
-    for extra in args.add_path or []:
-        if extra not in task.setdefault("paths", []):
-            task["paths"].append(extra)
-    st.save_tasks(data)
+    # Составное load→modify→save — под коротким замком записи: retry
+    # зовут и во время прогона, и гонка с set_status бегущей петли
+    # молча теряла одну из записей (lost update).
+    with st.mutate():
+        data = st.load_tasks()
+        task = next((t for t in data["tasks"] if t["id"] == args.task), None)
+        if task is None:
+            print(f"задача {args.task!r} не найдена", file=sys.stderr)
+            return 2
+        # in_progress означает, что прогон умер на этой задаче (таймаут
+        # гейта, отказ по квоте, сетевой сбой). Без этого выхода задача
+        # застревала навсегда: ready_tasks берёт только pending, а retry
+        # требовал blocked.
+        if task["status"] not in ("blocked", "in_progress"):
+            print(f"задача {args.task} в статусе {task['status']}, "
+                  f"возвращать нечего", file=sys.stderr)
+            return 2
+        task["status"] = "pending"
+        task.pop("reason", None)
+        if args.note:
+            task["human_answer"] = args.note
+        for extra in args.add_path or []:
+            if extra not in task.setdefault("paths", []):
+                task["paths"].append(extra)
+        st.save_tasks(data)
     st.log("retry", task=args.task, note=args.note,
            added_paths=args.add_path or [])
     print(f"задача {args.task} возвращена в очередь")

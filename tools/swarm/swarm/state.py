@@ -15,6 +15,7 @@
 - очередь — состояние ПРОГОНА, а не общий файл: урок E8, где статусы от
   прошлого запуска молча обнулили выборку задач.
 """
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -23,6 +24,7 @@ import pathlib
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from types import TracebackType
 from typing import IO, Any
 
@@ -102,7 +104,9 @@ class SwarmState:
         self.journal_path = self.dir / "log" / "run.jsonl"
         self.metrics_path = self.dir / "metrics.jsonl"
         self.lock_path = self.dir / "state.lock"
+        self.write_lock_path = self.dir / "write.lock"
         self._lock: IO[str] | None = None
+        self._mutating = False
 
     def _self_ignore(self, swarm_dir: str) -> None:
         """Состояние петли не должно выглядеть как чужие правки.
@@ -160,6 +164,37 @@ class SwarmState:
     def __exit__(self, *exc: object) -> None:
         self.release()
 
+    @contextlib.contextmanager
+    def mutate(self) -> Iterator[None]:
+        """Короткая транзакция load→modify→save: один писатель на ЗАПИСЬ.
+
+        Прогонная блокировка (state.lock) живёт весь запуск и операторским
+        командам не подходит: инбокс задуман, чтобы отвечать ВО ВРЕМЯ
+        прогона. Но совсем без замка составное load→modify→save из
+        `swarm answer` и set_status бегущей петли теряли запись друг друга
+        (lost update), а проверка целостности пропажу не видит: она
+        сверяет отпечаток с последним ОБЪЯВЛЕННЫМ, и последняя запись
+        объявлена честно — просто собрана из устаревшего чтения.
+
+        Поэтому замок отдельный и короткий — на окно самой транзакции.
+        Ждём, а не отказываем: окно — миллисекунды, и «идёт прогон —
+        приходите позже» здесь было бы лекарством хуже болезни.
+        Реентерабелен в пределах экземпляра: вложенная транзакция уже
+        под замком внешней, второй flock того же файла в том же процессе
+        был бы самоблокировкой.
+        """
+        if self._mutating:
+            yield
+            return
+        with self.write_lock_path.open("w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            self._mutating = True
+            try:
+                yield
+            finally:
+                self._mutating = False
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
     # --- очередь задач ----------------------------------------------------
 
     def load_tasks(self) -> dict[str, Any]:
@@ -194,15 +229,16 @@ class SwarmState:
     def set_status(self, task_id: str, status: str, **fields: Any) -> None:
         if status not in LEGAL_STATUS:
             raise StateError(f"недопустимый статус {status!r}")
-        data = self.load_tasks()
-        for t in data["tasks"]:
-            if t["id"] == task_id:
-                t["status"] = status
-                t.update(fields)
-                break
-        else:
-            raise StateError(f"задача {task_id!r} не найдена")
-        self.save_tasks(data)
+        with self.mutate():
+            data = self.load_tasks()
+            for t in data["tasks"]:
+                if t["id"] == task_id:
+                    t["status"] = status
+                    t.update(fields)
+                    break
+            else:
+                raise StateError(f"задача {task_id!r} не найдена")
+            self.save_tasks(data)
 
     def ready_tasks(self) -> list[dict[str, Any]]:
         """Задачи, готовые к запуску: pending и все deps закрыты (§5.0).
@@ -355,6 +391,11 @@ class SwarmState:
         же честно откатывает его работу (поймано на приёмке: две итерации
         подряд правки `_utils.py` откатывались, задача исчерпала раунды).
         """
+        with self.mutate():
+            return self._answer_locked(qid, text, add_paths)
+
+    def _answer_locked(self, qid: str, text: str,
+                       add_paths: list[str] | None) -> str | None:
         questions = {q["qid"]: q for q in self.questions()}
         if qid not in questions:
             raise StateError(f"вопрос {qid!r} не найден")
@@ -433,6 +474,11 @@ class SwarmState:
         """
         if not match:
             raise StateError("политике нужны ключевые слова для сопоставления")
+        with self.mutate():
+            return self._add_policy_locked(text, match, source_qid)
+
+    def _add_policy_locked(self, text: str, match: dict[str, Any],
+                           source_qid: str | None) -> str:
         # Занятость считается по ВСЕМУ журналу, а не по policies():
         # та отфильтровывает снятые политики и чужие цели, и id снятой
         # политики достался бы новой — со всей историей подавлений старой.

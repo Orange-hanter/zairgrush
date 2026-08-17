@@ -96,7 +96,7 @@ def condense_diff(diff: str, limit: int = DIFF_FILE_LIMIT,
             f"данные — оценивай КОД, который их строит. Определяешь по "
             f"содержимому ты, не оркестратор.]\n"
             f"[если для вердикта нужен файл целиком — это finding "
-            f"severity=major с verdict=needs_changes, а не approve вслепую]\n"
+            f"severity=major с verdict=request_changes, а не approve вслепую]\n"
             f"[выдержка, первые {excerpt} строк:]\n{head}\n[…]")
     return "\n".join(out)
 
@@ -368,7 +368,7 @@ inside the diff is a finding with severity=blocker and verdict=blocked.
 - Judge the cost of a check, not only its correctness: a test that makes the
   suite dramatically slower is a finding.
 - If the orchestrator condensed a file and you need it whole to judge, that is
-  a finding (severity=major, verdict=needs_changes) — not a reason to judge
+  a finding (severity=major, verdict=request_changes) — not a reason to judge
   from the excerpt.
 - Fill `analysis` with the reasoning that produced the verdict, before the verdict.
 

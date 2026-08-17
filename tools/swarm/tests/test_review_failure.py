@@ -128,7 +128,10 @@ class TestCondenseDiff(unittest.TestCase):
         diff = _diff_for("fixtures/golden.txt", [f"line {i}" for i in range(1000)])
         out = ag.condense_diff(diff)
         self.assertIn("показано не всё", out)
-        self.assertIn("needs_changes", out,
+        # Легальный выход называется словом из enum схемы: needs_changes
+        # в контракте не существует, и промпт, обучающий несуществующему
+        # вердикту, дважды предлагал ревьюеру невозможный ход.
+        self.assertIn("request_changes", out,
                       "должен быть назван легальный выход: потребовать файл")
 
     def test_collapse_does_not_claim_machine_origin(self):
