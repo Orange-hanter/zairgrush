@@ -114,6 +114,17 @@ class TestNewFileIsVisible(GitCase):
         self.assertFalse(ok)
         self.assertIn("tests/test_sneaky.py", bad)
 
+    def test_pre_existing_dirt_is_not_a_violation(self):
+        """`run --force` стартует на грязном дереве. Операторская правка
+        вне границ читалась стражем как нарушение КАЖДЫЙ раунд: revert её
+        щадит (она не работа агента), убрать её некому — и лимит раундов
+        выгорал об файл, который никто не трогал."""
+        self.create("notes.md", "черновик оператора\n")
+        self.loop._pre_existing = set(self.state.changed_files())
+        self.create("src/new_module.py")
+        ok, bad, _ = self.loop.scope_check(dict(self.TASK))
+        self.assertTrue(ok, f"чужая грязь прочитана как нарушение: {bad}")
+
     def test_explicit_tests_glob_unlocks_creation(self):
         """Обратная сторона: владелец, celившийся paths'ами в тесты,
         получает право их создавать — независимо от типа задачи."""

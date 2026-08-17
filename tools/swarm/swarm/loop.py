@@ -200,7 +200,8 @@ def classify_findings(findings: list[dict[str, Any]] | None,
 
 def decide(round_no: int, verdict: dict[str, Any],
            history: list[dict[str, Any]], max_rounds: int = MAX_ITER,
-           confirmations: int = 2) -> tuple[str, int]:
+           confirmations: int = 2, diff_sha: str | None = None,
+           confirming: bool = False) -> tuple[str, int]:
     """Решение цикла по вердикту и истории раундов.
 
     Порядок проверок важен и заимствован у FuguNano:
@@ -213,7 +214,15 @@ def decide(round_no: int, verdict: dict[str, Any],
       5. иначе — продолжаем.
     """
     if verdict["verdict"] == "approve":
-        approvals = sum(1 for r in history if r.get("verdict") == "approve") + 1
+        # Подтверждение — свойство ОДНОГО состояния кода, а не задачи:
+        # approve, полученный до последующего исправления, относится к
+        # другому диффу и в счёт не идёт. Пока approvals считались по всей
+        # истории, цепочка approve → флип на подтверждении → фикс → approve
+        # закрывала задачу, финальный код которой видел ровно один ревьюер.
+        approvals = sum(
+            1 for r in history
+            if r.get("verdict") == "approve"
+            and (diff_sha is None or r.get("diff_sha") == diff_sha)) + 1
         return ((DONE, EXIT_OK) if approvals >= confirmations
                 else (CONFIRM, EXIT_WORKING))
 
@@ -224,7 +233,14 @@ def decide(round_no: int, verdict: dict[str, Any],
         return ESCALATE_MAX, EXIT_ESCALATE
 
     findings = verdict.get("findings") or []
-    prev = history[-1] if history else None
+    # Сходимость меряется по исправительным раундам. Подтверждающий ревьюит
+    # ТОТ ЖЕ дифф — часто другой рукой жребия, — и его находки говорят о
+    # разбросе ревьюеров, а не о динамике задачи: сравнение с ним (или его
+    # самого с прошлым) объявляло несходимость там, где исполнитель ещё
+    # ничего не менял. Расхождение на одном диффе ловит и называет
+    # _reviewers_disagreed, здесь ему делать нечего.
+    prev = (None if confirming else next(
+        (r for r in reversed(history) if not r.get("confirming")), None))
     if prev:
         same_class = ({f.get("category") for f in findings}
                       == set(prev.get("categories") or []))
@@ -427,6 +443,15 @@ class Loop:
         unlocking = [pat for pat in allowed if is_protected(pat)]
         bad, touched_tests = [], []
         for path in self.state.changed_files():
+            if path in self._pre_existing:
+                # Лежало в дереве ДО старта задачи (`run --force`) — не
+                # работа агента. revert такие файлы щадит, а страж без
+                # этого исключения читал их как нарушение каждый раунд:
+                # лимит выгорал об операторскую незакоммиченную правку,
+                # которую никто не мог ни убрать, ни легализовать.
+                # Цена решения: правку агента ПОВЕРХ такого файла страж
+                # тоже не видит — этот риск оператор принял флагом --force.
+                continue
             if not any(fnmatch.fnmatch(path, p) for p in allowed):
                 bad.append(path)
                 continue
@@ -667,6 +692,11 @@ class Loop:
         # откату не подлежит: иначе незакоммиченная работа человека
         # уничтожается безвозвратно при первом же нарушении границ.
         self._pre_existing = set(self.state.changed_files())
+        if self._pre_existing:
+            # Факт в журнал: страж границ эти файлы дальше не видит, и
+            # оператор обязан знать, что задача пошла поверх его правок.
+            self.state.log("pre_existing_dirt", task=tid,
+                           files=sorted(self._pre_existing))
         self._head_before = self._sh(["git", "rev-parse", "HEAD"]).stdout.strip()
         self._state_before = self._state_fingerprint()
 
@@ -688,7 +718,8 @@ class Loop:
                              "исполнению во всех последующих итерациях"}
         feedback = dict(human) if human else None
         history: list[dict[str, Any]] = []
-        best: dict[str, Any] = {"findings": None, "round": None, "diff": None}
+        best: dict[str, Any] = {"findings": None, "round": None, "diff": None,
+                                "items": None}
         # Подтверждающие раунды не расходуют лимит исправлений: они не
         # меняют код, а перепроверяют уже принятый. Иначе approve на
         # последней итерации обречён — подтверждать его негде (поймано на
@@ -850,6 +881,11 @@ class Loop:
             if raw_findings and not findings and verdict["verdict"] != "blocked":
                 verdict["verdict"] = "approve"
             intent, mechanical = classify_findings(findings)
+            # Отпечаток отревьюенного состояния: по нему `decide` считает
+            # подтверждения, а история позволяет отличить «второй голос по
+            # тому же коду» от «голос по уже другому».
+            work = self.state.work_diff()
+            work_sha = hashlib.sha256(work.encode("utf-8")).hexdigest()[:12]
             # Тот же бюджет, что и у цикла выше. Пока `decide` считал по
             # голому max_iter, а цикл — по max_iter + confirm_rounds, они
             # расходились ровно на число выданных подтверждений: на
@@ -859,13 +895,16 @@ class Loop:
             # исчерпаны». Две записи одного лимита обязаны быть одной.
             outcome, code = decide(iteration, verdict, history,
                                    max_rounds=self.max_iter + confirm_rounds,
-                                   confirmations=self.config.get("confirmations", 2))
+                                   confirmations=self.config.get("confirmations", 2),
+                                   diff_sha=work_sha,
+                                   confirming=was_confirmation)
             history.append({"round": iteration, "verdict": verdict["verdict"],
                             "findings": len(findings),
                             # Без этих двух полей диагност не может
                             # отличить «задача не сходится» от
                             # «ревьюеры разошлись на одном диффе».
                             "confirming": was_confirmation,
+                            "diff_sha": work_sha,
                             **getattr(self.agents, "last_tuning", {}),
                             "categories": sorted({str(f.get("category") or "")
                                                   for f in findings})})
@@ -880,16 +919,21 @@ class Loop:
             # keep-best: раунд, где находок меньше всего, запоминается —
             # если следующий окажется хуже, откатываемся к лучшему, чтобы
             # цикл не деградировал (приём FuguNano).
+            rolled_back_to: int | None = None
             if best["findings"] is None or len(findings) < best["findings"]:
                 best.update(findings=len(findings), round=iteration,
-                            diff=self.state.work_diff())
+                            diff=work, items=list(findings))
             elif (len(findings) > best["findings"] and best["diff"]
-                    and not was_confirmation):
+                    and not was_confirmation
+                    and verdict["verdict"] == "request_changes"):
                 # Подтверждающий раунд ревьюет ТОТ ЖЕ дифф: исполнитель в нём
                 # не вызывался, кода никто не трогал. Рост числа находок там
                 # — разброс ревьюера, а не регресс. На PILOT-1 (g2pf) это
                 # дало ложный «регресс 2 против 1» и совершенно ненужный
                 # цикл revert + git apply поверх неизменного дерева.
+                # Approve с лишними minor-находками — тоже не регресс:
+                # откатывать одобренное дерево и коммитить вместо него
+                # прошлый раунд значило бы подменить предмет вердикта.
                 self.ui(f"    регресс: {len(findings)} находок против "
                         f"{best['findings']} в раунде {best['round']} — откат")
                 self.revert()
@@ -907,6 +951,7 @@ class Loop:
                                           question_id=qid, diagnosis=diagnosis)
                     self.ui(f"    ОТКАТ НЕ СОСТОЯЛСЯ [{qid}]")
                     return "blocked"
+                rolled_back_to = int(best["round"])
 
             if outcome in (DONE, CONFIRM):
                 if outcome == CONFIRM:
@@ -960,7 +1005,20 @@ class Loop:
                 self.ui(f"    эскалация [{qid}]: {diagnosis}")
                 return "blocked"
 
-            feedback = {"findings": mechanical or findings}
+            if rolled_back_to is None:
+                feedback = {"findings": mechanical or findings}
+            else:
+                # После отката в дереве лежит код ЛУЧШЕГО раунда, а findings
+                # текущего вердикта описывают уже снесённый. Отдавать их
+                # исполнителю значило посылать его чинить призраки: раунд
+                # уходил на поиск кода, которого нет. Замечания — по тому
+                # состоянию, которое он реально увидит.
+                _, best_mech = classify_findings(list(best.get("items") or []))
+                feedback = {"note": (f"код возвращён к лучшему раунду "
+                                     f"{rolled_back_to}; замечания ниже — "
+                                     f"по нему, дерево ему соответствует"),
+                            "findings": best_mech or list(best.get("items")
+                                                          or [])}
             if human:
                 feedback.update(human)
             self.ui(f"    request_changes ({len(findings)} замечаний, "

@@ -597,3 +597,141 @@ class TestConfirmDoesNotConsumeBudget(unittest.TestCase):
         self.assertEqual(result, "blocked")
         self.assertLess(rounds, lp.MAX_ITER,
                         "повтор того же класса обрывает цикл раньше лимита")
+
+
+class TestConfirmationsBindToDiff(unittest.TestCase):
+    """Подтверждение — свойство ОДНОГО состояния кода, а не задачи.
+
+    Пока approvals считались по всей истории, цепочка approve → флип на
+    подтверждающем раунде → исправление → approve закрывала задачу,
+    финальный код которой видел ровно один ревьюер: первый approve
+    относился к уже снесённому диффу, но шёл в счёт подтверждений.
+    """
+
+    def test_approve_of_new_diff_needs_its_own_confirmation(self):
+        history = [
+            {"round": 1, "verdict": "approve", "findings": 0,
+             "categories": [], "diff_sha": "aaa"},
+            {"round": 2, "verdict": "request_changes", "findings": 1,
+             "categories": ["style"], "confirming": True, "diff_sha": "aaa"},
+        ]
+        outcome, _ = lp.decide(3, verdict("approve"), history, max_rounds=5,
+                               diff_sha="bbb")
+        self.assertEqual(outcome, lp.CONFIRM,
+                         "approve чужого диффа не подтверждает новый код")
+
+    def test_second_approve_of_same_diff_closes(self):
+        history = [
+            {"round": 1, "verdict": "approve", "findings": 0,
+             "categories": [], "diff_sha": "aaa"},
+        ]
+        outcome, code = lp.decide(2, verdict("approve"), history,
+                                  max_rounds=5, diff_sha="aaa")
+        self.assertEqual(outcome, lp.DONE)
+        self.assertEqual(code, lp.EXIT_OK)
+
+    def test_histories_without_sha_keep_old_semantics(self):
+        """Старые записи без diff_sha (прогон до этой правки) не должны
+        ломать resume: без отпечатка счёт остаётся прежним."""
+        history = [{"round": 1, "verdict": "approve", "findings": 0,
+                    "categories": []}]
+        outcome, _ = lp.decide(2, verdict("approve"), history, max_rounds=5)
+        self.assertEqual(outcome, lp.DONE)
+
+
+class TestNonConvergenceIgnoresConfirmRounds(unittest.TestCase):
+    """Сходимость меряется по исправительным раундам.
+
+    Подтверждающий ревьюит ТОТ ЖЕ дифф — с пулами моделей часто другой
+    рукой жребия, — и его находки говорят о разбросе ревьюеров, а не о
+    динамике задачи. Сравнение с ним объявляло несходимость там, где
+    исполнитель ещё ничего не менял.
+    """
+
+    def test_confirming_round_never_declares_nonconvergence(self):
+        history = [round_record(1, 1, ["style"])]
+        outcome, _ = lp.decide(
+            2, verdict(findings=[finding("style")]), history,
+            max_rounds=5, confirming=True)
+        self.assertNotEqual(outcome, lp.ESCALATE_NONCONV)
+
+    def test_comparison_skips_confirming_predecessor(self):
+        history = [
+            {"round": 1, "verdict": "approve", "findings": 0,
+             "categories": []},
+            {"round": 2, "verdict": "request_changes", "findings": 1,
+             "categories": ["style"], "confirming": True},
+        ]
+        outcome, _ = lp.decide(
+            3, verdict(findings=[finding("style")]), history, max_rounds=5)
+        self.assertNotEqual(outcome, lp.ESCALATE_NONCONV,
+                            "сравнение с подтверждающим раундом — шум "
+                            "ревьюеров, а не динамика задачи")
+
+
+class TestKeepBestRollback(unittest.TestCase):
+    """Откат к лучшему раунду обязан согласовать дерево и feedback.
+
+    Два дефекта одним сюжетом: (1) findings худшего раунда уходили
+    исполнителю ПОСЛЕ отката — про код, которого в дереве уже нет, и
+    раунд тратился на починку призраков; (2) approve с лишними minor —
+    не регресс: откатить одобренное дерево и закоммитить вместо него
+    прошлый раунд значило бы подменить предмет вердикта.
+    """
+
+    def _run(self, verdicts, diffs):
+        feedbacks = []
+        restores = []
+        calls = {"implement": 0, "review": 0}
+        state = _FakeState()
+        state.work_diff = lambda: diffs[max(0, calls["review"] - 1)]
+
+        class FakeAgents:
+            def implement(self, task, feedback, iteration):
+                calls["implement"] += 1
+                feedbacks.append(feedback)
+                return {"status": "done"}
+
+            def review(self, task, tail, iteration, **kw):
+                idx = min(calls["review"], len(verdicts) - 1)
+                calls["review"] += 1
+                return verdicts[idx]
+
+            def commit_message(self, task, diff):
+                return "msg"
+
+        loop = lp.Loop(state, {"max_iterations": 3, "confirmations": 2},
+                       FakeAgents())
+        loop.gate = lambda task: (True, "OK")
+        loop.scope_check = lambda task: (True, [], [])
+        loop.commit = lambda task: "abc123"
+        loop.cleanup = lambda task, reason: None
+        loop._apply_patch = lambda diff: bool(restores.append(diff)) or True
+        loop._sh = lambda cmd, timeout=900: type(
+            "R", (), {"stdout": "", "returncode": 0})()
+        result = loop.run_task({"id": "kb", "title": "t", "paths": ["a.py"],
+                                "type": "feature"})
+        return result, feedbacks, restores
+
+    def test_feedback_after_rollback_speaks_about_the_best_round(self):
+        rc1 = verdict(findings=[finding("style")])
+        rc2 = verdict(findings=[finding("correctness"), finding("tests")])
+        ok = verdict("approve")
+        _, feedbacks, restores = self._run(
+            [rc1, rc2, ok, ok], diffs=("d1", "d2", "d3", "d3"))
+        self.assertEqual(restores, ["d1"], "дерево возвращено к лучшему")
+        fb = feedbacks[2]
+        self.assertIn("лучшему раунду 1", fb.get("note", ""),
+                      "исполнителю обязаны сказать, какой код он увидит")
+        self.assertEqual(fb["findings"], rc1["findings"],
+                         "замечания — по коду в дереве, а не по снесённому")
+
+    def test_approve_with_extra_minors_is_not_a_regression(self):
+        rc1 = verdict(findings=[finding("style")])
+        ok2 = verdict("approve", findings=[finding("style"),
+                                           finding("tests")])
+        result, _, restores = self._run(
+            [rc1, ok2, ok2], diffs=("d1", "d2", "d2"))
+        self.assertEqual(restores, [],
+                         "одобренное дерево не откатывается")
+        self.assertEqual(result, "done")
