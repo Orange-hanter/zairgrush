@@ -267,6 +267,15 @@ class MemoryStore:
 
 # --- grounding ------------------------------------------------------------
 
+def file_fp(path: pathlib.Path) -> str | None:
+    """Контентный отпечаток файла-якоря: ловит «файл есть, но изменился» —
+    урок о прежнем содержимом может быть уже неправдой."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    except OSError:
+        return None
+
+
 def resolve_anchor(anchor: dict[str, Any], root: pathlib.Path,
                    journal: pathlib.Path) -> bool:
     """Жив ли якорь. Неизвестный вид якоря НЕ считается живым: пропуск
@@ -275,7 +284,13 @@ def resolve_anchor(anchor: dict[str, Any], root: pathlib.Path,
     if not ref:
         return False
     if kind == "path":
-        return (root / ref).exists()
+        target = root / ref
+        if not target.exists():
+            return False
+        fp = anchor.get("fp")
+        # Отпечаток записан при создании урока: несовпадение значит, что
+        # файл переписан, и якорь мёртв, хотя путь жив.
+        return fp is None or file_fp(target) == fp
     if kind == "commit":
         r = subprocess.run(["git", "cat-file", "-e", f"{ref}^{{commit}}"],
                            cwd=root, capture_output=True, check=False)
@@ -288,6 +303,13 @@ def resolve_anchor(anchor: dict[str, Any], root: pathlib.Path,
             return needle in journal.read_text(encoding="utf-8")
         except OSError:
             return False
+    if kind == "symbol":
+        # git grep -w: символ ещё существует в отслеживаемом коде. Дёшево
+        # и честно; точный резолв (codemap) здесь был бы платой ctags за
+        # каждый вызов ворот.
+        r = subprocess.run(["git", "grep", "-q", "-w", "--", ref],
+                           cwd=root, capture_output=True, check=False)
+        return r.returncode == 0
     return False
 
 
@@ -442,7 +464,31 @@ def reindex(config: dict[str, Any], store: MemoryStore,
     records = [dict(r, repo=repo, stand=stand) for r in store.records()]
     if records and not upsert(config, records):
         return (0, 0)
+    _backfill_embeddings(config, records)
     return (1, len(records))
+
+
+def _backfill_embeddings(config: dict[str, Any],
+                         records: list[dict[str, Any]]) -> None:
+    """Досыпать вектора после пересборки. Сбой эмбеддера не событие:
+    строка остаётся искомой через FTS, вектор догонит следующий reindex."""
+    model = str(config.get("memory_embed_model") or "")
+    if not model or not records:
+        return
+    vectors: list[tuple[str, list[float]]] = []
+    for rec in records:
+        text = f"{rec.get('title') or ''} {rec.get('body') or ''}".strip()
+        vec = helpers.embed_text(text, model)
+        if vec:
+            vectors.append((str(rec.get("id")), vec))
+    if not vectors:
+        return
+    if not ensure_vector(config, len(vectors[0][1])):
+        return
+    for lesson_id, vec in vectors:
+        pg(config, "UPDATE lessons SET embedding = :'qv'::vector "
+                   "WHERE id = :'lid';",
+           {"qv": _vec_literal(vec), "lid": lesson_id})
 
 
 def _repo_filter() -> str:
@@ -465,6 +511,60 @@ def search_fts(config: dict[str, Any], repo: str, query: str,
         "count DESC, id LIMIT :k) t;"
     )
     ok, out = pg(config, sql, {"repo": repo, "q": query, "k": str(int(k))})
+    if not ok:
+        return None
+    try:
+        rows = json.loads(out or "[]")
+    except ValueError:
+        return None
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def _vec_literal(vec: list[float]) -> str:
+    """Литерал pgvector: данные остаются данными и едут через -v."""
+    return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+
+
+def ensure_vector(config: dict[str, Any], dim: int) -> bool:
+    """Расширение vector + колонка + пин размерности в meta.
+
+    Рассинхрон размерности (сменили модель эмбеддера) — отказ с
+    подсказкой, а не тихая каша из несравнимых векторов: старые вектора
+    чистит только явный `reindex`.
+    """
+    ok, _out = pg(config, "CREATE EXTENSION IF NOT EXISTS vector;")
+    if not ok:
+        return False
+    ok, out = pg(config,
+                 "SELECT value FROM meta WHERE key = 'embed_dim';")
+    if not ok:
+        return False
+    if out and out != str(int(dim)):
+        log.warning("память: размерность эмбеддера изменилась (%s -> %s): "
+                    "нужен `swarm memory reindex`", out, dim)
+        return False
+    # ALTER с типом vector(N) не параметризуется -v: N прошёл через int().
+    sql = (f"ALTER TABLE lessons ADD COLUMN IF NOT EXISTS "
+           f"embedding vector({int(dim)});\n"
+           "INSERT INTO meta (key, value) VALUES ('embed_dim', :'dim'::jsonb)"
+           " ON CONFLICT (key) DO NOTHING;")
+    ok, _out = pg(config, sql, {"dim": str(int(dim))})
+    return ok
+
+
+def search_vec(config: dict[str, Any], repo: str, vec: list[float],
+               k: int) -> list[dict[str, Any]] | None:
+    """Векторная сеть дополнительного охвата. None = хранилище недоступно."""
+    # S608: подставляется только _repo_filter(); вектор — в -v-переменной.
+    sql = (
+        "SELECT coalesce(json_agg(t), '[]'::json) FROM ("  # noqa: S608 — данные через -v
+        "SELECT id, outcome, body, title, task_id, count, anchors_ok "
+        f"FROM lessons WHERE {_repo_filter()} "
+        "AND embedding IS NOT NULL "
+        "ORDER BY embedding <=> :'qv'::vector, id LIMIT :k) t;"
+    )
+    ok, out = pg(config, sql, {"repo": repo, "qv": _vec_literal(vec),
+                               "k": str(int(k))})
     if not ok:
         return None
     try:
@@ -516,12 +616,29 @@ def retrieve(state: Any, config: dict[str, Any], query: str,
                           "поиск по локальным файлам")
             hits = _local_scan(store.records(), query, k)
             backend = "local"
-        elif not hits:
-            # FTS промахнулся — редкие токены могли не пройти стеммер;
-            # локальный скан как сеть дополнительного охвата.
-            local = _local_scan(store.records(), query, k)
-            if local:
-                hits, backend = local, "local-fallback"
+        else:
+            # Вектор — сеть дополнительного охвата ПОСЛЕ FTS, без слияния
+            # рангов: на сотнях записей RRF ничего не добавляет, а
+            # правильный №1 от сильного первого ретривера разбавляет
+            # (замерено на graphify — реранкеры там только вредили).
+            model = str(config.get("memory_embed_model") or "")
+            if model and len(hits) < k:
+                qvec = helpers.embed_text(query, model)
+                extra = (search_vec(config, repo, qvec, k)
+                         if qvec else None)
+                if extra:
+                    known = {str(h.get("id")) for h in hits}
+                    fresh = [h for h in extra
+                             if str(h.get("id")) not in known]
+                    if fresh:
+                        hits = hits + fresh[:k - len(hits)]
+                        backend = "fts+vec"
+            if not hits:
+                # FTS промахнулся — редкие токены могли не пройти стеммер;
+                # локальный скан как последняя сеть охвата.
+                local = _local_scan(store.records(), query, k)
+                if local:
+                    hits, backend = local, "local-fallback"
         store.log_query(role=role, task=task_id, query=query[:200], k=k,
                         backend=backend, hits=[str(h.get("id")) for h in hits])
     except Exception:
@@ -630,6 +747,26 @@ def _commit_paths(root: pathlib.Path, commit: str) -> list[str]:
     return [p for p in r.stdout.splitlines() if p.strip()][:5]
 
 
+_HUNK_SYMBOL = re.compile(r"^@@ .+ @@ .*?(?:def|class|fn)\s+(\w+)",
+                          re.MULTILINE)
+
+
+def _commit_symbols(root: pathlib.Path, commit: str) -> list[str]:
+    """Символы из заголовков ханков: дешёвый якорь «урок про эту функцию».
+
+    git сам пишет контекст ханка (имя функции/класса) — парсим его, а не
+    строим индекс: якорю хватает признака «символ ещё существует»."""
+    r = subprocess.run(["git", "show", "--format=", "--unified=0", commit],
+                       cwd=root, capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        return []
+    seen: list[str] = []
+    for name in _HUNK_SYMBOL.findall(r.stdout):
+        if name not in seen:
+            seen.append(name)
+    return seen[:3]
+
+
 def record_task_outcome(state: Any, task: dict[str, Any],
                         config: dict[str, Any]) -> str | None:
     """Механический урок из терминального исхода задачи. Без LLM: факты
@@ -653,8 +790,10 @@ def record_task_outcome(state: Any, task: dict[str, Any],
     commit = str(fresh.get("commit") or "")
     if commit:
         anchors.append({"kind": "commit", "ref": commit})
-        anchors += [{"kind": "path", "ref": p}
+        anchors += [{"kind": "path", "ref": p, "fp": file_fp(store.root / p)}
                     for p in _commit_paths(store.root, commit)]
+        anchors += [{"kind": "symbol", "ref": s}
+                    for s in _commit_symbols(store.root, commit)]
     if decisions:
         outcome = "corrected"
         body = (f"«{title}»: решения владельца, обязательные и дальше: "
@@ -699,11 +838,11 @@ def record_task_outcome(state: Any, task: dict[str, Any],
     return lesson_id
 
 
-def reflect_after_run(state: Any, _config: dict[str, Any]) -> None:
-    """«Сновидение» после прогона: пересборка дайджеста и запись факта.
+def reflect_after_run(state: Any, config: dict[str, Any]) -> None:
+    """«Сновидение» после прогона: дайджест, ре-валидация якорей, факт.
 
     Детерминированное и мгновенное — LLM-консолидация живёт отдельно,
-    за собственным флагом (Stage 3); config в подписи — её место.
+    за собственным флагом (этап 3).
     """
     try:
         store = MemoryStore(state.root)
@@ -713,6 +852,31 @@ def reflect_after_run(state: Any, _config: dict[str, Any]) -> None:
             return
         store.write_digest()
         records = store.records()
-        state.log("memory_reflect", lessons=len(records))
+        # Ре-валидация якорей: отпечаток пути ловит «файл есть, но
+        # переписан». Мёртвые якоря видны в дайджесте («Отвязанные») и в
+        # индексе (anchors_ok) — урок не удаляется и не подаётся правдой.
+        unlinked = 0
+        marks: list[dict[str, Any]] = []
+        for r in records:
+            anchors = [a for a in (r.get("anchors") or [])
+                       if isinstance(a, dict)]
+            ok_flag = (not anchors) or any(
+                resolve_anchor(a, store.root, store.journal_path)
+                for a in anchors)
+            if not ok_flag:
+                unlinked += 1
+            marks.append({"id": str(r.get("id")), "ok": ok_flag})
+        mode = str((config.get("experiments") or {}).get("memory", "off"))
+        if marks and mode != "off":
+            _repo, stand = repo_identity(state.root)
+            # S608: только константный текст; пары id/ok — в -v jsonb.
+            pg(config,
+               "UPDATE lessons l SET anchors_ok = r.ok, "
+               "validated_ts = now() "
+               "FROM jsonb_to_recordset(:'marks'::jsonb) "
+               "AS r(id text, ok boolean) "
+               "WHERE l.id = r.id AND l.stand = :'stand';",
+               {"marks": json.dumps(marks), "stand": stand})
+        state.log("memory_reflect", lessons=len(records), unlinked=unlinked)
     except Exception:
         log.exception("память: рефлексия после прогона не состоялась")

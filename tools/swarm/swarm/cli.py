@@ -67,7 +67,8 @@ KNOWN_CONFIG_KEYS = frozenset({
     "review_model", "review_effort", "review_model_pool", "review_effort_pool",
     "confirm_model", "confirm_effort", "confirm_model_pool",
     "confirm_effort_pool",
-    "memory_db", "memory_budget_chars", "memory_top_k", "experiments",
+    "memory_db", "memory_budget_chars", "memory_top_k", "memory_embed_model",
+    "experiments",
 })
 
 # Экспериментальные флаги (06-док, §1): та же семантика, что у основного

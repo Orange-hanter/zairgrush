@@ -389,6 +389,93 @@ class TestRepoIdentity(MemCase):
         self.assertEqual(len(set(norm)), 1, norm)
 
 
+class TestVectorLayer(MemCase):
+    """Вектор — сеть дополнительного охвата ПОСЛЕ FTS, не слияние рангов."""
+
+    def test_vec_literal_is_pgvector_syntax(self):
+        self.assertEqual(mem._vec_literal([0.25, -1.0]),
+                         "[0.250000,-1.000000]")
+
+    def test_hybrid_appends_only_fresh_hits(self):
+        self.addCleanup(setattr, mem, "search_fts", mem.search_fts)
+        self.addCleanup(setattr, mem, "search_vec", mem.search_vec)
+        self.addCleanup(setattr, mem.helpers, "embed_text",
+                        mem.helpers.embed_text)
+        mem.search_fts = lambda *a, **k: [{"id": "f1", "body": "х",
+                                           "outcome": "useful", "count": 1}]
+        mem.search_vec = lambda *a, **k: [
+            {"id": "f1", "body": "х", "outcome": "useful", "count": 1},
+            {"id": "v2", "body": "y", "outcome": "useful", "count": 1}]
+        mem.helpers.embed_text = lambda text, model: [0.1, 0.2]
+        hits = mem.retrieve(_FakeState(self.root),
+                            {"memory_embed_model": "m"}, "запрос")
+        self.assertEqual([h["id"] for h in hits], ["f1", "v2"],
+                         "FTS первым, векторные — только новые id")
+
+    def test_embedder_down_leaves_fts_only(self):
+        self.addCleanup(setattr, mem, "search_fts", mem.search_fts)
+        self.addCleanup(setattr, mem.helpers, "embed_text",
+                        mem.helpers.embed_text)
+        mem.search_fts = lambda *a, **k: [{"id": "f1", "body": "х",
+                                           "outcome": "useful", "count": 1}]
+        mem.helpers.embed_text = lambda text, model: None
+        hits = mem.retrieve(_FakeState(self.root),
+                            {"memory_embed_model": "m"}, "запрос")
+        self.assertEqual([h["id"] for h in hits], ["f1"],
+                         "лежащий эмбеддер — не событие, FTS живёт")
+
+
+class TestAnchorDecay(MemCase):
+    """Распад по ре-валидации: отпечаток ловит «файл есть, но переписан»."""
+
+    def test_fp_mismatch_kills_path_anchor(self):
+        target = self.root / "a.py"
+        target.write_text("x = 1\n")
+        anchor = {"kind": "path", "ref": "a.py",
+                  "fp": mem.file_fp(target)}
+        self.assertTrue(mem.resolve_anchor(anchor, self.root,
+                                           self.store.journal_path))
+        target.write_text("x = 2  # переписан\n")
+        self.assertFalse(mem.resolve_anchor(anchor, self.root,
+                                            self.store.journal_path),
+                         "урок о прежнем содержимом — уже не правда")
+
+    def test_symbol_anchor_resolves_via_git_grep(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        (self.root / "m.py").write_text("def rare_symbol_name():\n    pass\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        anchor = {"kind": "symbol", "ref": "rare_symbol_name"}
+        self.assertTrue(mem.resolve_anchor(anchor, self.root,
+                                           self.store.journal_path))
+        self.assertFalse(mem.resolve_anchor(
+            {"kind": "symbol", "ref": "nonexistent_symbol_zz"},
+            self.root, self.store.journal_path))
+
+    def test_commit_symbols_parsed_from_hunk_headers(self):
+        raw = ("@@ -1,2 +1,3 @@ def compute_totals(self):\n"
+               "@@ -9,1 +10,1 @@ class Ledger:\n"
+               "@@ -20,1 +21,1 @@ def compute_totals(self):\n")
+        self.addCleanup(setattr, mem.subprocess, "run", mem.subprocess.run)
+        mem.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(
+            a, 0, stdout=raw, stderr="")
+        self.assertEqual(mem._commit_symbols(self.root, "abc"),
+                         ["compute_totals", "Ledger"])
+
+    def test_reflect_moves_dead_anchor_lessons_to_unlinked(self):
+        target = self.root / "b.py"
+        target.write_text("y = 1\n")
+        self.store.append(lesson(
+            "урок о файле b", anchors=[{"kind": "path", "ref": "b.py",
+                                        "fp": mem.file_fp(target)}]))
+        target.write_text("y = 2\n")
+        state = _FakeState(self.root)
+        mem.reflect_after_run(state, {})
+        self.assertIn("Отвязанные", self.store.digest_path.read_text())
+        reflected = next(p for k, p in state.logged
+                         if k == "memory_reflect")
+        self.assertEqual(reflected["unlinked"], 1)
+
+
 class TestNoFootprintOnRead(MemCase):
     """Чтение пустой памяти не оставляет следа на диске: каталог создаёт
     первая ЗАПИСЬ. Конструктор с mkdir — тот же класс утечки в чужое

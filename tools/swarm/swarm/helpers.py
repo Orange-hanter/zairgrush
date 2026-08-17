@@ -241,6 +241,67 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
         return text or None
 
 
+def embed_text(text: str, model: str) -> list[float] | None:
+    """Эмбеддинг через нативный /api/embed. Любая ошибка -> None (§7.3).
+
+    Слой опционален по построению: без ключа, при лежащем API или пустом
+    ответе память остаётся на FTS — вектор лишь сеть дополнительного
+    охвата, и его отсутствие не событие, а нормальный режим.
+    Probe эндпоинта на живом облаке НЕ проведён (в окружении нет
+    OLLAMA_API_KEY — findings E9): формат ответа взят из документации
+    нативного API; первый живой вызов обязан подтвердить его метрикой.
+    """
+    key = os.environ.get("OLLAMA_API_KEY")
+    if not key or not model:
+        _metric(helper="embed", skipped="no_api_key" if not key
+                else "no_model")
+        return None
+    if _state["failures"] >= BREAKER_THRESHOLD:
+        _metric(helper="embed", skipped="circuit_breaker",
+                consecutive_failures=_state["failures"])
+        return None
+    url = f"{BASE_URL}/api/embed"
+    if not url.startswith("https://"):
+        # Та же граница, что у /api/chat: подмена BASE_URL не должна
+        # уводить ключ и текст урока в чужие руки.
+        _metric(helper="embed", model=model,
+                api_error=f"недопустимый URL: {BASE_URL}")
+        return None
+    body = json.dumps({"model": model, "input": scrub(text)}).encode()
+    req = urllib.request.Request(url, data=body,  # noqa: S310 — схема проверена
+                                 headers={"Authorization": f"Bearer {key}",
+                                          "Content-Type": "application/json"})
+    t0 = time.time()
+    try:
+        raw = urllib.request.urlopen(req, timeout=TIMEOUT)  # noqa: S310 — схема проверена выше
+        resp = json.load(raw)
+        if resp.get("error"):
+            _state["failures"] += 1
+            _metric(helper="embed", model=model,
+                    api_error=str(resp["error"])[:120])
+            return None
+        vecs = resp.get("embeddings")
+        first = vecs[0] if isinstance(vecs, list) and vecs else None
+        vec = [float(x) for x in first] if isinstance(first, list) else []
+    except urllib.error.HTTPError as e:
+        _state["failures"] += 1
+        _metric(helper="embed", model=model, http_error=e.code,
+                retryable=e.code in (429, 502))
+        return None
+    except Exception:
+        log.warning("эмбеддер не ответил", exc_info=True)
+        _state["failures"] += 1
+        _metric(helper="embed", model=model, error="exception")
+        return None
+    if not vec:
+        _metric(helper="embed", model=model, api_error="пустой ответ")
+        return None
+    _state["failures"] = 0
+    _metric(helper="embed", model=model, dim=len(vec),
+            dur_s=round(time.time() - t0, 1), ok=True)
+    return vec
+
+
 def fail_open(default: Any) -> Callable[[F], F]:
     """§7.3: ЛЮБОЕ падение хелпера гасится здесь. Наружу — только default.
 

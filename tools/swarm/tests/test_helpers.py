@@ -570,5 +570,69 @@ class TestFailOpenContract(HelperTestCase):
         self.assertIsNone(hp.summarize_log(["a"]))
 
 
+class TestEmbedText(unittest.TestCase):
+    """Эмбеддер памяти (E9): опционален по построению, любой сбой -> None.
+
+    Живой probe /api/embed не проведён (в окружении нет ключа) — формат
+    ответа взят из документации нативного API и закреплён здесь; первый
+    живой вызов обязан подтвердить его метрикой ok=True с dim.
+    """
+
+    def setUp(self):
+        import urllib.request
+        self.mod = urllib.request
+        self.orig = urllib.request.urlopen
+        self.bodies = []
+        hp._state["failures"] = 0
+        self.addCleanup(hp._state.__setitem__, "failures", 0)
+
+    def tearDown(self):
+        self.mod.urlopen = self.orig
+
+    def transport(self, payload=None, raises=None):
+        def fake(req, timeout=None):
+            self.bodies.append(req.data.decode())
+            if raises:
+                raise raises
+            return FakeResponse(payload)
+        self.mod.urlopen = fake
+
+    def test_no_key_skips_without_network(self):
+        saved = os.environ.pop("OLLAMA_API_KEY", None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, "OLLAMA_API_KEY", saved)
+        self.transport({"embeddings": [[0.1]]})
+        self.assertIsNone(hp.embed_text("текст", "m"))
+        self.assertEqual(self.bodies, [], "без ключа сети быть не должно")
+
+    def test_vector_returned_and_secrets_scrubbed(self):
+        set_env(self, "OLLAMA_API_KEY", "dummy")
+        self.transport({"embeddings": [[0.25, -1.0, 0.5]]})
+        vec = hp.embed_text("token ghp_" + "b" * 40 + " рядом", "m")
+        self.assertEqual(vec, [0.25, -1.0, 0.5])
+        self.assertNotIn("ghp_" + "b" * 40, self.bodies[0],
+                         "текст урока едет наружу — секреты вычищаются")
+
+    def test_error_body_is_none(self):
+        set_env(self, "OLLAMA_API_KEY", "dummy")
+        self.transport({"error": "model not found"})
+        self.assertIsNone(hp.embed_text("текст", "m"))
+
+    def test_empty_embeddings_is_none(self):
+        set_env(self, "OLLAMA_API_KEY", "dummy")
+        self.transport({"embeddings": []})
+        self.assertIsNone(hp.embed_text("текст", "m"))
+
+    def test_network_error_trips_breaker(self):
+        set_env(self, "OLLAMA_API_KEY", "dummy")
+        self.transport(raises=OSError("no net"))
+        for _ in range(hp.BREAKER_THRESHOLD):
+            self.assertIsNone(hp.embed_text("т", "m"))
+        calls_before = len(self.bodies)
+        self.assertIsNone(hp.embed_text("т", "m"))
+        self.assertEqual(len(self.bodies), calls_before,
+                         "предохранитель обязан не звать сеть")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
