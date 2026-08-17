@@ -102,8 +102,13 @@ def _python_snippet(arg: str | None) -> list[str]:
     src = arg or ""
     if len(src) > 600:
         raise RejectedError("сниппет длиннее 600 символов")
+    # Чёрный список — best-effort барьер от честных попыток ревьюера выйти
+    # за рамки, а НЕ граница безопасности: Python не песочница, и обход
+    # подстрочного фильтра всегда найдётся. Границей остаются короткий
+    # таймаут, whitelist видов запросов и контроль чистоты дерева.
     forbidden = ("import os", "import sys", "import subprocess", "import shutil",
-                 "import socket", "open(", "__import__", "eval(", "exec(",
+                 "import socket", "importlib", "pathlib", "getattr(",
+                 "open(", "__import__", "eval(", "exec(",
                  "input(", "compile(")
     for bad in forbidden:
         if bad in src:

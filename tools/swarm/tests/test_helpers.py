@@ -8,8 +8,10 @@
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import sys
+import tempfile
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
@@ -21,6 +23,23 @@ spec.loader.exec_module(hp)
 
 TASK = {"id": "t1", "title": "Добавить проверку типа n"}
 FALLBACK = "t1: Добавить проверку типа n"
+
+
+def set_env(case, key, value):
+    """Подменить переменную окружения с гарантированным откатом.
+
+    Раньше тесты писали OLLAMA_API_KEY прямо в os.environ и не убирали:
+    значение протекало во все последующие тесты процесса.
+    """
+    saved = os.environ.get(key)
+    os.environ[key] = value
+
+    def restore():
+        if saved is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = saved
+    case.addCleanup(restore)
 
 
 class FakeResponse(io.StringIO):
@@ -60,6 +79,22 @@ class TestSecretScrub(unittest.TestCase):
         blob = ("-----BEGIN RSA PRIVATE KEY-----\nMIIabc123\n"
                 "-----END RSA PRIVATE KEY-----")
         self.assertNotIn("MIIabc123", hp.scrub(blob))
+
+    def test_github_token_with_underscore_removed(self):
+        """Дефект: шаблон требовал ДЕФИС после префикса, а реальные токены
+        GitHub идут через подчёркивание — ghp_/gho_ улетали в API целиком."""
+        out = hp.scrub("push via ghp_Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv")
+        self.assertNotIn("Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv", out)
+        self.assertIn("[REDACTED]", out)
+
+    def test_github_pat_prefix_removed(self):
+        """github_pat_ — отдельный префикс fine-grained PAT, его не было."""
+        out = hp.scrub("github_pat_11ABCDE0F_lmnopqrstuvwx1234567890")
+        self.assertNotIn("11ABCDE0F", out)
+
+    def test_stripe_live_key_removed(self):
+        out = hp.scrub("charge with sk_live_4eC39HqLyjWDarjtT1zdp7dc")
+        self.assertNotIn("4eC39HqLyjWDarjtT1zdp7dc", out)
 
     def test_ordinary_code_survives(self):
         code = "def word_freq(text):\n    return {}"
@@ -115,9 +150,11 @@ class TestDedupFindings(HelperTestCase):
         super().setUp()
         self.prev = [{"file": "a.py", "category": "correctness",
                       "issue": "не проверен тип n"}]
+        # curr[0] — ТОЧНЫЙ повтор прошлой находки: механика ловит только
+        # дословное совпадение, перефразированное — работа модели.
         self.curr = [
             {"file": "a.py", "category": "correctness",
-             "issue": "тип n не валидируется"},
+             "issue": "не проверен тип n"},
             {"file": "b.py", "category": "style", "issue": "длинная строка"},
         ]
 
@@ -155,6 +192,29 @@ class TestDedupFindings(HelperTestCase):
         self.assertEqual(len(out["mechanical"]), 1)
         self.assertEqual(out["semantic"], [])
 
+    def test_new_issue_in_same_file_category_is_not_a_repeat(self):
+        """Дефект: ключ (file, category) записывал в повторы НОВУЮ находку
+        в том же файле той же категории — и она молча терялась. Текст
+        находки обязан быть частью механического ключа."""
+        called = []
+        hp.ollama_chat = lambda *a, **k: called.append(1) or None
+        curr = [{"file": "a.py", "category": "correctness",
+                 "issue": "деление на ноль в mean"}]
+        out = hp.dedup_findings(self.prev, curr)
+        self.assertEqual(out["mechanical"], [],
+                         "непохожая находка — не механический повтор")
+        self.assertTrue(called, "решение о перефразировке — за моделью")
+
+    def test_issue_text_normalized_for_mechanical_match(self):
+        """Повтор с другим регистром и пробелами — всё ещё точный повтор."""
+        called = []
+        hp.ollama_chat = lambda *a, **k: called.append(1) or None
+        curr = [{"file": "a.py", "category": "correctness",
+                 "issue": "  НЕ ПРОВЕРЕН   ТИП N "}]
+        out = hp.dedup_findings(self.prev, curr)
+        self.assertEqual(len(out["mechanical"]), 1)
+        self.assertEqual(called, [], "точный повтор модель не тревожит")
+
 
 class TestStagnationHint(HelperTestCase):
     def test_same(self):
@@ -171,6 +231,25 @@ class TestStagnationHint(HelperTestCase):
 
     def test_helper_down_defers_to_mechanics(self):
         self.reply(None)
+        self.assertIsNone(hp.stagnation_hint("a", "b"))
+
+    def test_negated_same_is_not_same(self):
+        """Дефект: подстрочный поиск SAME давал True на «NOT THE SAME» —
+        отрицание превращалось в подтверждение стагнации."""
+        self.reply("NOT THE SAME")
+        self.assertIs(hp.stagnation_hint("a", "b"), False)
+
+    def test_bold_same_still_parsed(self):
+        self.reply("**SAME**")
+        self.assertIs(hp.stagnation_hint("a", "b"), True)
+
+    def test_same_with_trailing_explanation(self):
+        self.reply("SAME — обе претензии о валидации входа")
+        self.assertIs(hp.stagnation_hint("a", "b"), True)
+
+    def test_same_buried_in_prose_is_not_trusted(self):
+        """SAME не первым словом — это уже не ответ на вопрос формата."""
+        self.reply("Кажется, THE SAME, но не уверен")
         self.assertIsNone(hp.stagnation_hint("a", "b"))
 
 
@@ -224,6 +303,10 @@ class TestNetworkLayer(unittest.TestCase):
         self.mod = urllib.request
         self.orig = urllib.request.urlopen
         self.bodies = []
+        # Предохранитель — состояние процесса: чужие отказы из соседних
+        # тестов не должны размыкать его здесь.
+        hp._state["failures"] = 0
+        self.addCleanup(hp._state.__setitem__, "failures", 0)
 
     def tearDown(self):
         self.mod.urlopen = self.orig
@@ -238,28 +321,23 @@ class TestNetworkLayer(unittest.TestCase):
 
     def test_secrets_never_leave_the_process(self):
         self.fake_transport({"message": {"content": "ok"}})
-        import os
-        os.environ["OLLAMA_API_KEY"] = "dummy"
+        set_env(self, "OLLAMA_API_KEY", "dummy")
         hp.ollama_chat('OLLAMA_API_KEY="a1b2c3d4e5f6g7h8"', "test")
         self.assertNotIn("a1b2c3d4e5f6g7h8", self.bodies[0])
         self.assertIn("REDACTED", self.bodies[0])
 
     def test_network_error_returns_none(self):
         self.fake_transport(raises=OSError("no net"))
-        import os
-        os.environ["OLLAMA_API_KEY"] = "dummy"
+        set_env(self, "OLLAMA_API_KEY", "dummy")
         self.assertIsNone(hp.ollama_chat("p", "test"))
 
     def test_missing_key_skips_call(self):
-        import os
         saved = os.environ.pop("OLLAMA_API_KEY", None)
-        try:
-            self.fake_transport({"message": {"content": "x"}})
-            self.assertIsNone(hp.ollama_chat("p", "test"))
-            self.assertEqual(self.bodies, [], "без ключа сетевой вызов не делается")
-        finally:
-            if saved:
-                os.environ["OLLAMA_API_KEY"] = saved
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, "OLLAMA_API_KEY", saved)
+        self.fake_transport({"message": {"content": "x"}})
+        self.assertIsNone(hp.ollama_chat("p", "test"))
+        self.assertEqual(self.bodies, [], "без ключа сетевой вызов не делается")
 
 
 class TestNativeApiContract(unittest.TestCase):
@@ -270,8 +348,9 @@ class TestNativeApiContract(unittest.TestCase):
         self.mod = urllib.request
         self.orig = urllib.request.urlopen
         self.reqs = []
-        import os
-        os.environ["OLLAMA_API_KEY"] = "dummy"
+        set_env(self, "OLLAMA_API_KEY", "dummy")
+        hp._state["failures"] = 0
+        self.addCleanup(hp._state.__setitem__, "failures", 0)
 
     def tearDown(self):
         self.mod.urlopen = self.orig
@@ -323,9 +402,131 @@ class TestNativeApiContract(unittest.TestCase):
         self.assertIsNone(hp.ollama_chat("p", "t"),
                           "обрезанный ответ хуже отсутствующего")
 
+    def test_truncated_reply_metric_is_not_ok(self):
+        """Дефект: метрика писала ok=True, а результат строкой ниже
+        выбрасывался как обрезанный — по журналу вызов выглядел удачным."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "m.jsonl"
+            hp.configure(target)
+            self.addCleanup(hp.configure, None)
+            self.transport({"message": {"content": '{"partial": '},
+                            "done_reason": "length"})
+            self.assertIsNone(hp.ollama_chat("p", "t"))
+            row = json.loads(target.read_text().splitlines()[-1])
+            self.assertIs(row["ok"], False, "ok — пригодность результата")
+            self.assertIs(row["truncated"], True)
+
     def test_complete_reply_passes(self):
         self.transport({"message": {"content": "готово"}, "done_reason": "stop"})
         self.assertEqual(hp.ollama_chat("p", "t"), "готово")
+
+
+class TestMetricsDestination(unittest.TestCase):
+    """Дефект: METRICS по умолчанию указывал в каталог ПАКЕТА, а env
+    HELPER_METRICS читался один раз при импорте — метрики каждого прогона
+    тестов и каждого реального запуска оседали в исходниках инструмента."""
+
+    def setUp(self):
+        hp.configure(None)
+        self.addCleanup(hp.configure, None)
+        saved = os.environ.pop("HELPER_METRICS", None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, "HELPER_METRICS", saved)
+
+    def test_no_destination_means_no_write(self):
+        """Без configure и без env строка не пишется никуда — и уж точно
+        не в каталог пакета, как делал прежний дефолт."""
+        hp._metric(helper="t", ok=True)
+        self.assertIsNone(hp._metrics_path())
+        self.assertFalse((ROOT_DIR / "metrics.jsonl").exists(),
+                         "файл в исходниках инструмента — та самая течь")
+
+    def test_configure_redirects_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "m.jsonl"
+            hp.configure(target)
+            hp._metric(helper="t", ok=True)
+            row = json.loads(target.read_text().splitlines()[0])
+            self.assertEqual(row["helper"], "t")
+            self.assertIn("ts", row, "строка проходит через obs.stamp")
+
+    def test_env_read_at_call_time(self):
+        """env читается в момент записи: выставленный ПОСЛЕ импорта модуля
+        HELPER_METRICS обязан работать."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "env.jsonl"
+            os.environ["HELPER_METRICS"] = str(target)
+            self.addCleanup(os.environ.pop, "HELPER_METRICS", None)
+            hp._metric(helper="t")
+            self.assertTrue(target.exists())
+
+    def test_configured_path_beats_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            configured = pathlib.Path(tmp) / "cfg.jsonl"
+            enved = pathlib.Path(tmp) / "env.jsonl"
+            os.environ["HELPER_METRICS"] = str(enved)
+            self.addCleanup(os.environ.pop, "HELPER_METRICS", None)
+            hp.configure(configured)
+            hp._metric(helper="t")
+            self.assertTrue(configured.exists())
+            self.assertFalse(enved.exists())
+
+
+class TestCircuitBreaker(unittest.TestCase):
+    """Дефект: предохранителя не было — при лежащем API каждый вызов
+    хелпера платил до TIMEOUT=90с за опциональный слой."""
+
+    def setUp(self):
+        import urllib.request
+        self.mod = urllib.request
+        self.orig = urllib.request.urlopen
+        self.bodies = []
+        hp._state["failures"] = 0
+        self.addCleanup(hp._state.__setitem__, "failures", 0)
+        set_env(self, "OLLAMA_API_KEY", "dummy")
+
+    def tearDown(self):
+        self.mod.urlopen = self.orig
+
+    def transport(self, payload=None, raises=None):
+        def fake(req, timeout=None):
+            self.bodies.append(req.data.decode())
+            if raises:
+                raise raises
+            return FakeResponse(payload)
+        self.mod.urlopen = fake
+
+    def test_opens_after_consecutive_failures(self):
+        self.transport(raises=OSError("api down"))
+        for _ in range(hp.BREAKER_THRESHOLD):
+            self.assertIsNone(hp.ollama_chat("p", "t"))
+        attempts = len(self.bodies)
+        self.assertIsNone(hp.ollama_chat("p", "t"))
+        self.assertEqual(len(self.bodies), attempts,
+                         "после размыкания сетевых попыток больше нет")
+
+    def test_success_resets_counter(self):
+        self.transport(raises=OSError("blip"))
+        for _ in range(hp.BREAKER_THRESHOLD - 1):
+            hp.ollama_chat("p", "t")
+        self.transport(payload={"message": {"content": "ok"}})
+        self.assertEqual(hp.ollama_chat("p", "t"), "ok")
+        self.assertEqual(hp._state["failures"], 0,
+                         "успех обнуляет счётчик: рвём только серию подряд")
+
+    def test_skip_leaves_honest_metric_row(self):
+        """Пропуск по предохранителю — факт о прогоне, он обязан попасть
+        в журнал, а не выглядеть как «хелпер не звался вовсе»."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "m.jsonl"
+            hp.configure(target)
+            self.addCleanup(hp.configure, None)
+            hp._state["failures"] = hp.BREAKER_THRESHOLD
+            self.transport(payload={"message": {"content": "ok"}})
+            self.assertIsNone(hp.ollama_chat("p", "t"))
+            row = json.loads(target.read_text().splitlines()[-1])
+            self.assertEqual(row["skipped"], "circuit_breaker")
+            self.assertEqual(self.bodies, [])
 
 
 class TestStripFences(unittest.TestCase):

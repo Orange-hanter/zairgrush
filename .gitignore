@@ -15,8 +15,6 @@ venv/
 # --- локальное состояние петли (см. §6.3 05-agent-swarm.md: .swarm/ — не в git) ---
 .swarm/
 **/.swarm/
-# случайный локальный лог метрик из корня tools/swarm (не деливеребл)
-tools/swarm/swarm/metrics.jsonl
 
 # --- experiments/: рабочие стенды и бенч-артефакты — воспроизводимый scratch,
 # не деливеребл. В git идут только выводы программы: ADR, findings, отчёты.

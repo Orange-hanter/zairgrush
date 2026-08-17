@@ -631,6 +631,10 @@ Acceptance:
                 log.warning("хелперы недоступны, сообщение коммита по шаблону",
                             exc_info=True)
                 return fallback
+            # Метрики хелперов — факт ПРОГОНА и живут в .swarm стенда.
+            # Без настройки они оседали в каталоге пакета: прогоны разных
+            # проектов смешивались в один файл в исходниках инструмента.
+            self._helpers.configure(self.state.dir / "helper-metrics.jsonl")
         message, source = self._helpers.commit_message(task, diff, fallback)
         self.state.log("commit_message", task=task["id"], source=source)
         return str(message)

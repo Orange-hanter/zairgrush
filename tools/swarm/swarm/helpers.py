@@ -6,8 +6,8 @@
 - §7.3 секрет-фильтр: перед отправкой во внешний API текст чистится от
   похожего на ключи/токены.
 - §7.1: если задачу можно решить без LLM — она решается без LLM. Поэтому
-  дедупликация findings сначала отсекает точные совпадения (file, category)
-  механически и зовёт модель только на остатке.
+  дедупликация findings сначала отсекает точные совпадения
+  (file, category, issue) механически и зовёт модель только на остатке.
 - §7.2: хелпер не принимает решений, влияющих на код, — он готовит текст,
   который либо проверяется механически, либо уходит человеку.
 
@@ -38,11 +38,37 @@ BASE_URL = os.environ.get("HELPER_BASE_URL", "https://ollama.com")
 MODEL = os.environ.get("HELPER_MODEL", "gemma4:31b")
 TIMEOUT = int(os.environ.get("HELPER_TIMEOUT", "90"))
 SEED = int(os.environ.get("HELPER_SEED", "17"))
-METRICS = pathlib.Path(os.environ.get("HELPER_METRICS",
-                                      pathlib.Path(__file__).parent / "metrics.jsonl"))
 
+# Изменяемое состояние модуля (словарь, а не пара глобалов: присваивание
+# через global запрещено гейтом): куда писать метрики и счётчик отказов
+# предохранителя сети.
+_state: dict[str, Any] = {"metrics_path": None, "failures": 0}
+
+
+def configure(metrics_path: str | pathlib.Path | None) -> None:
+    """Задать файл метрик хелперов явно. None — вернуться к HELPER_METRICS.
+
+    Явная настройка петли сильнее окружения; окружение читается В МОМЕНТ
+    записи, а не при импорте; без того и другого метрики честно не пишутся
+    вовсе. Прежний дефолт — файл в каталоге ПАКЕТА: каждый прогон тестов и
+    каждый реальный запуск дописывал строки прямо в исходники инструмента.
+    """
+    _state["metrics_path"] = pathlib.Path(metrics_path) if metrics_path else None
+
+
+def _metrics_path() -> pathlib.Path | None:
+    configured = _state["metrics_path"]
+    if configured is not None:
+        return cast("pathlib.Path", configured)
+    env = os.environ.get("HELPER_METRICS")
+    return pathlib.Path(env) if env else None
+
+
+# Токены реальных провайдеров разделяются и дефисом, и подчёркиванием:
+# ghp_/gho_/github_pat_ у GitHub, sk_live_/sk_test_ у Stripe. Прежний
+# шаблон требовал строго дефис — и ровно эти токены улетали в API нетронутыми.
 SECRET_PATTERNS = [
-    re.compile(r"(?i)\b(?:sk|pk|ghp|gho|xox[baprs])-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"(?i)\b(?:sk|pk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_\-]{16,}"),
     re.compile(r"(?i)\b[A-Za-z0-9_\-]{0,10}(?:api[_-]?key|secret|token|password|passwd)"
                r"\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.]{12,})['\"]?"),
     re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{16,}"),
@@ -100,11 +126,22 @@ def clean_markup(line: str) -> str:
 
 log = obs.get_logger("helpers")
 
+# Сколько сетевых отказов ПОДРЯД размыкают предохранитель: дальше вызовы
+# пропускаются до конца процесса. Хелпер опционален (§7.3), и платить по
+# TIMEOUT за каждый вызов при лежащем API — часы ожидания ни за что.
+BREAKER_THRESHOLD = int(os.environ.get("HELPER_BREAKER", "3"))
+
 
 def _metric(**row: Any) -> None:
+    path = _metrics_path()
+    if path is None:
+        # Место не задано — не пишем никуда: молчание честнее файла,
+        # тайно растущего в каталоге пакета.
+        return
     obs.stamp(row)
     try:
-        with METRICS.open("a") as f:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError:
         pass
@@ -127,6 +164,13 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
     key = os.environ.get("OLLAMA_API_KEY")
     if not key:
         _metric(helper=name, skipped="no_api_key")
+        return None
+    if _state["failures"] >= BREAKER_THRESHOLD:
+        # Предохранитель: при лежащем API каждый вызов платил бы полный
+        # TIMEOUT (до 90 с) за опциональный слой. Пропуск — с честной
+        # строкой метрики, а не молча.
+        _metric(helper=name, skipped="circuit_breaker",
+                consecutive_failures=_state["failures"])
         return None
     body = json.dumps({
         "model": MODEL, "stream": False,
@@ -161,16 +205,21 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
         resp = json.load(raw)
         if resp.get("error"):
             # Ошибка может приехать телом при HTTP 200 — проверяем до разбора.
+            _state["failures"] += 1
             _metric(helper=name, model=MODEL, api_error=str(resp["error"])[:120],
                     request_id=request_id)
             return None
+        _state["failures"] = 0
         text = (resp.get("message", {}).get("content") or "").strip()
         truncated = resp.get("done_reason") == "length"
         _metric(helper=name, model=MODEL, dur_s=round(time.time() - t0, 1),
                 tokens_in=resp.get("prompt_eval_count"),
                 # eval_count включает reasoning-токены, если think не выключен
                 tokens_out=resp.get("eval_count"),
-                truncated=truncated, request_id=request_id, ok=bool(text))
+                truncated=truncated, request_id=request_id,
+                # ok — пригодность результата: обрезанный ответ строкой ниже
+                # выбрасывается, и ok=True при этом был ложью метрики.
+                ok=bool(text) and not truncated)
         if truncated:
             # Обрезанный ответ дешевле выбросить, чем чинить: хелпер
             # опционален, а половина JSON хуже отсутствия JSON.
@@ -178,11 +227,13 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
     except urllib.error.HTTPError as e:
         # 429 (rate limit) и 502 (cloud-модель недоступна) ретраибельны, но
         # хелпер опционален: один шанс и уходим (§7.3), петля не ждёт.
+        _state["failures"] += 1
         _metric(helper=name, model=MODEL, dur_s=round(time.time() - t0, 1),
                 http_error=e.code, retryable=e.code in (429, 502))
         return None
     except Exception as e:
         log.warning("хелпер %s не ответил", name, exc_info=True)
+        _state["failures"] += 1
         _metric(helper=name, model=MODEL, dur_s=round(time.time() - t0, 1),
                 error=type(e).__name__)
         return None
@@ -228,7 +279,9 @@ def commit_message(task: dict[str, Any], diff: str,
         return fallback, "fallback:no_response"
     first = strip_fences(text).splitlines()[0]
     line = clean_markup(first).strip('"').lstrip("#").strip()
-    if not line or len(line) > 72 or line.startswith("```"):
+    # Проверки на ``` здесь нет намеренно: clean_markup уже снял все
+    # бэктики, и ветка startswith("```") была мёртвой.
+    if not line or len(line) > 72:
         return fallback, "fallback:validation"
     return line, "helper"
 
@@ -244,10 +297,14 @@ def dedup_findings(prev_findings: list[dict[str, Any]],
                    curr_findings: list[dict[str, Any]],
                    ) -> dict[str, list[dict[str, Any]]] | None:
     """Какие findings повторяются между итерациями. Точные совпадения
-    (file, category) отсекаются механически (§7.1), модель зовётся только
-    на остатке. -> {"mechanical": [...], "semantic": [...]} или None."""
-    def key(f: dict[str, Any]) -> tuple[Any, Any]:
-        return (f.get("file"), f.get("category"))
+    (file, category, нормализованный issue) отсекаются механически (§7.1),
+    модель зовётся только на остатке.
+    -> {"mechanical": [...], "semantic": [...]} или None."""
+    def key(f: dict[str, Any]) -> tuple[Any, Any, str]:
+        # Текст находки — часть ключа: по одним (file, category) НОВАЯ
+        # проблема в том же файле записывалась в повторы и терялась.
+        issue = re.sub(r"\s+", " ", str(f.get("issue") or "").strip().lower())
+        return (f.get("file"), f.get("category"), issue)
 
     prev_keys = {key(f) for f in prev_findings}
     mechanical = [f for f in curr_findings if key(f) in prev_keys]
@@ -291,11 +348,15 @@ def stagnation_hint(prev_issue: str, curr_issue: str) -> bool | None:
     text = ollama_chat(prompt, "stagnation_hint", max_tokens=16)
     if not text:
         return None
-    upper = text.upper()
-    if "SAME" in upper:
-        return True
-    if "DIFFERENT" in upper:
+    # Отрицания и DIFFERENT — раньше SAME, а SAME — только точным первым
+    # словом: подстрочный поиск делал из «NOT THE SAME» ответ True.
+    words = re.findall(r"[A-Z]+", clean_markup(strip_fences(text)).upper())
+    if not words:
+        return None
+    if "DIFFERENT" in words or words[0] == "NOT":
         return False
+    if words[0] == "SAME":
+        return True
     return None
 
 

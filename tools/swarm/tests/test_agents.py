@@ -8,6 +8,7 @@ Constraints стоил трёх итераций на приёмке.
 """
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -58,6 +59,25 @@ class TestHandoff(AgentsCase):
     def test_feature_forbids_touching_tests(self):
         text = self.agents.handoff(TASK, None, None)
         self.assertIn("NOT listed above are", text)
+
+    def test_helper_metrics_land_in_swarm_dir_not_in_package(self):
+        """Метрики хелперов оседали в каталоге ПАКЕТА (дефолт от
+        __file__): прогоны разных проектов смешивались в один файл в
+        исходниках инструмента, а pytest дописывал его при каждом
+        прогоне. Проводка: Agents настраивает путь в .swarm стенда."""
+        for var in ("OLLAMA_API_KEY", "HELPER_METRICS"):
+            saved = os.environ.pop(var, None)
+            if saved is not None:
+                self.addCleanup(os.environ.__setitem__, var, saved)
+        message = self.agents.commit_message(TASK, "diff --git a/x b/x")
+        self.assertEqual(message, f"{TASK['id']}: {TASK['title']}")
+        target = self.state.dir / "helper-metrics.jsonl"
+        self.assertTrue(target.exists(),
+                        "метрика хелпера обязана жить в .swarm стенда")
+        package_stray = (pathlib.Path(ag.__file__).resolve().parent
+                         / "metrics.jsonl")
+        self.assertFalse(package_stray.exists(),
+                         "каталог пакета — не место для метрик прогона")
 
     def test_output_contract_names_the_dispute_field(self):
         """Петля читает report["dispute"], но промпт это поле не объявлял:

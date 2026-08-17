@@ -89,6 +89,33 @@ class TestWhitelistRejects(unittest.TestCase):
     def test_snippet_with_dunder_import(self):
         self.assertRejected({"kind": "python", "arg": "__import__('os').listdir('.')"})
 
+    def test_snippet_with_importlib(self):
+        """Дефект: importlib обходил запрет `import os` одним вызовом —
+        import_module('os') давал тот же модуль без запретной подстроки."""
+        self.assertRejected(
+            {"kind": "python",
+             "arg": "import importlib\nimportlib.import_module('os')"},
+            "запрещённая конструкция")
+
+    def test_snippet_with_from_importlib(self):
+        self.assertRejected(
+            {"kind": "python",
+             "arg": "from importlib import import_module\nimport_module('os')"})
+
+    def test_snippet_with_pathlib_io(self):
+        """Дефект: запрет open( не мешал pathlib — Path.write_text давал
+        файловый ввод-вывод в обход всего списка."""
+        self.assertRejected(
+            {"kind": "python",
+             "arg": "from pathlib import Path\nPath('x').write_text('1')"})
+
+    def test_snippet_with_getattr(self):
+        """getattr — конструктор имён: getattr(builtins, 'op'+'en')
+        собирает запрещённое из незапрещённых кусков."""
+        self.assertRejected(
+            {"kind": "python",
+             "arg": "b = [].__class__.__base__\ngetattr(b, 'x')"})
+
     def test_snippet_too_long(self):
         self.assertRejected({"kind": "python", "arg": "x=1\n" * 300}, "длиннее")
 
