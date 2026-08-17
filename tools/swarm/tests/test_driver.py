@@ -48,6 +48,18 @@ print(json.dumps({"role": "assistant", "content": "начал"}), flush=True)
 sys.exit(3)
 """
 
+# Дословный паттерн 403-аварии Kimi с пилота: баннер версии в stdout,
+# объяснение — в stderr, смерть за секунды.
+QUOTA_CRASH = r"""
+import json, sys
+print(json.dumps({"role": "meta", "type": "system.version",
+                  "version": "0.36.1"}), flush=True)
+print("error: failed to run prompt: provider.auth_error: 403 "
+      "You've reached your usage limit for this billing cycle.",
+      file=sys.stderr)
+sys.exit(1)
+"""
+
 CHATTY = r"""
 import json, time
 while True:
@@ -137,6 +149,22 @@ class TestCrash(unittest.TestCase):
         res = d.start(fake_agent(PROSE_ONLY)).collect(extract)
         self.assertEqual(res.reason, "no_report")
         self.assertIsNone(res.report)
+
+    def test_instant_quota_crash_is_an_empty_stream(self):
+        """Регрессия на пилот: реальная 403-авария печатает баннер версии
+        и умирает. Баннер шёл как DONE, терминальный ERROR тоже входил в
+        счёт — events=2, и порог «мгновенная авария = пустой поток»
+        (events <= 1) в петле молчал: каскад ложных «слишком крупная»
+        повторился бы на следующем же заходе. Тест построен на ДОСЛОВНОМ
+        потоке с пилота, а не на придуманном events=1."""
+        d = dr.AgentDriver(cwd=str(D))
+        run = d.start(fake_agent(QUOTA_CRASH))
+        res = run.collect(extract)
+        self.assertEqual(res.reason, "crash")
+        self.assertEqual(res.events, 0,
+                         "баннер версии и терминальное событие — не работа")
+        self.assertIn("403", run.stderr_tail(400),
+                      "объяснение провайдера обязано доехать до журнала")
 
 
 class TestWallClock(unittest.TestCase):

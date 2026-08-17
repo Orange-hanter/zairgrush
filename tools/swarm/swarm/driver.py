@@ -28,6 +28,12 @@ from typing import Any
 TEXT, TOOL_CALL, TOOL_RESULT, USAGE, DONE, ERROR = (
     "text", "tool_call", "tool_result", "usage", "done", "error")
 
+# Работа агента — это TEXT/TOOL_*/USAGE. Служебные DONE и ERROR — вехи
+# самого драйвера, и в счёт активности они не входят: пока входили, поток
+# реальной 403-аварии (баннер версии + терминальный ERROR) давал events=2,
+# и порог «мгновенная авария = пустой поток» в петле не срабатывал.
+ACTIVITY = frozenset({TEXT, TOOL_CALL, TOOL_RESULT, USAGE})
+
 
 class Event:
     __slots__ = ("kind", "payload", "ts")
@@ -88,6 +94,13 @@ def parse_kimi(line: str) -> Event | None:
     if role == "tool":
         return Event(TOOL_RESULT, {"content": (ev.get("content") or "")[:200]})
     if role == "meta":
+        # Баннер версии — первая строка ЛЮБОГО запуска kimi, включая тот,
+        # что умрёт через секунду об квоту. Считать его завершением (DONE)
+        # значило приписывать мёртвому процессу прожитую жизнь: на пилоте
+        # ровно этот фантомный «done» дал events=2 у мгновенной аварии, и
+        # детектор ExecutorUnavailableError (events <= 1) не сработал.
+        if ev.get("type") == "system.version":
+            return None
         return Event(DONE, {"session_id": ev.get("session_id")})
     return None
 
@@ -246,11 +259,16 @@ class Run:
     def collect(self,
                 extract_report: Callable[[str], dict[str, Any] | None],
                 ) -> RunResult:
-        """Прогнать поток до конца и собрать результат."""
+        """Прогнать поток до конца и собрать результат.
+
+        `events` считает только АКТИВНОСТЬ агента (см. ACTIVITY): по этому
+        числу петля отличает «работал и упал» от «не смог начать».
+        """
         count = 0
         reason = "done"
         for ev in self.events():
-            count += 1
+            if ev.kind in ACTIVITY:
+                count += 1
             if ev.kind == ERROR:
                 reason = ev.payload.get("reason", "error")
                 break
