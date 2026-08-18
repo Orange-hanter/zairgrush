@@ -263,8 +263,15 @@ summary: >
 - **Provider-cache note** (knowledge, no code): Kimi auto-caches
   prefixes — stable fill prompts ride it for free; rate-based executor
   routing beyond that only via an E8-class bench.
-- **Status: registered; probes done; implementation in progress
-  2026-08-18.**
+- **Status: implemented behind the flag; live smoke PASSED 2026-08-18** —
+  full loop on a scratch stand: ollama fill → green gate (contract tests,
+  zero skips) → sonnet/low approve → security-lens confirming round →
+  approve → orchestrator commit; $0.27 total review cost, confirming
+  round hit the prompt cache (cache_read 76 948). Live-run lesson folded
+  back into the planner rules: contract tests must SKIP on
+  NotImplementedError, or the fill baseline is red. The comparative
+  bench (arm A vs arm B) still pending — needs the kimi.com quota for
+  arm A.
 
 ### E11. Independent Tester role
 
