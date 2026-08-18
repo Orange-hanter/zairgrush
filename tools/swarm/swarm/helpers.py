@@ -148,7 +148,7 @@ def _metric(**row: Any) -> None:
 
 
 def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
-                temperature: float = 0.0) -> str | None:
+                temperature: float = 0.0, model: str | None = None) -> str | None:
     """Один вызов дешёвой модели через НАТИВНЫЙ /api/chat.
 
     Почему не OpenAI-совместимый /v1 (замерено на OLLAMA-1):
@@ -159,8 +159,14 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
       даёт воспроизводимость, а `done_reason == "length"` — единственный
       честный признак обрезанного ответа.
 
+    `model=None` — модель хелперов третьего контура (MODEL, умолчание §7).
+    Явный `model` пускает через тот же контракт вызов ЛЮБОЙ модели Ollama
+    Cloud (E10, chat-fill исполнителя) — транспорт и предохранитель общие,
+    занижать надёжность отдельной модели незачем.
+
     Любая ошибка -> None (§7.3 fail-open).
     """
+    resolved_model = model or MODEL
     key = os.environ.get("OLLAMA_API_KEY")
     if not key:
         _metric(helper=name, skipped="no_api_key")
@@ -173,7 +179,7 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
                 consecutive_failures=_state["failures"])
         return None
     body = json.dumps({
-        "model": MODEL, "stream": False,
+        "model": resolved_model, "stream": False,
         "think": False,                       # не платим за размышления (§7.1)
         "options": {
             "num_predict": max_tokens,        # дефолт -1 = без ограничения
@@ -192,7 +198,8 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
         # BASE_URL приходит из окружения: без этой проверки его подмена на
         # file:// или http:// уводит ключ и промпт в чужие руки. Проверка
         # стоит здесь, а не в конфиге, — тогда её нельзя обойти правкой env.
-        _metric(helper=name, model=MODEL, api_error=f"недопустимый URL: {BASE_URL}")
+        _metric(helper=name, model=resolved_model,
+                api_error=f"недопустимый URL: {BASE_URL}")
         return None
     req = urllib.request.Request(url, data=body,  # noqa: S310 — схема проверена
                                  headers={"Authorization": f"Bearer {key}",
@@ -206,13 +213,13 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
         if resp.get("error"):
             # Ошибка может приехать телом при HTTP 200 — проверяем до разбора.
             _state["failures"] += 1
-            _metric(helper=name, model=MODEL, api_error=str(resp["error"])[:120],
-                    request_id=request_id)
+            _metric(helper=name, model=resolved_model,
+                    api_error=str(resp["error"])[:120], request_id=request_id)
             return None
         _state["failures"] = 0
         text = (resp.get("message", {}).get("content") or "").strip()
         truncated = resp.get("done_reason") == "length"
-        _metric(helper=name, model=MODEL, dur_s=round(time.time() - t0, 1),
+        _metric(helper=name, model=resolved_model, dur_s=round(time.time() - t0, 1),
                 tokens_in=resp.get("prompt_eval_count"),
                 # eval_count включает reasoning-токены, если think не выключен
                 tokens_out=resp.get("eval_count"),
@@ -228,13 +235,13 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
         # 429 (rate limit) и 502 (cloud-модель недоступна) ретраибельны, но
         # хелпер опционален: один шанс и уходим (§7.3), петля не ждёт.
         _state["failures"] += 1
-        _metric(helper=name, model=MODEL, dur_s=round(time.time() - t0, 1),
+        _metric(helper=name, model=resolved_model, dur_s=round(time.time() - t0, 1),
                 http_error=e.code, retryable=e.code in (429, 502))
         return None
     except Exception as e:
         log.warning("хелпер %s не ответил", name, exc_info=True)
         _state["failures"] += 1
-        _metric(helper=name, model=MODEL, dur_s=round(time.time() - t0, 1),
+        _metric(helper=name, model=resolved_model, dur_s=round(time.time() - t0, 1),
                 error=type(e).__name__)
         return None
     else:

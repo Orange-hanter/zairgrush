@@ -420,6 +420,30 @@ class TestNativeApiContract(unittest.TestCase):
         self.transport({"message": {"content": "готово"}, "done_reason": "stop"})
         self.assertEqual(hp.ollama_chat("p", "t"), "готово")
 
+    def test_explicit_model_overrides_the_module_default(self):
+        """E10 (chat-fill): любая модель Ollama Cloud идёт тем же
+        контрактом, что и хелперы третьего контура — транспорт общий."""
+        self.transport({"message": {"content": "ok"}})
+        hp.ollama_chat("p", "t", model="kimi-k2.7-code")
+        self.assertEqual(self.reqs[0]["model"], "kimi-k2.7-code")
+
+    def test_omitted_model_keeps_the_helper_default(self):
+        self.transport({"message": {"content": "ok"}})
+        hp.ollama_chat("p", "t")
+        self.assertEqual(self.reqs[0]["model"], hp.MODEL)
+
+    def test_metric_row_names_the_explicit_model(self):
+        """Метрика обязана показать модель, что реально звалась, — иначе
+        по журналу chat-fill выглядел бы как вызов хелпера по умолчанию."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "m.jsonl"
+            hp.configure(target)
+            self.addCleanup(hp.configure, None)
+            self.transport({"message": {"content": "ok"}, "done_reason": "stop"})
+            hp.ollama_chat("p", "fill", model="glm-5.1")
+            row = json.loads(target.read_text().splitlines()[-1])
+            self.assertEqual(row["model"], "glm-5.1")
+
 
 class TestMetricsDestination(unittest.TestCase):
     """Дефект: METRICS по умолчанию указывал в каталог ПАКЕТА, а env

@@ -66,14 +66,16 @@ KNOWN_CONFIG_KEYS = frozenset({
     "plan_budget_usd", "plan_model", "plan_effort", "plan_timeout",
     "review_model", "review_effort", "review_model_pool", "review_effort_pool",
     "confirm_model", "confirm_effort", "confirm_model_pool",
-    "confirm_effort_pool",
+    "confirm_effort_pool", "confirm_lens",
     "memory_db", "memory_budget_chars", "memory_top_k", "memory_embed_model",
+    "fill_num_predict",
     "experiments",
 })
 
 # Экспериментальные флаги (06-док, §1): та же семантика, что у основного
 # списка, — опечатка в имени флага молча включала бы умолчание.
-KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation"})
+KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
+                                   "skeleton"})
 
 
 def _config(root: str | pathlib.Path) -> dict[str, Any]:

@@ -26,6 +26,7 @@
 """
 import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -161,6 +162,78 @@ class TestOutputBrevity(PromptCase):
         p = self.prompt()
         self.assertLess(p.index("only what the reader needs"),
                         p.index("## Задача"))
+
+
+class TestSecurityLens(PromptCase):
+    """E10 (confirm_lens="security"): линза добавляет фокус, не сужает его.
+
+    Формулировка измерена (§4.2 задачи): «может запросить»/«фильтр» роняют
+    recall находок. Здесь проверяется только форма — что явка прямая и
+    что линза не вытесняет уже существующие правила.
+    """
+
+    def test_lens_off_by_default_is_byte_identical(self):
+        self.assertEqual(self.prompt(), self.prompt(lens=""))
+
+    def test_lens_adds_the_stated_focus_areas(self):
+        p = self.prompt(lens="security")
+        self.assertIn("## Security lens", p)
+        for topic in ("injection", "credentials", "authn/authz",
+                      "subprocess", "dependency"):
+            self.assertIn(topic, p, f"тема линзы «{topic}» потеряна")
+
+    def test_lens_declares_itself_a_focus_not_a_filter(self):
+        """Ключевая формулировка §4.2 — без неё линза читается как veto."""
+        p = self.prompt(lens="security")
+        self.assertIn("Report EVERYTHING you see, security and otherwise", p)
+        self.assertIn("the lens sets emphasis, not a filter", p)
+
+    def test_lens_does_not_displace_the_general_rules(self):
+        p = self.prompt(lens="security")
+        self.assertIn("Report every finding with its confidence", p)
+        self.assertIn("approve is allowed only when", p)
+
+    def test_unknown_lens_value_is_ignored(self):
+        """Только "security" — незнакомое значение не должно молча что-то
+        подмешивать; закрытый список сверяет cli._config, здесь — что
+        промпт остаётся ПРЕЖНИМ на любом другом значении."""
+        self.assertEqual(self.prompt(), self.prompt(lens="paranoid"))
+
+    def test_lens_sits_inside_the_stable_prefix(self):
+        """Линза обязана попасть ДО `## Задача`: иначе она не часть
+        rules_sha (Feature 4) и не общая для всех задач вызова."""
+        p = self.prompt(lens="security")
+        self.assertLess(p.index("## Security lens"), p.index("## Задача"))
+
+    def test_lens_precedes_the_language_block(self):
+        p = self.prompt(lens="security")
+        self.assertLess(p.index("## Security lens"),
+                        p.index("## Language of your output"))
+
+
+class TestReviewPromptParts(PromptCase):
+    """Feature 4: разрез промпта на части не меняет склеенный результат —
+    review() хеширует эти части напрямую, а не текст, найденный поиском."""
+
+    def test_parts_concatenate_to_the_same_prompt(self):
+        rules, task_mid, tail = self.agents._review_prompt_parts(
+            self.TASK, "OK: 42 теста", "diff --git a/mod.py b/mod.py\n+код")
+        self.assertEqual(rules + task_mid + tail, self.prompt())
+
+    def test_task_part_holds_task_and_not_diff(self):
+        _rules, task_mid, tail = self.agents._review_prompt_parts(
+            self.TASK, "OK", "diff --git a/mod.py b/mod.py\n+МЕТКА_ДИФФА")
+        self.assertIn("## Задача", task_mid)
+        self.assertIn("критерий один", task_mid)
+        self.assertNotIn("МЕТКА_ДИФФА", task_mid)
+        self.assertIn("МЕТКА_ДИФФА", tail)
+
+    def test_rules_part_is_task_independent(self):
+        rules_a, _, _ = self.agents._review_prompt_parts(
+            self.TASK, "OK", "diff")
+        rules_b, _, _ = self.agents._review_prompt_parts(
+            self.OTHER, "OK", "diff")
+        self.assertEqual(rules_a, rules_b)
 
 
 class TestExecutorScopeDiscipline(unittest.TestCase):
@@ -500,6 +573,149 @@ class TestTuningPools(unittest.TestCase):
         self.assertEqual(row["model"], "claude-sonnet-5")
         self.assertEqual(row["effort"], "low")
         self.assertTrue(row["confirming"])
+
+
+class TestConfirmLensGating(unittest.TestCase):
+    """Feature 3: линза едет в review() ТОЛЬКО на подтверждающем раунде —
+    тем же правилом, что confirm_model/confirm_effort в _tuning."""
+
+    def _prompt_sent(self, config, confirming):
+        seen: dict[str, list[str]] = {}
+        orig = subprocess.Popen
+
+        def fake(argv, **kw):
+            if not (argv and argv[0] == "claude"):
+                return orig(argv, **kw)
+            seen["argv"] = argv
+            return type("P", (), {
+                "stdout": io.StringIO(""), "stderr": io.StringIO(""),
+                "returncode": 0, "poll": lambda s: 0,
+                "wait": lambda s, timeout=None: 0, "kill": lambda s: None})()
+
+        subprocess.Popen = fake
+        self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
+
+        a = ag.Agents.__new__(ag.Agents)
+        a.config = config
+        a.loop_mod = _load("loop")
+        a.driver = _load("driver")
+        a.last_review_failure = None
+        a.work_diff = lambda: "diff --git a/x b/x\n+1"
+        a.state = type("S", (), {
+            "root": ".", "dir": pathlib.Path(tempfile.gettempdir()),
+            "metric": staticmethod(lambda **k: None),
+            "log": staticmethod(lambda *x, **k: None),
+        })()
+        with contextlib.suppress(Exception):
+            a.review({"id": "t1", "title": "t", "spec": "s",
+                      "acceptance": ["ок"]}, "OK", 1, confirming=confirming)
+        argv = seen.get("argv", [])
+        return argv[2] if len(argv) > 2 else ""
+
+    def test_lens_absent_on_normal_round_even_with_config(self):
+        prompt = self._prompt_sent({"confirm_lens": "security"}, confirming=False)
+        self.assertNotIn("Security lens", prompt)
+
+    def test_lens_present_on_confirming_round(self):
+        prompt = self._prompt_sent({"confirm_lens": "security"}, confirming=True)
+        self.assertIn("Security lens", prompt)
+
+    def test_lens_absent_when_unset_even_on_confirming_round(self):
+        prompt = self._prompt_sent({}, confirming=True)
+        self.assertNotIn("Security lens", prompt)
+
+
+class TestReviewMetricsTelemetry(unittest.TestCase):
+    """Feature 4: кэш-телеметрия и sha стабильных секций в метрике review.
+
+    sha — не секретность, а отпечаток (§9.3, «журнал как данные»): мутация
+    неизменного блока промпта обязана быть ВИДНА в метрике как смена
+    rules_sha, без повторного чтения текста промпта глазами.
+    """
+
+    def _review(self, task, config=None, confirming=False, usage=None):
+        rows: list[dict[str, object]] = []
+        orig = subprocess.Popen
+        envelope = json.dumps({
+            "type": "result",
+            "structured_output": {
+                "verdict": "approve", "findings": [],
+                "analysis": "разобрал дифф и сверился со спецификацией",
+                "summary": "работа соответствует требованиям"},
+            "total_cost_usd": 0.5, "usage": usage or {}}, ensure_ascii=False)
+
+        def fake(argv, **kw):
+            if not (argv and argv[0] == "claude"):
+                return orig(argv, **kw)
+            return type("P", (), {
+                "stdout": io.StringIO(envelope + "\n"),
+                "stderr": io.StringIO(""),
+                "returncode": 0, "poll": lambda s: 0,
+                "wait": lambda s, timeout=None: 0, "kill": lambda s: None})()
+
+        subprocess.Popen = fake
+        self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
+
+        a = ag.Agents.__new__(ag.Agents)
+        a.config = config or {}
+        a.loop_mod = _load("loop")
+        a.driver = _load("driver")
+        a.last_review_failure = None
+        a.work_diff = lambda: "diff --git a/x b/x\n+1"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        (pathlib.Path(tmp.name) / "log").mkdir()
+        a.state = type("S", (), {
+            "root": ".", "dir": pathlib.Path(tmp.name),
+            "metric": staticmethod(lambda **k: rows.append(k)),
+            "log": staticmethod(lambda *x, **k: None),
+        })()
+        a.review(task, "OK", 1, confirming=confirming)
+        return next(r for r in rows if r.get("phase") == "review")
+
+    T1 = {"id": "t1", "title": "первая", "spec": "s1", "acceptance": ["ок"]}
+    T2 = {"id": "t2", "title": "вторая", "spec": "s2", "acceptance": ["иначе"]}
+
+    def test_rules_sha_identical_across_tasks(self):
+        row1 = self._review(self.T1)
+        row2 = self._review(self.T2)
+        self.assertEqual(row1["rules_sha"], row2["rules_sha"])
+
+    def test_task_sha_differs_across_tasks(self):
+        row1 = self._review(self.T1)
+        row2 = self._review(self.T2)
+        self.assertNotEqual(row1["task_sha"], row2["task_sha"])
+
+    def test_task_sha_stable_across_rounds_of_one_task(self):
+        row1 = self._review(self.T1)
+        row2 = self._review(self.T1)
+        self.assertEqual(row1["task_sha"], row2["task_sha"])
+
+    def test_rules_sha_changes_with_the_lens(self):
+        """Отпечаток и есть страж мутации: включение линзы меняет
+        неизменный блок — метрика обязана это показать."""
+        plain = self._review(self.T1)
+        with_lens = self._review(self.T1, config={"confirm_lens": "security"},
+                                 confirming=True)
+        self.assertNotEqual(plain["rules_sha"], with_lens["rules_sha"])
+
+    def test_metric_carries_cache_fields(self):
+        row = self._review(self.T1, usage={
+            "cache_read_input_tokens": 111, "cache_creation_input_tokens": 22,
+            "input_tokens": 5, "output_tokens": 9})
+        self.assertEqual(row["cache_read"], 111)
+        self.assertEqual(row["cache_write"], 22)
+        self.assertEqual(row["tokens_in"], 5)
+        self.assertEqual(row["tokens_out"], 9)
+
+    def test_missing_usage_fields_are_none_not_zero(self):
+        """Журнал как данные (§9.3): отсутствие поля — None, а не 0 —
+        0 токенов кэша и «неизвестно» это разные факты."""
+        row = self._review(self.T1)
+        self.assertIsNone(row["cache_read"])
+        self.assertIsNone(row["cache_write"])
+        self.assertIsNone(row["tokens_in"])
+        self.assertIsNone(row["tokens_out"])
 
 
 class TestAbSummary(unittest.TestCase):

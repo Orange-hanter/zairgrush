@@ -6,7 +6,9 @@
 исключением, а тихо меняет поведение агента: потерянный путь в
 Constraints стоил трёх итераций на приёмке.
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -170,6 +172,14 @@ class TestHandoff(AgentsCase):
         self.assertIn("no markdown fence", text)
         self.assertIn("no_change_needed", text)
 
+    def test_output_contract_names_the_deviations_field(self):
+        """Работа сверх буквы задачи обязана быть НАЗВАНА исполнителем —
+        иначе она всплывает только на ревью, постфактум и без объяснения,
+        зачем правка вышла за рамки acceptance."""
+        text = self.agents.handoff(TASK, None, None)
+        self.assertIn('"deviations"', text,
+                      "контракт отчёта обязан объявлять поле для отступлений")
+
 
 class TestRepoMapPolicy(AgentsCase):
     """Карта прикладывается по условию (ADR-006), а не всегда."""
@@ -281,6 +291,241 @@ class TestReportExtraction(AgentsCase):
             {"role": "assistant", "content": "текст"})
         self.assertIsNone(self.agents._extract_report(stream),
                           "отчёт берётся только из assistant-событий")
+
+
+def _fake_process(stdout="", stderr=""):
+    """Двойник Popen: пустой поток, мгновенное и успешное завершение —
+    для тестов, которым нужен только argv, а не реальный прогон агента."""
+    return type("P", (), {
+        "stdout": io.StringIO(stdout), "stderr": io.StringIO(stderr),
+        "returncode": 0, "poll": lambda s: 0,
+        "wait": lambda s, timeout=None: 0, "kill": lambda s: None})()
+
+
+class TestExecutorModelRouting(AgentsCase):
+    """E10 (flag `skeleton`): per-task executor_model переопределяет
+    executor_model прогона, а ollama:-префикс уводит на chat-fill."""
+
+    def _kimi_argv(self, config, task):
+        seen: dict[str, list[str]] = {}
+        orig = subprocess.Popen
+
+        def fake(argv, **kw):
+            if not (argv and argv[0] == "kimi"):
+                return orig(argv, **kw)
+            seen["argv"] = argv
+            return _fake_process()
+
+        subprocess.Popen = fake
+        self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
+        agents = ag.Agents(self.state, config)
+        with contextlib.suppress(Exception):
+            agents.implement(task, None, 1)
+        return seen.get("argv", [])
+
+    def test_flag_off_ignores_executor_model_field(self):
+        """Умолчание эксперимента — «выключено»: поле задачи не читается
+        вовсе, а не читается-и-отбрасывается — иначе замер E10 сравнивал
+        бы поведение не с сегодняшним, а с частично изменённым."""
+        with_field = self._kimi_argv({}, dict(TASK, executor_model="claude-opus-5"))
+        without_field = self._kimi_argv({}, TASK)
+        self.assertEqual(with_field, without_field)
+        self.assertTrue(with_field, "cmd вообще обязан был собраться")
+
+    def test_flag_on_field_overrides_run_wide_model(self):
+        argv = self._kimi_argv(
+            {"experiments": {"skeleton": True}, "executor_model": "kimi-k2"},
+            dict(TASK, executor_model="claude-opus-5"))
+        self.assertIn("-m", argv)
+        self.assertEqual(argv[argv.index("-m") + 1], "claude-opus-5")
+
+    def test_flag_on_without_field_keeps_run_wide_model(self):
+        argv = self._kimi_argv(
+            {"experiments": {"skeleton": True}, "executor_model": "kimi-k2"}, TASK)
+        self.assertEqual(argv[argv.index("-m") + 1], "kimi-k2")
+
+    def test_flag_on_ollama_prefix_never_reaches_kimi_cli(self):
+        """`ollama:` — не имя модели kimi CLI, а маршрут на chat-fill:
+        дошедшее до `-m ollama:...` было бы отправкой мусора в CLI."""
+        orig = subprocess.Popen
+        called: list[list[str]] = []
+
+        def fake(argv, **kw):
+            called.append(argv)
+            return orig(argv, **kw)
+
+        subprocess.Popen = fake
+        self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
+        agents = ag.Agents(self.state, {"experiments": {"skeleton": True}})
+        # Путь несуществующий: chat-fill откажет быстро (fill_misconfigured)
+        # без сети — тесту важно только то, что kimi CLI не был вызван.
+        task = dict(TASK, paths=["nope.py"], executor_model="ollama:m")
+        report = agents.implement(task, None, 1)
+        self.assertIsNone(report)
+        self.assertEqual(agents.last_implement_failure["reason"],
+                         "fill_misconfigured")
+        self.assertFalse(any(a and a[0] == "kimi" for a in called),
+                         "ollama: обязан уйти в chat-fill, не в CLI kimi")
+
+
+class ChatFillCase(AgentsCase):
+    """Стенд chat-fill (E10, flag `skeleton`): файл-цель уже в дереве."""
+
+    def setUp(self):
+        super().setUp()
+        self.agents = ag.Agents(self.state, {"experiments": {"skeleton": True}})
+        self.target = self.root / "mod.py"
+        self.target.write_text("def f():\n    pass\n")
+        self.task = dict(TASK, id="f1", paths=["mod.py"],
+                         executor_model="ollama:gpt-oss:120b")
+
+    def fake_helpers(self, reply):
+        """Двойник swarm/helpers.py: без сети, с записью аргументов вызова."""
+        calls: list[dict[str, object]] = []
+
+        class Fake:
+            def configure(self, path):
+                pass
+
+            def ollama_chat(self, prompt, name, max_tokens=400,
+                            temperature=0.0, model=None):
+                calls.append({"prompt": prompt, "name": name,
+                             "max_tokens": max_tokens, "model": model})
+                return reply
+
+        self.agents._helpers = Fake()
+        return calls
+
+
+class TestChatFillHappyPath(ChatFillCase):
+    def test_writes_the_returned_fence_and_reports_done(self):
+        calls = self.fake_helpers("```python\ndef f():\n    return 1\n```")
+        report = self.agents._implement_fill(self.task, None, 1)
+        self.assertEqual(report, {"status": "done",
+                                  "summary": "заполнение по контракту применено",
+                                  "fill": True})
+        self.assertEqual(self.target.read_text(), "def f():\n    return 1")
+        self.assertIsNone(self.agents.last_implement_failure)
+        self.assertEqual(calls[0]["model"], "gpt-oss:120b",
+                         "префикс ollama: обязан быть срезан перед вызовом API")
+
+    def test_raw_reply_is_logged(self):
+        self.fake_helpers("```python\ndef f():\n    return 2\n```")
+        self.agents._implement_fill(self.task, None, 3)
+        log_path = self.state.dir / "log" / "f1-i3-fill.txt"
+        self.assertIn("def f():\n    return 2", log_path.read_text())
+
+    def test_metric_row_on_success(self):
+        self.fake_helpers("```python\ndef f():\n    return 1\n```")
+        self.agents._implement_fill(self.task, None, 1)
+        rows = [json.loads(x) for x in
+                self.state.metrics_path.read_text().splitlines()]
+        row = next(r for r in rows if r.get("phase") == "implement")
+        self.assertEqual(row["reason"], "done")
+        self.assertIs(row["report"], True)
+        self.assertIs(row["fill"], True)
+        self.assertEqual(row["model"], "gpt-oss:120b")
+
+    def test_feedback_reaches_the_prompt(self):
+        calls = self.fake_helpers("```python\ndef f():\n    return 1\n```")
+        self.agents._implement_fill(self.task, {"note": "поправь X"}, 1)
+        self.assertIn("Feedback", calls[0]["prompt"])
+        self.assertIn("поправь X", calls[0]["prompt"])
+
+    def test_current_file_content_reaches_the_prompt(self):
+        calls = self.fake_helpers("```python\ndef f():\n    return 1\n```")
+        self.agents._implement_fill(self.task, None, 1)
+        self.assertIn("def f():\n    pass", calls[0]["prompt"])
+
+    def test_multiple_fences_take_the_last_when_nothing_else_is_around(self):
+        self.fake_helpers("```python\nстарое\n```\n"
+                          "```python\ndef f():\n    return 9\n```")
+        report = self.agents._implement_fill(self.task, None, 1)
+        self.assertEqual(report["status"], "done")
+        self.assertEqual(self.target.read_text(), "def f():\n    return 9")
+
+
+class TestChatFillFailures(ChatFillCase):
+    """Любой отказ — last_implement_failure + None, НИКОГДА исключение;
+    петля дальше ведёт себя обычным retry/feedback (§7.3)."""
+
+    def test_multiple_paths_is_misconfigured(self):
+        task = dict(self.task, paths=["mod.py", "src/a.py"])
+        self.assertIsNone(self.agents._implement_fill(task, None, 1))
+        self.assertEqual(self.agents.last_implement_failure["reason"],
+                         "fill_misconfigured")
+
+    def test_glob_path_is_misconfigured(self):
+        task = dict(self.task, paths=["*.py"])
+        self.assertIsNone(self.agents._implement_fill(task, None, 1))
+        self.assertEqual(self.agents.last_implement_failure["reason"],
+                         "fill_misconfigured")
+
+    def test_missing_file_is_misconfigured(self):
+        task = dict(self.task, paths=["missing.py"])
+        self.assertIsNone(self.agents._implement_fill(task, None, 1))
+        self.assertEqual(self.agents.last_implement_failure["reason"],
+                         "fill_misconfigured")
+
+    def test_no_reply_is_a_failure(self):
+        self.fake_helpers(None)
+        self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
+        self.assertEqual(self.agents.last_implement_failure["reason"],
+                         "fill_no_reply")
+
+    def test_prose_outside_fence_is_a_failure(self):
+        """Преамбула вроде «Вот файл:» — не «почти прошло»: контракт не
+        предусматривает текста вне fence, и берущий-последний-fence разбор
+        без этой проверки тихо проглотил бы её."""
+        self.fake_helpers("Вот файл:\n```python\ndef f():\n    return 1\n```")
+        self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
+        self.assertEqual(self.agents.last_implement_failure["reason"],
+                         "fill_no_fence")
+
+    def test_no_fence_at_all_is_a_failure(self):
+        self.fake_helpers("def f():\n    return 1")
+        self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
+        self.assertEqual(self.agents.last_implement_failure["reason"],
+                         "fill_no_fence")
+
+    def test_syntax_error_is_a_failure(self):
+        self.fake_helpers("```python\ndef f(\n```")
+        self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
+        self.assertEqual(self.agents.last_implement_failure["reason"],
+                         "fill_syntax")
+
+    def test_syntax_check_skipped_for_non_python_files(self):
+        """Контракт ast.parse — «для .py файлов»: применять его к чужому
+        синтаксису значило бы отбрасывать валидные ответы по чужой мерке."""
+        target = self.root / "notes.md"
+        target.write_text("старое")
+        task = dict(self.task, paths=["notes.md"])
+        self.fake_helpers("```python\nне питон и не важно\n```")
+        report = self.agents._implement_fill(task, None, 1)
+        self.assertEqual(report["status"], "done")
+        self.assertEqual(target.read_text(), "не питон и не важно")
+
+    def test_target_file_untouched_on_failure(self):
+        original = self.target.read_text()
+        self.fake_helpers("prose only, no fence")
+        self.agents._implement_fill(self.task, None, 1)
+        self.assertEqual(self.target.read_text(), original)
+
+    def test_helper_exception_is_survived(self):
+        """§7.3 в отражении chat-fill: сбой самого вызова хелпера — тоже
+        НЕ повод ронять петлю, даже если ollama_chat нарушил контракт
+        fail-open и бросил исключение сам."""
+        class Boom:
+            def configure(self, path):
+                pass
+
+            def ollama_chat(self, *a, **k):
+                raise RuntimeError("сеть моргнула")
+
+        self.agents._helpers = Boom()
+        self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
+        self.assertEqual(self.agents.last_implement_failure["reason"],
+                         "fill_no_reply")
 
 
 if __name__ == "__main__":
