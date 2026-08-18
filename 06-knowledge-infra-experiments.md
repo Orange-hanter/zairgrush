@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.5
+version: 0.6
 created: 2026-08-06
 updated: 2026-08-18
 related:
@@ -238,6 +238,50 @@ summary: >
 - **Статус: этап 1 реализован** (2026-08-18, за флагом, по умолчанию
   выключен; findings E9).
 
+### E10. Contract-first skeleton + model routing (in English per owner's rule)
+
+- **A (current)**: every task is implemented whole by the expensive
+  executor (K3 via kimi CLI).
+- **B**: a strong model produces a *skeleton* — signatures, contract
+  docstrings, protected contract tests, `NotImplementedError` bodies —
+  and cheap chat models fill the bodies as single-file, mechanically
+  bounded tasks. Fill transport: non-agentic Ollama Cloud chat
+  (full-file-in-one-fence contract, probe-validated 2026-08-18: five
+  models pass, no elision at ~100 lines, feedback rounds converge).
+- **Hypothesis**: this is the unmeasured variant C of E8 made structural
+  — the skeleton *constructs* mechanical tasks, so the cheap-model
+  penalty measured on whole tasks (+21 % wall, +29 % review cost)
+  should vanish, while executor cost drops 3–4×.
+- **Mechanics** (behind `[experiments] skeleton`): per-task
+  `executor_model` (plan-diff assigns it); fill-mode executor (chat
+  completion, orchestrator writes the file and runs the gate);
+  signature guard — pyindex signature snapshot pinned by the skeleton
+  task, compared on every fill round; fill disputes route to replan,
+  not to the human.
+- **Decision by**: USD per goal (full, incl. review), rounds to
+  convergence, post-review defects, share of contract disputes.
+- **Provider-cache note** (knowledge, no code): Kimi auto-caches
+  prefixes — stable fill prompts ride it for free; rate-based executor
+  routing beyond that only via an E8-class bench.
+- **Status: registered; probes done; implementation in progress
+  2026-08-18.**
+
+### E11. Independent Tester role
+
+- **A (current)**: executor writes its own tests; independence comes
+  from plan rules (independent oracle), reviewer verification requests
+  (ADR-005) and mutation audits.
+- **B**: a dedicated Tester agent writes tests from acceptance criteria
+  only, never seeing the executor's code or reasoning.
+- **Hypothesis**: four hollow-test cases across the program argue that
+  authorship independence catches what the current mechanisms miss;
+  the counter-hypothesis is that mutation audit already covers this
+  cheaper.
+- **Decision by**: mutation-survival rate of B-tests vs A-tests on the
+  frozen bench; USD per task delta.
+- **Status: queued** (one factor per run; after E10's first
+  measurement).
+
 ## 5. Порядок и зависимости
 
 ```
@@ -308,6 +352,15 @@ E8 закрыт (K3 остаётся дефолтом); **ADR-003 → ADR-004** 
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.6 (2026-08-18)
+
+- E10 (contract-first skeleton + model routing) and E11 (independent
+  Tester) registered — in English per the owner's documentation-language
+  rule. E10 carries the fill-executor probe results: five Ollama Cloud
+  chat models pass a strict full-file completion contract; no elision at
+  ~100 lines; feedback rounds converge. Probe know-how formalized as
+  project skills `ollama-cloud-api` and `openrouter-embeddings`.
 
 ### v0.5 (2026-08-18)
 
