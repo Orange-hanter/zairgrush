@@ -30,6 +30,7 @@ if _HERE not in sys.path:
 import board  # noqa: E402 — каталог добавлен строкой выше
 import memory as memory_mod  # noqa: E402
 import obs  # noqa: E402
+import pyindex  # noqa: E402
 
 log = obs.get_logger("loop")
 
@@ -653,7 +654,8 @@ class Loop:
 
     @staticmethod
     def _diagnose(outcome: str, history: list[dict[str, Any]],
-                  scope_failures: list[list[str]] | None = None) -> str:
+                  scope_failures: list[list[str]] | None = None,
+                  sig_failures: list[list[str]] | None = None) -> str:
         """Несходимость требует ДИАГНОЗА, а не очередного повтора.
 
         Закрытый список гипотез (FuguNano): человеку эскалируется не голый
@@ -668,9 +670,21 @@ class Loop:
         путей: предохранитель, называющий причину, которой не знает.
         """
         if outcome == ESCALATE_MAX:
-            # Сначала — то, что диагност ЗНАЕТ наверняка (§5.7.2). Раунды,
-            # сгоревшие на границах, — факт из журнала, а не гипотеза: на
-            # пилоте k3ad и s2ky получили «задача слишком крупная —
+            # Сначала — то, что диагност ЗНАЕТ наверняка (§5.7.2). Сигнатуры
+            # проверяются РАНЬШЕ границ: нарушение замороженного контракта —
+            # факт более точный, чем общий выход за paths, и называть общую
+            # причину, когда известна точная, значит соврать умолчанием.
+            if sig_failures and len(sig_failures) >= 2:
+                changed = sorted({s for row in sig_failures for s in row})
+                shown = ", ".join(changed[:5]) + ("…" if len(changed) > 5 else "")
+                return (f"{len(sig_failures)} раунд(ов) сгорели на нарушении "
+                        f"замороженных сигнатур контракта: {shown}. Это не "
+                        f"вопрос размера задачи — исполнитель меняет то, что "
+                        f"договором запрещено менять. Если контракт скелета "
+                        f"невыполним, нужен пересмотр сигнатур в задаче-"
+                        f"скелете или dispute, а не новая попытка")
+            # Раунды, сгоревшие на границах, — факт из журнала, а не гипотеза:
+            # на пилоте k3ad и s2ky получили «задача слишком крупная —
             # расщепить», когда обе бились об один защищённый файл.
             # Расщепление там не помогло бы: любой осколок упёрся бы туда же.
             if scope_failures and len(scope_failures) >= 2:
@@ -761,7 +775,22 @@ class Loop:
         # Раунды, сгоревшие на границах: диагност обязан отличать «задача
         # не сходится» от «исполнитель бьётся о защищённый файл».
         scope_failures: list[list[str]] = []
+        # То же для замороженных сигнатур (E10, fill-задача): нарушение
+        # контракта скелета — отдельная причина, не «задача не сходится».
+        sig_failures: list[list[str]] = []
         instant_crashes = 0
+        # Снимок сигнатур — ДО первого вызова исполнителя: сравнивать после
+        # первого раунда не с чем, если снимок взят после него. Один файл на
+        # fill-задачу — гарантия валидатора плана (E10, planner._skeleton_
+        # errors), не петли: берём первый путь и не спорим с тем, что уже
+        # проверено раньше.
+        sig_file: pathlib.Path | None = None
+        sig_baseline: list[str] | None = None
+        if task.get("frozen_signatures"):
+            paths = task.get("paths") or []
+            if paths:
+                sig_file = self.state.root / paths[0]
+                sig_baseline = pyindex.file_signatures(sig_file)
         while iteration < self.max_iter + confirm_rounds:
             # Бюджет проверяется перед КАЖДОЙ итерацией, а не только между
             # задачами: проверка раз в задачу означала, что одна задача
@@ -808,10 +837,29 @@ class Loop:
                     feedback = {"note": "предыдущий ответ не содержал валидного "
                                         "JSON-отчёта — повтори, соблюдая контракт"}
                     continue
+                # Отступления — заявление исполнителя О СЕБЕ, не находка
+                # ревьюера: ревьюер их не увидит (асимметрия §3), в журнал
+                # они идут как есть. Форма поля не гарантирована контрактом
+                # — журнал читается как данные: строка оборачивается в
+                # список из одного элемента, мусор (dict, пустота) молчит.
+                deviations = report.get("deviations")
+                if isinstance(deviations, str) and deviations.strip():
+                    deviations = [deviations]
+                if isinstance(deviations, list) and deviations:
+                    self.state.log("deviations_declared", task=tid,
+                                   round=iteration,
+                                   deviations=[str(d)[:200] for d in deviations])
                 if report.get("status") == "dispute":
                     stash = self.cleanup(task, "dispute")
-                    qid = self.state.ask(tid, "dispute",
-                                         report.get("summary", "спор исполнителя"),
+                    question = report.get("summary", "спор исполнителя")
+                    deps = task.get("deps") or []
+                    if task.get("executor_model") and deps:
+                        # Fill-задача (E10): спор чаще всего означает
+                        # сломанный контракт скелета, а не саму заливку —
+                        # подсказка экономит круг ручного разбора.
+                        question += (f"; контракт скелета спорен — "
+                                    f"рассмотрите swarm replan {deps[0]}")
+                    qid = self.state.ask(tid, "dispute", question,
                                          stash=stash, round=iteration,
                                          dispute=report.get("dispute"))
                     self.state.set_status(tid, "blocked", reason="dispute",
@@ -860,6 +908,22 @@ class Loop:
                             "unexpected_files": bad,
                             "protected_tests": tests_touched}
                 continue
+
+            if sig_baseline is not None and sig_file is not None:
+                sig_now = pyindex.file_signatures(sig_file)
+                changed = sorted(set(sig_baseline) ^ set(sig_now))
+                if changed:
+                    # НЕ revert: границы — про ЧУЖОЕ, сигнатуры — про
+                    # СВОЁ. Тело заливки внутри пришпиленной сигнатуры
+                    # может быть спасаемо, а откат снёс бы и его.
+                    sig_failures.append(changed)
+                    self.state.log("signature_violation", task=tid,
+                                   round=iteration, changed=changed)
+                    feedback = {"note": "сигнатуры контракта изменены — "
+                                        "верни их в точности; если контракт "
+                                        "невыполним, канал dispute",
+                                "changed_signatures": changed}
+                    continue
 
             verdict = self._review_with_quota_wait(task, tail, iteration,
                                                    was_confirmation)
@@ -1052,7 +1116,8 @@ class Loop:
         # ней не узнаёт (поймано на приёмке: v3st исчезла из виду).
         stash = self.cleanup(task, "max-iterations")
         diagnosis = self._diagnose(ESCALATE_MAX, history,
-                                   scope_failures=scope_failures)
+                                   scope_failures=scope_failures,
+                                   sig_failures=sig_failures)
         qid = self.state.ask(tid, ESCALATE_MAX, diagnosis, stash=stash,
                              round=self.max_iter, history=history)
         self.state.set_status(tid, "blocked", reason="max_iterations",

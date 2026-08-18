@@ -23,7 +23,9 @@
               "spec": {"type": "string"},
               "acceptance": {"type": "array", "items": {"type": "string"}},
               "deps": {"type": "array", "items": {"type": "string"}},
-              "status": {"type": "string", "enum": ["pending", "blocked"]}
+              "status": {"type": "string", "enum": ["pending", "blocked"]},
+              "executor_model": {"type": "string"},
+              "frozen_signatures": {"type": "boolean"}
             },
             "additionalProperties": false
           },

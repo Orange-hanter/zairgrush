@@ -100,6 +100,19 @@ class TestPhrases(unittest.TestCase):
         self.assertIn("гейт при этом был зелёный", text)
         self.assertIn("swarm:aaaa-x", text)
 
+    def test_signature_violation_names_round_and_changed(self):
+        text = vocab.narrate({"kind": "signature_violation", "task": "f1x1",
+                              "round": 2, "changed": ["add(a, b)",
+                                                       "add(a, b, c)"]})
+        self.assertIn("раунде 2", text)
+        self.assertIn("add(a, b, c)", text)
+
+    def test_deviations_declared_names_the_deviations(self):
+        text = vocab.narrate({"kind": "deviations_declared", "task": "f1x1",
+                              "round": 1, "deviations": ["не добавил тип X"]})
+        self.assertIn("отступления", text)
+        self.assertIn("не добавил тип X", text)
+
     def test_finding_names_severity_class_and_place(self):
         text = vocab.finding({"severity": "major", "category": "correctness",
                               "file": "src/a.py", "line": 12,
@@ -142,16 +155,16 @@ class TestEveryEmittedKindIsNamed(unittest.TestCase):
 
     EMITTED = [
         "answer", "baseline_red", "budget_exhausted", "commit_message",
-        "executor_failed", "executor_unavailable", "gate_failed",
-        "integrity_violation", "paths_extended", "plan_applied",
+        "deviations_declared", "executor_failed", "executor_unavailable",
+        "gate_failed", "integrity_violation", "paths_extended", "plan_applied",
         "plan_failed", "policy", "policy_dropped", "policy_suppressed",
         "pre_existing_dirt", "preflight_forced", "question", "quota_pause",
         "quota_wait", "restore_failed", "retry", "review_budget_exhausted",
-        "review_failed", "round", "scope_violation", "stash_failed",
-        "state_written", "step_done", "step_failed", "step_intent",
-        "task_crashed", "verification", "verification_inconclusive",
-        "memory_written", "memory_injected", "memory_reflect",
-        "memory_unavailable", "memory_forgotten",
+        "review_failed", "round", "scope_violation", "signature_violation",
+        "stash_failed", "state_written", "step_done", "step_failed",
+        "step_intent", "task_crashed", "verification",
+        "verification_inconclusive", "memory_written", "memory_injected",
+        "memory_reflect", "memory_unavailable", "memory_forgotten",
     ]
 
     def test_every_emitted_kind_has_a_russian_name(self):

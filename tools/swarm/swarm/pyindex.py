@@ -341,3 +341,31 @@ class Index:
     def resolve(self, short_name: str) -> list[str]:
         """Короткое имя -> список квалифицированных id."""
         return list(self._by_name.get(short_name, []))
+
+
+def file_signatures(path: pathlib.Path) -> list[str]:
+    """Сигнатуры функций/методов ОДНОГО файла — страж E10 (frozen_signatures).
+
+    `Index` строит граф ссылок по всему дереву; страж каждый раунд спрашивает
+    про один и тот же единственный файл fill-задачи, и гонять полную сборку
+    ради него — плата, которую петля платила бы за каждую проверку впустую.
+
+    Битый или недоступный файл — не авария наблюдателя, а факт о файле:
+    пустой список, тем же принципом, каким `Index._build` глотает такие
+    файлы при полной сборке (журнал читается как данные, не как контракт).
+    """
+    try:
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+        return []
+    sigs: list[str] = []
+
+    def walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                sigs.append(_sig(child))
+            walk(child)
+
+    walk(tree)
+    return sorted(sigs)

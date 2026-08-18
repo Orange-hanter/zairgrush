@@ -8,6 +8,7 @@
 import importlib.util
 import pathlib
 import sys
+import tempfile
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
@@ -735,3 +736,353 @@ class TestKeepBestRollback(unittest.TestCase):
         self.assertEqual(restores, [],
                          "одобренное дерево не откатывается")
         self.assertEqual(result, "done")
+
+
+class TestFileSignatures(unittest.TestCase):
+    """E10: `pyindex.file_signatures` — точечный снимок одного файла для
+    стража frozen_signatures. Полный `Index` строит граф ссылок по всему
+    дереву; страж спрашивает про один и тот же файл каждый раунд, и гонять
+    полную сборку ради него значило бы платить за проверку впустую."""
+
+    def test_extracts_sorted_signatures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = pathlib.Path(tmp) / "mod.py"
+            p.write_text("def b(x):\n    pass\n\n\ndef a(y, z):\n    pass\n")
+            self.assertEqual(lp.pyindex.file_signatures(p),
+                             ["a(y, z)", "b(x)"])
+
+    def test_includes_nested_and_methods(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = pathlib.Path(tmp) / "mod.py"
+            p.write_text("class C:\n    def m(self):\n"
+                         "        def inner():\n            pass\n")
+            sigs = lp.pyindex.file_signatures(p)
+            self.assertIn("m(self)", sigs)
+            self.assertIn("inner()", sigs)
+
+    def test_missing_file_is_empty_not_a_crash(self):
+        """Битый/недоступный файл — факт о файле, не авария наблюдателя
+        (тот же принцип, что у Index._build)."""
+        self.assertEqual(
+            lp.pyindex.file_signatures(pathlib.Path("/нет/такого/файла.py")),
+            [])
+
+    def test_syntax_error_is_empty_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = pathlib.Path(tmp) / "broken.py"
+            p.write_text("def f(:\n")
+            self.assertEqual(lp.pyindex.file_signatures(p), [])
+
+
+class TestSignatureGuard(unittest.TestCase):
+    """E10: сигнатуры скелета — контракт fill-задачи, не предмет спора
+    исполнителя. Guard снимает снимок ДО первого вызова исполнителя и
+    сверяет после КАЖДОГО успешного scope_check; несовпадение жжёт раунд
+    БЕЗ отката — в отличие от scope, тело внутри пришпиленной сигнатуры
+    может быть спасаемо."""
+
+    def _run(self, tmp, initial, write_bodies, confirmations=1):
+        calls = {"implement": 0}
+        journal = []
+        feedbacks = []
+        reverted = []
+        state = _FakeState()
+        state.root = tmp
+        state.log = lambda kind, **k: journal.append((kind, k))
+        (tmp / "mod.py").write_text(initial)
+
+        class FakeAgents:
+            def implement(self, task, feedback, iteration):
+                calls["implement"] += 1
+                feedbacks.append(feedback)
+                idx = min(calls["implement"], len(write_bodies)) - 1
+                (tmp / "mod.py").write_text(write_bodies[idx])
+                return {"status": "done"}
+
+            def review(self, task, tail, iteration, **kw):
+                return verdict("approve")
+
+            def commit_message(self, task, diff):
+                return "msg"
+
+        loop = lp.Loop(state, {"max_iterations": 3,
+                               "confirmations": confirmations}, FakeAgents())
+        loop.gate = lambda task: (True, "OK")
+        loop.scope_check = lambda task: (True, [], [])
+        loop.commit = lambda task: "abc123"
+        loop.cleanup = lambda task, reason: None
+        loop.revert = lambda: reverted.append(1) or []
+        loop._sh = lambda cmd, timeout=900: type(
+            "R", (), {"stdout": "", "returncode": 0})()
+        task = {"id": "f1x1", "title": "t", "type": "feature",
+               "paths": ["mod.py"], "frozen_signatures": True}
+        result = loop.run_task(task)
+        return result, journal, feedbacks, calls, reverted
+
+    def test_violation_burns_a_round_without_revert_then_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = pathlib.Path(tmp_s)
+            result, journal, feedbacks, calls, reverted = self._run(
+                tmp, "def add(a, b):\n    raise NotImplementedError\n",
+                ["def add(a, b, c):\n    return a + b + c\n",
+                 "def add(a, b):\n    return a + b\n"])
+            self.assertEqual(result, "done",
+                             "фиксированный контракт закрывает задачу")
+            self.assertEqual(calls["implement"], 2,
+                             "нарушение не пропускает следующий вызов "
+                             "исполнителя — заливка может быть спасена")
+            kinds = [k for k, _ in journal]
+            self.assertIn("signature_violation", kinds)
+            payload = next(p for k, p in journal if k == "signature_violation")
+            self.assertEqual(payload["round"], 1)
+            self.assertIn("add(a, b, c)", payload["changed"])
+            self.assertEqual(reverted, [], "сигнатуры не откатывают дерево")
+            fb = feedbacks[1]
+            self.assertIn("changed_signatures", fb)
+            self.assertIn("add(a, b, c)", fb["changed_signatures"])
+            self.assertIn("сигнатуры контракта изменены", fb["note"])
+
+    def test_persistent_violation_escalates_naming_signatures(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = pathlib.Path(tmp_s)
+            state = _FakeState()
+            state.root = tmp
+            asked = []
+            state.ask = lambda tid, kind, question, **k: (
+                asked.append(question), "q001")[1]
+            (tmp / "mod.py").write_text(
+                "def add(a, b):\n    raise NotImplementedError\n")
+
+            class FakeAgents:
+                def implement(self, task, feedback, iteration):
+                    (tmp / "mod.py").write_text(
+                        f"def add(a, b, x{iteration}):\n    pass\n")
+                    return {"status": "done"}
+
+                def review(self, *a, **k):
+                    raise AssertionError("до ревью дойти не должно")
+
+                def commit_message(self, task, diff):
+                    return "msg"
+
+            loop = lp.Loop(state, {"max_iterations": 3}, FakeAgents())
+            loop.gate = lambda task: (True, "OK")
+            loop.scope_check = lambda task: (True, [], [])
+            loop.cleanup = lambda task, reason: None
+            loop._sh = lambda cmd, timeout=900: type(
+                "R", (), {"stdout": "", "returncode": 0})()
+            result = loop.run_task({"id": "f1x1", "title": "t",
+                                    "type": "feature", "paths": ["mod.py"],
+                                    "frozen_signatures": True})
+            self.assertEqual(result, "blocked")
+            self.assertTrue(asked, "эскалация обязана попасть в инбокс")
+            self.assertIn("сигнатур", asked[-1])
+            self.assertIn("замороженных", asked[-1])
+
+    def test_no_snapshot_without_frozen_signatures(self):
+        """Обычная задача не платит за снимок, которого не просила."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = pathlib.Path(tmp_s)
+            state = _FakeState()
+            state.root = tmp
+            journal = []
+            state.log = lambda kind, **k: journal.append((kind, k))
+            (tmp / "mod.py").write_text("def add(a, b):\n    return 0\n")
+
+            class FakeAgents:
+                def implement(self, task, feedback, iteration):
+                    (tmp / "mod.py").write_text(
+                        "def add(a, b, c):\n    return a + b + c\n")
+                    return {"status": "done"}
+
+                def review(self, task, tail, iteration, **kw):
+                    return verdict("approve")
+
+                def commit_message(self, task, diff):
+                    return "msg"
+
+            loop = lp.Loop(state, {"confirmations": 1}, FakeAgents())
+            loop.gate = lambda task: (True, "OK")
+            loop.scope_check = lambda task: (True, [], [])
+            loop.commit = lambda task: "abc123"
+            loop.cleanup = lambda task, reason: None
+            loop._sh = lambda cmd, timeout=900: type(
+                "R", (), {"stdout": "", "returncode": 0})()
+            result = loop.run_task({"id": "t1", "title": "t",
+                                    "type": "feature", "paths": ["mod.py"]})
+            self.assertEqual(result, "done")
+            self.assertNotIn("signature_violation", [k for k, _ in journal])
+
+
+class TestSignatureDiagnosisPriority(unittest.TestCase):
+    """`_diagnose` называет сигнатуры РАНЬШЕ границ: контракт fill-задачи
+    нарушен явно, и общая причина не может быть точнее известной."""
+
+    def test_repeated_signature_burn_is_named_first(self):
+        text = lp.Loop._diagnose(
+            lp.ESCALATE_MAX, [],
+            sig_failures=[["add(a, b, c)"], ["add(a, b, c)"]])
+        self.assertIn("сигнатур", text)
+        self.assertIn("add(a, b, c)", text)
+
+    def test_single_signature_burn_keeps_the_default_hypothesis(self):
+        text = lp.Loop._diagnose(lp.ESCALATE_MAX, [],
+                                 sig_failures=[["add(a, b, c)"]])
+        self.assertIn("расщепить", text)
+
+    def test_signatures_outrank_scope_when_both_repeat(self):
+        text = lp.Loop._diagnose(
+            lp.ESCALATE_MAX, [],
+            scope_failures=[["tests/x.rs"], ["tests/x.rs"]],
+            sig_failures=[["add(a, b, c)"], ["add(a, b, c)"]])
+        self.assertIn("сигнатур", text)
+        self.assertNotIn("tests/x.rs", text,
+                         "при известной точной причине общая не называется")
+
+
+class TestFillTaskDisputeHint(unittest.TestCase):
+    """Спор fill-задачи чаще всего означает сломанный контракт скелета, не
+    саму заливку: подсказка экономит круг ручного разбора — оператор сразу
+    знает, какую задачу пересматривать."""
+
+    def _run(self, task):
+        state = _FakeState()
+        questions = []
+
+        def fake_ask(tid, kind, question, **k):
+            questions.append(question)
+            return "q001"
+        state.ask = fake_ask
+
+        class FakeAgents:
+            def implement(self, task, feedback, iteration):
+                return {"status": "dispute", "summary": "не могу",
+                       "dispute": {"claim": "конфликт"}}
+
+            def review(self, *a, **k):
+                raise AssertionError("до ревью дойти не должно")
+
+            def commit_message(self, task, diff):
+                return "msg"
+
+        loop = lp.Loop(state, {}, FakeAgents())
+        loop.gate = lambda task: (True, "OK")
+        loop.cleanup = lambda task, reason: None
+        loop._sh = lambda cmd, timeout=900: type(
+            "R", (), {"stdout": "", "returncode": 0})()
+        loop.run_task(task)
+        return questions
+
+    def test_fill_task_dispute_hints_replan_target(self):
+        task = {"id": "fill1", "title": "t", "type": "feature",
+               "paths": ["a.py"], "executor_model": "ollama:kimi-k2.7-code",
+               "deps": ["skl1"]}
+        questions = self._run(task)
+        self.assertIn("swarm replan skl1", questions[0])
+
+    def test_plain_task_dispute_has_no_hint(self):
+        task = {"id": "t1", "title": "t", "type": "feature", "paths": ["a.py"]}
+        questions = self._run(task)
+        self.assertNotIn("swarm replan", questions[0])
+
+    def test_fill_task_without_deps_has_no_hint(self):
+        """executor_model в одиночку ничего не значит — подсказывать
+        задачу-скелет нечем, если deps пуст."""
+        task = {"id": "fill1", "title": "t", "type": "feature",
+               "paths": ["a.py"], "executor_model": "ollama:kimi-k2.7-code"}
+        questions = self._run(task)
+        self.assertNotIn("swarm replan", questions[0])
+
+
+class TestDeviationsJournaling(unittest.TestCase):
+    """Отступления — заявление исполнителя О СЕБЕ; ревьюер их не видит
+    (асимметрия §3), а журнал принимает их как данные, а не контракт."""
+
+    def _run(self, report):
+        state = _FakeState()
+        journal = []
+        state.log = lambda kind, **k: journal.append((kind, k))
+
+        class FakeAgents:
+            def implement(self, task, feedback, iteration):
+                return report
+
+            def review(self, task, tail, iteration, **kw):
+                return verdict("approve")
+
+            def commit_message(self, task, diff):
+                return "msg"
+
+        loop = lp.Loop(state, {"confirmations": 1}, FakeAgents())
+        loop.gate = lambda task: (True, "OK")
+        loop.scope_check = lambda task: (True, [], [])
+        loop.commit = lambda task: "abc123"
+        loop.cleanup = lambda task, reason: None
+        loop._sh = lambda cmd, timeout=900: type(
+            "R", (), {"stdout": "", "returncode": 0})()
+        loop.run_task({"id": "t1", "title": "t", "type": "feature",
+                       "paths": ["a.py"]})
+        return journal
+
+    def test_list_of_deviations_is_journaled(self):
+        journal = self._run({"status": "done",
+                             "deviations": ["не добавил тип X", "упростил Y"]})
+        entry = next(p for k, p in journal if k == "deviations_declared")
+        self.assertEqual(entry["deviations"],
+                         ["не добавил тип X", "упростил Y"])
+        self.assertEqual(entry["round"], 1)
+
+    def test_string_deviation_is_wrapped_into_one_element_list(self):
+        journal = self._run({"status": "done", "deviations": "одно отступление"})
+        entry = next(p for k, p in journal if k == "deviations_declared")
+        self.assertEqual(entry["deviations"], ["одно отступление"])
+
+    def test_empty_list_is_not_journaled(self):
+        journal = self._run({"status": "done", "deviations": []})
+        self.assertNotIn("deviations_declared", [k for k, _ in journal])
+
+    def test_blank_string_is_not_journaled(self):
+        journal = self._run({"status": "done", "deviations": "   "})
+        self.assertNotIn("deviations_declared", [k for k, _ in journal])
+
+    def test_malformed_shape_does_not_crash(self):
+        """Журнал читается как данные: dict вместо списка/строки не
+        роняет петлю — просто не журналируется."""
+        journal = self._run({"status": "done",
+                             "deviations": {"не": "тот тип"}})
+        self.assertNotIn("deviations_declared", [k for k, _ in journal])
+
+    def test_missing_field_does_not_crash(self):
+        journal = self._run({"status": "done"})
+        self.assertNotIn("deviations_declared", [k for k, _ in journal])
+
+    def test_deviations_are_not_fed_to_the_reviewer(self):
+        """Асимметрия §3: канал одностороннего действия — исполнитель
+        заявляет о себе журналу, а не ревьюеру."""
+        seen_tails = []
+
+        state = _FakeState()
+
+        class FakeAgents:
+            def implement(self, task, feedback, iteration):
+                return {"status": "done", "deviations": ["упростил X"]}
+
+            def review(self, task, tail, iteration, **kw):
+                seen_tails.append(tail)
+                return verdict("approve")
+
+            def commit_message(self, task, diff):
+                return "msg"
+
+        loop = lp.Loop(state, {"confirmations": 1}, FakeAgents())
+        loop.gate = lambda task: (True, "проход гейта")
+        loop.scope_check = lambda task: (True, [], [])
+        loop.commit = lambda task: "abc123"
+        loop.cleanup = lambda task, reason: None
+        loop._sh = lambda cmd, timeout=900: type(
+            "R", (), {"stdout": "", "returncode": 0})()
+        loop.run_task({"id": "t1", "title": "t", "type": "feature",
+                       "paths": ["a.py"]})
+        self.assertTrue(seen_tails)
+        self.assertNotIn("упростил X", seen_tails[0],
+                         "ревьюер не должен видеть заявленные отступления")

@@ -507,6 +507,161 @@ class TestStandaloneMain(unittest.TestCase):
             self.assertEqual(roots["metric"], tmp)
 
 
+def fill_task(tid="fil1", **kw):
+    """Валидная задача-заливка (E10): единственный конкретный путь,
+    непустой deps (ссылается на СУЩЕСТВУЮЩУЮ в QUEUE задачу — чтобы не
+    путать skeleton-проверку с отдельной проверкой разрешимости deps),
+    ollama-модель, замороженные сигнатуры, ссылка на контрактный тест
+    скелета в acceptance."""
+    t = task(tid, paths=["src/mod.py"], deps=["aaaa"],
+             executor_model="ollama:kimi-k2.7-code", frozen_signatures=True,
+             acceptance=["tests/test_mod.py::test_contract"])
+    t.update(kw)
+    return t
+
+
+class TestSkeletonProtocol(unittest.TestCase):
+    """E10: fill-задача целится в один файл и зависит от скелета — обещание
+    промпта без механической проверки здесь осталось бы пожеланием модели."""
+
+    def assertRejected(self, d, needle):
+        errs = rp.validate_plan_diff(d, QUEUE)
+        self.assertTrue(errs, "дифф должен быть отвергнут")
+        self.assertTrue(any(needle in e for e in errs),
+                        f"{needle!r} не найдено в {errs}")
+
+    def test_valid_fill_task_is_accepted(self):
+        self.assertEqual(rp.validate_plan_diff(diff(add(fill_task())), QUEUE), [])
+
+    def test_glob_path_rejected(self):
+        self.assertRejected(diff(add(fill_task(paths=["src/**"]))),
+                            "ровно один путь")
+
+    def test_multiple_paths_rejected(self):
+        self.assertRejected(
+            diff(add(fill_task(paths=["src/a.py", "src/b.py"]))),
+            "ровно один путь")
+
+    def test_empty_deps_rejected(self):
+        self.assertRejected(diff(add(fill_task(deps=[]))), "непустой deps")
+
+    def test_missing_deps_rejected(self):
+        t = fill_task()
+        del t["deps"]
+        self.assertRejected(diff(add(t)), "непустой deps")
+
+    def test_non_ollama_model_is_not_checked(self):
+        """Проверка целится строго в ollama:* — свой пул моделей задача
+        может обвешивать как угодно, это не предмет skeleton-режима."""
+        d = diff(add(fill_task(executor_model="claude-sonnet-5",
+                               paths=["src/**"], deps=[])))
+        errs = rp.validate_plan_diff(d, QUEUE)
+        self.assertFalse(any("ollama" in e for e in errs), errs)
+
+    def test_frozen_signatures_must_be_bool(self):
+        self.assertRejected(
+            diff(add(fill_task(frozen_signatures="да"))),
+            "frozen_signatures должен быть bool")
+
+    def test_frozen_signatures_bool_without_executor_model_is_fine(self):
+        t = task(paths=["c.py"], frozen_signatures=True)
+        self.assertEqual(rp.validate_plan_diff(diff(add(t)), QUEUE), [])
+
+    def test_update_setting_ollama_model_is_checked_too(self):
+        """Мех-проверка не привязана к op-типу: update, вводящий
+        executor_model=ollama:*, обязан быть самодостаточным в ЭТОМ же
+        диффе — иначе он мог бы обойти защиту, минуя add."""
+        d = diff({"op": "update", "id": "bbbb", "reason": "r",
+                  "task": {"executor_model": "ollama:x"}})
+        self.assertRejected(d, "ровно один путь")
+
+    def test_update_touching_unrelated_field_is_unaffected(self):
+        """Частичный update, не трогающий executor_model/frozen_signatures,
+        не обязан повторять skeleton-поля — тот же принцип, что у deps."""
+        d = diff({"op": "update", "id": "bbbb", "reason": "r",
+                  "task": {"status": "pending"}})
+        self.assertEqual(rp.validate_plan_diff(d, QUEUE), [])
+
+    def test_schema_declares_skeleton_fields(self):
+        """Схема — обещание модели: без полей в ней ollama:*-задачу
+        отклонит сама JSON-schema валидация раньше, чем наш валидатор."""
+        schema = json.loads(rp.SCHEMA)
+        props = (schema["properties"]["ops"]["items"]["properties"]
+                 ["task"]["properties"])
+        self.assertIn("executor_model", props)
+        self.assertEqual(props["executor_model"]["type"], "string")
+        self.assertIn("frozen_signatures", props)
+        self.assertEqual(props["frozen_signatures"]["type"], "boolean")
+
+
+class TestAcceptanceTestReference(unittest.TestCase):
+    """E10/Feature 4: критерий приёмки без называния теста непроверяем
+    механически — но только там, где тип задачи НЕСЁТ тесты по
+    определению. Обычный feature не проверяется намеренно (см. комментарий
+    у _missing_ac_ref в planner.py) — тест для него часто пишет другая
+    задача, и проверка на каждом feature была бы просто шумом."""
+
+    def assertRejected(self, d, needle):
+        errs = rp.validate_plan_diff(d, QUEUE)
+        self.assertTrue(errs, "дифф должен быть отвергнут")
+        self.assertTrue(any(needle in e for e in errs),
+                        f"{needle!r} не найдено в {errs}")
+
+    def test_feature_tests_with_ref_is_accepted(self):
+        t = task(type="feature-tests",
+                 acceptance=["tests/test_c.py::test_new_behaviour"])
+        self.assertEqual(rp.validate_plan_diff(diff(add(t)), QUEUE), [])
+
+    def test_feature_tests_without_ref_is_rejected(self):
+        t = task(type="feature-tests", acceptance=["работает корректно"])
+        self.assertRejected(diff(add(t)), "module::test_name")
+
+    def test_fill_task_without_ref_is_rejected(self):
+        t = fill_task(acceptance=["заливка готова"])
+        self.assertRejected(diff(add(t)), "module::test_name")
+
+    def test_plain_feature_without_ref_is_not_checked(self):
+        """Намеренная асимметрия: feature — не test-carrying тип."""
+        t = task(type="feature", acceptance=["работает корректно"])
+        self.assertEqual(rp.validate_plan_diff(diff(add(t)), QUEUE), [])
+
+    def test_test_task_without_ref_is_not_checked(self):
+        t = task(type="test-task", acceptance=["правит только тесты"])
+        self.assertEqual(rp.validate_plan_diff(diff(add(t)), QUEUE), [])
+
+    def test_explicit_non_testable_statement_counts_as_no_ref(self):
+        """Правило требует ЛИБО ссылку, ЛИБО явное объяснение — но
+        механически распознаётся только ссылка (`::`). Текстовое
+        объяснение без ссылки — сознательный компромисс: планировщик
+        видит правило в промпте, а страж ловит только грубый пропуск."""
+        t = task(type="feature-tests",
+                 acceptance=["не тестируем: чисто визуальная правка"])
+        self.assertRejected(diff(add(t)), "module::test_name")
+
+    def test_update_introducing_feature_tests_type_is_checked(self):
+        d = diff({"op": "update", "id": "bbbb", "reason": "r",
+                  "task": {"type": "feature-tests",
+                           "acceptance": ["работает корректно"]}})
+        self.assertRejected(d, "module::test_name")
+
+
+class TestSkeletonPromptRules(unittest.TestCase):
+    """Правила skeleton-режима и ac_ref обязаны быть в ОБОИХ промптах —
+    планировщик не видит разницы между plan и replan в этих требованиях."""
+
+    def test_plan_prompt_mentions_skeleton_mode(self):
+        text = rp.plan_prompt("цель", [], "files", "ok")
+        self.assertIn("skeleton-режим", text)
+        self.assertIn("frozen_signatures", text)
+        self.assertIn("executor_model", text)
+        self.assertIn("module::test_name", text)
+
+    def test_replan_prompt_mentions_skeleton_mode(self):
+        text = rp.replan_prompt(task(), {"claim": "x"}, [], "files", "ok")
+        self.assertIn("skeleton-режим", text)
+        self.assertIn("module::test_name", text)
+
+
 class TestMemoryInPlanPrompt(unittest.TestCase):
     """Память (E9) в промпте планировщика: за флагом, байт-в-байт без неё."""
 

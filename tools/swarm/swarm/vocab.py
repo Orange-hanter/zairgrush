@@ -59,6 +59,8 @@ KIND_RU = {
     "quota_pause": "пауза по квоте провайдера",
     "gate_failed": "гейт красный",
     "scope_violation": "нарушение границ",
+    "signature_violation": "нарушение замороженных сигнатур",
+    "deviations_declared": "исполнитель заявил отступления",
     "executor_unavailable": "исполнитель недоступен",
     "state_written": "состояние записано",
     "pre_existing_dirt": "чужая грязь в дереве",
@@ -354,6 +356,22 @@ def _scope_violation(r: dict[str, Any]) -> tuple[str, set[str]]:
     return "; ".join(bits), {"round", "unexpected", "protected"}
 
 
+def _signature_violation(r: dict[str, Any]) -> tuple[str, set[str]]:
+    text = f"сигнатуры контракта изменены в раунде {r.get('round')}"
+    changed = _seq(r.get("changed"))
+    if changed:
+        text += ": " + ", ".join(map(str, changed))
+    return text, {"round", "changed"}
+
+
+def _deviations_declared(r: dict[str, Any]) -> tuple[str, set[str]]:
+    items = _seq(r.get("deviations"))
+    text = f"исполнитель заявил отступления в раунде {r.get('round')}"
+    if items:
+        text += ": " + "; ".join(map(str, items))
+    return text, {"round", "deviations"}
+
+
 def _executor_unavailable(r: dict[str, Any]) -> tuple[str, set[str]]:
     return (f"исполнитель недоступен, прогон остановлен: {_s(r.get('stderr'))}",
             {"stderr"})
@@ -392,6 +410,8 @@ NARRATORS: dict[str, Narrator] = {
         {"stderr"}),
     "gate_failed": _gate_failed,
     "scope_violation": _scope_violation,
+    "signature_violation": _signature_violation,
+    "deviations_declared": _deviations_declared,
     "executor_unavailable": _executor_unavailable,
     "state_written": lambda r: (
         f"состояние записано (отпечаток {r.get('sha')})", {"sha"}),

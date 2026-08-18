@@ -153,7 +153,31 @@ def plan_prompt(goal: str, tasks: list[dict[str, Any]], files: str,
 - если задача требует НЕЗАВИСИМОГО эталона, критерий приёмки обязан назвать
   и ЧЕМ сверять, и чем сверять ЗАПРЕЩЕНО — поля, которые вычисляет сама
   проверяемая реализация. Иначе тест сверяет реализацию саму с собой, и
-  дефект в ней невидим.
+  дефект в ней невидим;
+- при декомпозиции модуля с несколькими функциями план МОЖЕТ использовать
+  skeleton-режим вместо одной большой задачи: одна задача-«скелет»
+  (сильный исполнитель) создаёт файл(ы) с ФИНАЛЬНЫМИ сигнатурами,
+  контрактными docstring'ами, защищёнными контрактными тестами (явно
+  перечисленными в её `paths` — явное перечисление снимает защиту) и
+  телами функций `raise NotImplementedError`; затем по одной задаче-
+  «заливке» на файл — механическое заполнение тел. Контрактные тесты
+  скелета ОБЯЗАНЫ пропускаться (unittest.SkipTest) на
+  `NotImplementedError`, а не падать: незаполненное тело — «ещё не
+  сделано», не красный baseline, иначе ни скелет не пройдёт свой гейт,
+  ни заливка не стартует (урок живого прогона E10);
+- задача-заливка ОБЯЗАНА: целиться РОВНО в один конкретный путь без
+  glob-символов (`*?[`) в `paths`; зависеть (`deps`) от задачи-скелета;
+  задавать `executor_model` (например, "ollama:kimi-k2.7-code" — заливку
+  ведёт дешёвая модель); называть контрактный тест скелета в `acceptance`;
+  выставлять `frozen_signatures: true`. Первые два требования оркестратор
+  проверяет механически: `executor_model`, начинающийся с `ollama:`, без
+  ровно одного пути без glob-символов или без непустого `deps` —
+  отклоняется;
+- каждый критерий приёмки задачи типа feature-tests и задачи-заливки
+  обязан НАЗЫВАТЬ доказывающий тест в форме `module::test_name`, либо
+  прямо объяснить, почему критерий не проверяется тестом — такие задачи
+  несут тесты по определению, и acceptance без ссылки на тест непроверяем
+  механически.
 
 В поле analysis сначала рассуждай, потом формируй ops.
 """
@@ -189,6 +213,16 @@ def replan_prompt(task: dict[str, Any], dispute: str,
 неисполнимое требование. Ограничения те же, что и при планировании: paths и
 acceptance обязательны, deps без циклов, id уникальны, задачи маленькие.
 Верни задачу в статус pending, если она снова исполнима.
+
+Если спорящая задача — часть skeleton-режима (`executor_model`/
+`frozen_signatures`), контракт скелета не свят: если
+исполнитель прав и сигнатуры мешают, план вправе их изменить в
+задаче-скелете — но тогда объясни это решение в `reason`, а не снимай
+`frozen_signatures` тихо. Как и при планировании: задача-заливка целится
+РОВНО в один путь без glob-символов (`*?[`) в `paths`, зависит (`deps`) от
+скелета и задаёт `executor_model`; каждый критерий приёмки задачи типа
+feature-tests и задачи-заливки называет доказывающий тест
+(`module::test_name`) либо прямо объясняет, почему он не тестируем.
 
 В поле analysis объясни, кто прав в споре и почему план оказался устаревшим.
 """
@@ -361,6 +395,65 @@ def _bad_deps(t: dict[str, Any]) -> bool:
         or any(not isinstance(d, str) for d in deps))
 
 
+# Glob-символы: путь fill-задачи обязан быть КОНКРЕТНЫМ файлом, иначе
+# страж loop.frozen_signatures (E10) не может назвать единственный файл,
+# чьи сигнатуры снимать.
+_GLOB_CHARS = "*?["
+
+
+def _skeleton_errors(t: dict[str, Any]) -> list[str]:
+    """E10: механическая половина skeleton-режима — обещания промпта
+    (единственный конкретный путь, зависимость от скелета) без проверки
+    здесь остаются пожеланием модели, как и id-формат до `_ID_RE`.
+
+    Оба поля необязательны для ОБЫЧНОЙ задачи — проверка срабатывает,
+    только если поле присутствует в теле ЭТОЙ операции: частичный update,
+    не трогающий executor_model/frozen_signatures, её не касается (тот же
+    принцип, что у `_bad_deps`).
+    """
+    errs = []
+    model = t.get("executor_model")
+    if isinstance(model, str) and model.startswith("ollama:"):
+        paths = t.get("paths")
+        if not (isinstance(paths, list) and len(paths) == 1
+                and isinstance(paths[0], str)
+                and not any(c in paths[0] for c in _GLOB_CHARS)):
+            errs.append("executor_model=ollama:* требует ровно один путь "
+                        "без glob-символов (*?[) в paths — заливка не имеет "
+                        "права трогать чужие файлы")
+        deps = t.get("deps")
+        if not (isinstance(deps, list) and deps):
+            errs.append("executor_model=ollama:* требует непустой deps — "
+                        "заливка обязана зависеть от задачи-скелета")
+    fs = t.get("frozen_signatures")
+    if fs is not None and not isinstance(fs, bool):
+        errs.append("frozen_signatures должен быть bool")
+    return errs
+
+
+# Типы, которые НЕСУТ тесты по определению: feature-tests пишет их сама, а
+# fill-задача (executor_model=ollama:*) доказывается контрактным тестом
+# скелета. Обычный feature — намеренно НЕ проверяется: тест для него часто
+# пишет другая задача (или ревьюер), и требование ссылки на КАЖДОМ feature
+# было бы просто шумом, забивающим редкие настоящие пропуски.
+def _missing_ac_ref(t: dict[str, Any]) -> bool:
+    """Feature 4: критерий приёмки без `module::test_name` непроверяем
+    механически — либо ссылка есть, либо acceptance обязан явно сказать,
+    что критерий тестом не доказывается (см. правило в plan_prompt)."""
+    model = t.get("executor_model")
+    is_test_carrying = (t.get("type") == "feature-tests"
+                        or (isinstance(model, str)
+                            and model.startswith("ollama:")))
+    if not is_test_carrying:
+        return False
+    acceptance = t.get("acceptance")
+    if not isinstance(acceptance, list) or not acceptance:
+        # Пустой/нелегальный acceptance уже ловит отдельная проверка —
+        # здесь дублировать нечем и незачем.
+        return False
+    return not any("::" in str(a) for a in acceptance)
+
+
 def validate_plan_diff(diff: dict[str, Any] | None,
                        tasks: list[dict[str, Any]]) -> list[str]:
     """Механическая валидация плана-диффа (§3.1). -> список ошибок."""
@@ -418,6 +511,11 @@ def validate_plan_diff(diff: dict[str, Any] | None,
                             "только оркестратор после approve)")
             if _bad_deps(t):
                 errs.append(f"{where}: deps не список строк")
+            errs.extend(f"{where}: {e}" for e in _skeleton_errors(t))
+            if _missing_ac_ref(t):
+                errs.append(f"{where}: ни один acceptance не называет "
+                            f"проверяющий тест (module::test_name) — тип "
+                            f"{t.get('type')!r} несёт тесты по определению")
             added.add(tid)
         elif kind in ("update", "remove"):
             if tid not in existing:
@@ -446,6 +544,12 @@ def validate_plan_diff(diff: dict[str, Any] | None,
                                 "ставит только оркестратор после approve)")
                 if _bad_deps(t):
                     errs.append(f"{where}: deps не список строк")
+                errs.extend(f"{where}: {e}" for e in _skeleton_errors(t))
+                if _missing_ac_ref(t):
+                    errs.append(f"{where}: ни один acceptance не называет "
+                                f"проверяющий тест (module::test_name) — тип "
+                                f"{t.get('type')!r} несёт тесты по "
+                                f"определению")
         else:
             errs.append(f"{where}: неизвестная операция")
     # deps: ссылки только на существующие/добавляемые, без циклов.
