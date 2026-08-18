@@ -492,6 +492,33 @@ class TestAnchorDecay(MemCase):
         self.assertEqual(reflected["unlinked"], 1)
 
 
+class TestVectorRepin(MemCase):
+    """Перепинить размерность вправе только reindex: первая версия
+    отказывала и ему, и подсказка «нужен reindex» водила по кругу."""
+
+    def _pg_with_pinned(self, pinned):
+        calls = []
+        self.addCleanup(setattr, mem, "pg", mem.pg)
+
+        def fake(config, sql, sql_vars=None, stdin=None):
+            calls.append(sql)
+            if "SELECT value FROM meta" in sql:
+                return True, pinned
+            return True, ""
+        mem.pg = fake
+        return calls
+
+    def test_mismatch_without_repin_refuses(self):
+        calls = self._pg_with_pinned("1024")
+        self.assertFalse(mem.ensure_vector({}, 2048))
+        self.assertFalse(any("DROP COLUMN" in c for c in calls))
+
+    def test_reindex_repin_drops_and_repins(self):
+        calls = self._pg_with_pinned("1024")
+        self.assertTrue(mem.ensure_vector({}, 2048, repin=True))
+        self.assertTrue(any("DROP COLUMN" in c for c in calls))
+
+
 class TestNormsBlock(MemCase):
     """Persona ревьюера: только принятые решения, никаких команд молчать."""
 

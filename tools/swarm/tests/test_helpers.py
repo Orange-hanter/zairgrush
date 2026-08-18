@@ -610,6 +610,7 @@ class TestEmbedText(unittest.TestCase):
         self.mod = urllib.request
         self.orig = urllib.request.urlopen
         self.bodies = []
+        self.urls = []
         hp._state["failures"] = 0
         self.addCleanup(hp._state.__setitem__, "failures", 0)
 
@@ -619,6 +620,7 @@ class TestEmbedText(unittest.TestCase):
     def transport(self, payload=None, raises=None):
         def fake(req, timeout=None):
             self.bodies.append(req.data.decode())
+            self.urls.append(req.full_url)
             if raises:
                 raise raises
             return FakeResponse(payload)
@@ -649,6 +651,33 @@ class TestEmbedText(unittest.TestCase):
         set_env(self, "OLLAMA_API_KEY", "dummy")
         self.transport({"embeddings": []})
         self.assertIsNone(hp.embed_text("текст", "m"))
+
+    def test_openrouter_route_with_dimensions(self):
+        """Транспорт по префиксу модели: openrouter:slug@dim идёт на
+        OpenAI-совместимый эндпоинт с параметром dimensions (Matryoshka
+        2048 — замер оракула: без потерь против 4096)."""
+        set_env(self, "OPENROUTER_API_KEY", "dummy-or")
+        saved = os.environ.pop("OLLAMA_API_KEY", None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, "OLLAMA_API_KEY", saved)
+        self.transport({"data": [{"embedding": [0.5, 0.25]}],
+                        "usage": {"cost": 5.6e-07}})
+        vec = hp.embed_text("урок", "openrouter:qwen/qwen3-embedding-8b@2048")
+        self.assertEqual(vec, [0.5, 0.25])
+        self.assertIn("openrouter.ai", self.urls[0])
+        body = json.loads(self.bodies[0])
+        self.assertEqual(body["model"], "qwen/qwen3-embedding-8b")
+        self.assertEqual(body["dimensions"], 2048)
+
+    def test_openrouter_without_its_key_skips(self):
+        for var in ("OPENROUTER_API_KEY",):
+            saved = os.environ.pop(var, None)
+            if saved is not None:
+                self.addCleanup(os.environ.__setitem__, var, saved)
+        set_env(self, "OLLAMA_API_KEY", "dummy")   # чужой ключ не подходит
+        self.transport({"data": [{"embedding": [0.5]}]})
+        self.assertIsNone(hp.embed_text("урок", "openrouter:m"))
+        self.assertEqual(self.bodies, [])
 
     def test_network_error_trips_breaker(self):
         set_env(self, "OLLAMA_API_KEY", "dummy")

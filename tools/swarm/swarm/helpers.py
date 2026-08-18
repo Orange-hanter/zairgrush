@@ -241,48 +241,88 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
         return text or None
 
 
+OPENROUTER_URL = "https://openrouter.ai/api/v1/embeddings"
+
+
+def _embed_request(text: str, model: str) -> tuple[str, str, bytes] | str:
+    """(url, ключ, тело) под транспорт модели, либо причина отказа.
+
+    Два транспорта, выбор — префиксом модели:
+    - `openrouter:vendor/slug[@dim]` — OpenAI-совместимый эндпоинт
+      OpenRouter; probe 2026-08-18: qwen/qwen3-embedding-8b жив,
+      dim 2048 (Matryoshka, замер оракула: без потерь против 4096),
+      $0.0000006 за урок. `@dim` уходит параметром dimensions.
+    - иначе — нативный /api/embed Ollama; probe 2026-08-18: в облаке
+      владельца эмбеддинг-моделей НЕТ (unauthorized) — ветка живёт для
+      локального ollama и других аккаунтов.
+    """
+    if model.startswith("openrouter:"):
+        key = os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            return "no_api_key"
+        slug, _, dim = model.removeprefix("openrouter:").partition("@")
+        payload: dict[str, Any] = {"model": slug, "input": scrub(text)}
+        if dim.isdigit():
+            payload["dimensions"] = int(dim)
+        return OPENROUTER_URL, key, json.dumps(payload).encode()
+    key = os.environ.get("OLLAMA_API_KEY")
+    if not key:
+        return "no_api_key"
+    url = f"{BASE_URL}/api/embed"
+    if not url.startswith("https://"):
+        # Та же граница, что у /api/chat: подмена BASE_URL не должна
+        # уводить ключ и текст урока в чужие руки.
+        return f"недопустимый URL: {BASE_URL}"
+    return url, key, json.dumps({"model": model,
+                                 "input": scrub(text)}).encode()
+
+
+def _embed_vector(resp: dict[str, Any]) -> list[float]:
+    """Вектор из ответа любого транспорта: ollama кладёт embeddings[0],
+    OpenAI-совместимые — data[0].embedding."""
+    first: Any = None
+    vecs = resp.get("embeddings")
+    if isinstance(vecs, list) and vecs:
+        first = vecs[0]
+    data = resp.get("data")
+    if first is None and isinstance(data, list) and data \
+            and isinstance(data[0], dict):
+        first = data[0].get("embedding")
+    return [float(x) for x in first] if isinstance(first, list) else []
+
+
 def embed_text(text: str, model: str) -> list[float] | None:
-    """Эмбеддинг через нативный /api/embed. Любая ошибка -> None (§7.3).
+    """Эмбеддинг урока памяти. Любая ошибка -> None (§7.3).
 
     Слой опционален по построению: без ключа, при лежащем API или пустом
     ответе память остаётся на FTS — вектор лишь сеть дополнительного
     охвата, и его отсутствие не событие, а нормальный режим.
-    Probe эндпоинта на живом облаке НЕ проведён (в окружении нет
-    OLLAMA_API_KEY — findings E9): формат ответа взят из документации
-    нативного API; первый живой вызов обязан подтвердить его метрикой.
     """
-    key = os.environ.get("OLLAMA_API_KEY")
-    if not key or not model:
-        _metric(helper="embed", skipped="no_api_key" if not key
-                else "no_model")
+    if not model:
+        _metric(helper="embed", skipped="no_model")
         return None
     if _state["failures"] >= BREAKER_THRESHOLD:
         _metric(helper="embed", skipped="circuit_breaker",
                 consecutive_failures=_state["failures"])
         return None
-    url = f"{BASE_URL}/api/embed"
-    if not url.startswith("https://"):
-        # Та же граница, что у /api/chat: подмена BASE_URL не должна
-        # уводить ключ и текст урока в чужие руки.
-        _metric(helper="embed", model=model,
-                api_error=f"недопустимый URL: {BASE_URL}")
+    prepared = _embed_request(text, model)
+    if isinstance(prepared, str):
+        _metric(helper="embed", model=model, skipped=prepared)
         return None
-    body = json.dumps({"model": model, "input": scrub(text)}).encode()
-    req = urllib.request.Request(url, data=body,  # noqa: S310 — схема проверена
+    url, key, body = prepared
+    req = urllib.request.Request(url, data=body,  # noqa: S310 — только https
                                  headers={"Authorization": f"Bearer {key}",
                                           "Content-Type": "application/json"})
     t0 = time.time()
     try:
-        raw = urllib.request.urlopen(req, timeout=TIMEOUT)  # noqa: S310 — схема проверена выше
+        raw = urllib.request.urlopen(req, timeout=TIMEOUT)  # noqa: S310 — только https
         resp = json.load(raw)
         if resp.get("error"):
             _state["failures"] += 1
             _metric(helper="embed", model=model,
                     api_error=str(resp["error"])[:120])
             return None
-        vecs = resp.get("embeddings")
-        first = vecs[0] if isinstance(vecs, list) and vecs else None
-        vec = [float(x) for x in first] if isinstance(first, list) else []
+        vec = _embed_vector(resp)
     except urllib.error.HTTPError as e:
         _state["failures"] += 1
         _metric(helper="embed", model=model, http_error=e.code,
@@ -297,8 +337,10 @@ def embed_text(text: str, model: str) -> list[float] | None:
         _metric(helper="embed", model=model, api_error="пустой ответ")
         return None
     _state["failures"] = 0
+    cost = (resp.get("usage") or {}).get("cost") if isinstance(
+        resp.get("usage"), dict) else None
     _metric(helper="embed", model=model, dim=len(vec),
-            dur_s=round(time.time() - t0, 1), ok=True)
+            dur_s=round(time.time() - t0, 1), cost_usd=cost, ok=True)
     return vec
 
 

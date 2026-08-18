@@ -500,7 +500,7 @@ def _backfill_embeddings(config: dict[str, Any],
             vectors.append((str(rec.get("id")), vec))
     if not vectors:
         return
-    if not ensure_vector(config, len(vectors[0][1])):
+    if not ensure_vector(config, len(vectors[0][1]), repin=True):
         return
     for lesson_id, vec in vectors:
         pg(config, "UPDATE lessons SET embedding = :'qv'::vector "
@@ -542,12 +542,16 @@ def _vec_literal(vec: list[float]) -> str:
     return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
 
-def ensure_vector(config: dict[str, Any], dim: int) -> bool:
+def ensure_vector(config: dict[str, Any], dim: int,
+                  repin: bool = False) -> bool:
     """Расширение vector + колонка + пин размерности в meta.
 
     Рассинхрон размерности (сменили модель эмбеддера) — отказ с
-    подсказкой, а не тихая каша из несравнимых векторов: старые вектора
-    чистит только явный `reindex`.
+    подсказкой, а не тихая каша из несравнимых векторов. Перепинить
+    размерность вправе ТОЛЬКО reindex (`repin=True`): он и так
+    пересобирает индекс с нуля. Первая версия отказывала и ему — и
+    подсказка «нужен reindex» отправляла оператора по кругу (поймано
+    живым smoke, findings E9).
     """
     ok, _out = pg(config, "CREATE EXTENSION IF NOT EXISTS vector;")
     if not ok:
@@ -557,9 +561,22 @@ def ensure_vector(config: dict[str, Any], dim: int) -> bool:
     if not ok:
         return False
     if out and out != str(int(dim)):
-        log.warning("память: размерность эмбеддера изменилась (%s -> %s): "
-                    "нужен `swarm memory reindex`", out, dim)
-        return False
+        if not repin:
+            log.warning("память: размерность эмбеддера изменилась "
+                        "(%s -> %s): нужен `swarm memory reindex`", out, dim)
+            return False
+        # Колонка общая на таблицу: чужие вектора при смене размерности
+        # обнуляются — их вернёт reindex соответствующего стенда. FTS у
+        # всех живёт непрерывно, теряется только сеть доп. охвата.
+        log.warning("память: размерность перепинена (%s -> %s), вектора "
+                    "других стендов вернёт их reindex", out, dim)
+        ok, _out = pg(config,
+                      "ALTER TABLE lessons DROP COLUMN IF EXISTS embedding;"
+                      "UPDATE meta SET value = :'dim'::jsonb "
+                      "WHERE key = 'embed_dim';",
+                      {"dim": str(int(dim))})
+        if not ok:
+            return False
     # ALTER с типом vector(N) не параметризуется -v: N прошёл через int().
     sql = (f"ALTER TABLE lessons ADD COLUMN IF NOT EXISTS "
            f"embedding vector({int(dim)});\n"
