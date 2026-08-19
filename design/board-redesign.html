@@ -1,0 +1,388 @@
+<title>Доска роя</title>
+<style>
+:root{
+  --bg:#16130f; --surface:#1e1a15; --surface2:#241f18; --line:#2f2820;
+  --text:#ece4d6; --mut:#9b8d79; --faint:#6e6250;
+  --amber:#f0a91d; --amber-text:#ffc247; --amber-dim:#4a3812;
+  --ok:#6fbf73; --ok-dim:#1e3320; --danger:#e2685f; --danger-dim:#3d1f1c;
+  --progress:#5da4d4; --pending:#8b8072;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f9f5ed; --surface:#fffdf8; --surface2:#f3eee2; --line:#e2d9c8;
+    --text:#2a241b; --mut:#7d7160; --faint:#a99c86;
+    --amber:#b07a06; --amber-text:#8a5f04; --amber-dim:#f5e3bb;
+    --ok:#2e7d43; --ok-dim:#dcecdd; --danger:#b3423a; --danger-dim:#f4dcd9;
+    --progress:#2d6f9e; --pending:#8b8072;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f9f5ed; --surface:#fffdf8; --surface2:#f3eee2; --line:#e2d9c8;
+  --text:#2a241b; --mut:#7d7160; --faint:#a99c86;
+  --amber:#b07a06; --amber-text:#8a5f04; --amber-dim:#f5e3bb;
+  --ok:#2e7d43; --ok-dim:#dcecdd; --danger:#b3423a; --danger-dim:#f4dcd9;
+  --progress:#2d6f9e; --pending:#8b8072;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--sans)}
+.wrap{max-width:1060px;margin:0 auto;padding:36px 28px 60px}
+a{color:var(--amber-text)}
+
+/* ── шапка ─────────────────────────────────────────── */
+.eyebrow{font:11px var(--mono);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--mut);display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.eyebrow .tag{border:1px solid var(--line);border-radius:3px;padding:1px 7px;color:var(--faint)}
+h1{font:600 27px/1.2 var(--mono);letter-spacing:-.02em;margin:10px 0 6px}
+.goal{color:var(--mut);max-width:64ch;margin:0 0 20px}
+.live{display:inline-flex;gap:8px;align-items:center;font:12px var(--mono);color:var(--amber-text)}
+.live .dot{width:8px;height:8px;border-radius:50%;background:var(--amber);
+  animation:pulse 2.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25}}
+@media (prefers-reduced-motion: reduce){.live .dot{animation:none}}
+.live .upd{color:var(--mut)}
+
+/* ── KPI ───────────────────────────────────────────── */
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin:22px 0 8px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:6px;
+  padding:10px 16px;min-width:108px}
+.kpi .n{font:600 22px var(--mono);font-variant-numeric:tabular-nums}
+.kpi .l{font-size:12px;color:var(--mut);margin-top:2px}
+.kpi.alert{border-color:var(--amber);background:var(--amber-dim)}
+.kpi.alert .n{color:var(--amber-text)}
+.kpi.spend{min-width:190px}
+.kpi .bar{height:3px;background:var(--line);border-radius:2px;margin-top:8px;overflow:hidden}
+.kpi .bar i{display:block;height:100%;width:83%;background:var(--amber)}
+
+/* ── секции ────────────────────────────────────────── */
+h2{font:600 13px var(--mono);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--mut);margin:36px 0 12px;display:flex;gap:10px;align-items:baseline}
+h2 .cnt{color:var(--faint);font-weight:400}
+
+/* ── «ждут вас» ────────────────────────────────────── */
+.q{background:var(--surface);border:1px solid var(--amber);border-left:4px solid var(--amber);
+  border-radius:6px;padding:16px 20px}
+.q .head{display:flex;gap:10px;align-items:center;font:13px var(--mono);margin-bottom:8px}
+.q .qid{color:var(--amber-text);font-weight:600}
+.q .chip{border:1px solid var(--line);border-radius:20px;padding:1px 10px;
+  font-size:11px;color:var(--mut)}
+.q .text{max-width:72ch}
+.q .cmd{display:flex;gap:10px;align-items:center;margin-top:12px;
+  background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:8px 12px}
+.q .cmd code{font:12.5px var(--mono);color:var(--amber-text);flex:1;overflow-x:auto;white-space:nowrap}
+.q .hint{font-size:12.5px;color:var(--mut);margin-top:8px}
+button.copy{font:12px var(--mono);color:var(--text);background:var(--surface2);
+  border:1px solid var(--line);border-radius:4px;padding:4px 12px;cursor:pointer;white-space:nowrap}
+button.copy:hover{border-color:var(--amber)}
+button:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+
+/* ── фильтры ───────────────────────────────────────── */
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.bar input{flex:1;min-width:220px;background:var(--surface);border:1px solid var(--line);
+  border-radius:5px;color:var(--text);font:13px var(--sans);padding:7px 12px}
+.bar input::placeholder{color:var(--faint)}
+.bar button{font:12px var(--mono);color:var(--mut);background:none;
+  border:1px solid var(--line);border-radius:20px;padding:4px 13px;cursor:pointer}
+.bar button.on{color:var(--text);border-color:var(--mut)}
+.bar button:hover{border-color:var(--mut)}
+
+/* ── карточки задач ────────────────────────────────── */
+.card{background:var(--surface);border:1px solid var(--line);border-left-width:4px;
+  border-radius:6px;margin-bottom:10px}
+.card.st-done{border-left-color:var(--ok)}
+.card.st-ask{border-left-color:var(--amber)}
+.card.st-blocked{border-left-color:var(--danger)}
+.card.st-pending{border-left-color:var(--pending)}
+.card>.head{display:flex;gap:12px;align-items:center;padding:13px 18px;cursor:pointer}
+.card .id{font:600 12.5px var(--mono);color:var(--mut);background:var(--surface2);
+  border-radius:4px;padding:2px 8px}
+.card .title{flex:1;font-weight:500}
+.badge{font:11px var(--mono);letter-spacing:.06em;border-radius:20px;padding:2px 11px;white-space:nowrap}
+.b-done{color:var(--ok);background:var(--ok-dim)}
+.b-ask{color:var(--amber-text);background:var(--amber-dim)}
+.b-blocked{color:var(--danger);background:var(--danger-dim)}
+.b-pending{color:var(--mut);background:var(--surface2)}
+.spark{display:flex;gap:2px;align-items:flex-end;height:18px}
+.spark i{display:block;width:5px;background:var(--mut);border-radius:1px 1px 0 0;min-height:2px}
+.spark i.last{background:var(--ok)}
+.spark.stuck i.last{background:var(--danger)}
+.card .meta{font-size:12.5px;color:var(--mut);padding:0 18px 12px;display:flex;
+  gap:7px;flex-wrap:wrap}
+.card .meta b{color:var(--text);font-weight:500}
+.card .meta .sep{color:var(--faint)}
+.card .body{display:none;border-top:1px solid var(--line);padding:6px 18px 18px}
+.card.open .body{display:block}
+.sec{margin-top:16px}
+.sec h3{font:600 12px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+  color:var(--mut);margin:0 0 8px}
+.spec{color:var(--mut);max-width:72ch;font-size:14px}
+table{border-collapse:collapse;font-size:13px;width:100%}
+th{font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--faint);text-align:left;padding:4px 14px 6px 0}
+td{padding:5px 14px 5px 0;border-top:1px solid var(--line);
+  font-variant-numeric:tabular-nums;vertical-align:top}
+td.mono,th.mono{font-family:var(--mono);font-size:12.5px}
+.dur{display:inline-flex;align-items:center;gap:8px}
+.dur i{display:inline-block;height:5px;background:var(--progress);border-radius:2px}
+.dur.gate i{background:var(--ok)}
+.dur.rev i{background:var(--amber)}
+.find{border:1px solid var(--line);border-radius:5px;padding:10px 14px;margin-top:8px;font-size:13.5px}
+.find .top{font:12px var(--mono);color:var(--mut);margin-bottom:4px}
+.find.blocker .top{color:var(--danger)}
+.find .sug{color:var(--mut);margin-top:4px}
+.answered{border:1px solid var(--line);border-radius:5px;padding:10px 14px;margin-top:8px;font-size:13.5px}
+.answered .ans{color:var(--ok);margin-top:6px}
+.scroll{overflow-x:auto}
+.hint{font-size:12.5px;color:var(--faint);margin-top:8px}
+.rest{font:13px var(--mono);color:var(--mut);text-align:center;padding:10px;
+  border:1px dashed var(--line);border-radius:6px;cursor:pointer}
+.rest:hover{color:var(--text)}
+
+/* ── хроника и подвал ──────────────────────────────── */
+#events{display:none;background:var(--surface);border:1px solid var(--line);
+  border-radius:6px;padding:8px 18px;margin-top:10px}
+#events.show{display:block}
+.ev{display:flex;gap:14px;font-size:13px;padding:6px 0;border-top:1px solid var(--line)}
+.ev:first-child{border-top:none}
+.ev .tm{font:12px var(--mono);color:var(--faint);white-space:nowrap;padding-top:1px}
+.ev .kd{font:12px var(--mono);color:var(--mut);min-width:150px;white-space:nowrap}
+button.toggle{font:12px var(--mono);color:var(--mut);background:none;border:1px solid var(--line);
+  border-radius:4px;padding:5px 14px;cursor:pointer}
+.foot{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--faint);max-width:78ch}
+.foot code{font:11.5px var(--mono);color:var(--mut)}
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">
+    <span>zeus-pilot</span><span>·</span>
+    <span>прогон 20260819T020414</span>
+    <span class="tag">макет v1</span>
+    <span style="flex:1"></span>
+    <span class="live"><span class="dot"></span>живая доска <span class="upd" id="upd">· обновлено 04:18:35</span></span>
+  </div>
+  <h1>Прогон петли агентов</h1>
+  <p class="goal">Крейт zeus-erc и первые два правила проверки схемы: ERC-01 (клемма без
+  соединения) и ERC-02 (дублирование позиционного обозначения), с прогоном по корпусу .qet</p>
+
+  <div class="kpis">
+    <div class="kpi"><div class="n">14<span style="color:var(--faint)">/19</span></div><div class="l">закрыто</div></div>
+    <div class="kpi alert"><div class="n">1</div><div class="l">ждёт вас</div></div>
+    <div class="kpi"><div class="n">1</div><div class="l">в очереди</div></div>
+    <div class="kpi"><div class="n">4</div><div class="l">заблокировано</div></div>
+    <div class="kpi spend"><div class="n">$66.61<span style="color:var(--faint);font-size:15px"> из $80</span></div>
+      <div class="l">потрачено ревьюером и планировщиком</div><div class="bar"><i></i></div></div>
+    <div class="kpi"><div class="n">35</div><div class="l">раундов</div></div>
+  </div>
+
+  <h2>Ждут вашего решения <span class="cnt">1</span></h2>
+  <div class="q">
+    <div class="head"><span class="qid">q015</span><span>· задача s2ky</span>
+      <span class="chip">находка о замысле</span></div>
+    <div class="text"><code style="font:13px var(--mono)">check_terminal_name_chars</code> —
+      новая load-time валидация, которой нет в acceptance: проекты, ранее загружавшиеся
+      чисто, теперь получают Error-диагностику. Обоснование (неоднозначность канонической
+      строки из-за <code style="font:13px var(--mono)">\x1f</code>) разумно, но проверка
+      стоит только в одном из двух мест, где строится каноническая строка.</div>
+    <div class="cmd">
+      <code>swarm --root ~/work/zeus-pilot answer q015 "…"</code>
+      <button class="copy" data-cmd='swarm --root ~/work/zeus-pilot answer q015 "…"'>скопировать</button>
+    </div>
+    <div class="hint">если решение требует тронуть файл вне границ задачи — добавьте <code>--add-path путь</code></div>
+  </div>
+
+  <h2>Задачи <span class="cnt" id="shown">19</span></h2>
+  <div class="bar">
+    <input type="search" id="search" placeholder="поиск по задачам, находкам, файлам…">
+    <button data-f="all" class="on">все</button>
+    <button data-f="ask">ждут</button>
+    <button data-f="pending">в очереди</button>
+    <button data-f="blocked">заблокированы</button>
+    <button data-f="done">закрыты</button>
+  </div>
+
+  <div id="tasks">
+
+  <div class="card st-ask" data-st="ask">
+    <div class="head"><span class="id">s2ky</span>
+      <span class="title">Ключи подавления: namespace, версия конструкции, цепочка</span>
+      <span class="spark stuck" title="находок по раундам: 6"><i style="height:16px" class="last"></i></span>
+      <span class="badge b-ask">ждёт вас</span></div>
+    <div class="meta"><span>1 раунд</span><span class="sep">·</span>
+      <span>находка о замысле — вопрос <b>q015</b> выше</span><span class="sep">·</span>
+      <span>работа сохранена: <b>swarm:s2ky-ask-user</b></span></div>
+    <div class="body">
+      <div class="sec"><h3>Почему встала</h3>
+        <div class="spec">Ревьюер нашёл незапрошенную валидацию: механические замечания (5)
+        исполнитель снимет сам, но решение о новой проверке — за владельцем. Ответ на q015
+        вернёт задачу в очередь; наработанный дифф лежит в stash и будет поднят автоматически.</div></div>
+    </div>
+  </div>
+
+  <div class="card st-pending" data-st="pending">
+    <div class="head"><span class="id">z8ck</span>
+      <span class="title">zeus check: вывести диагностики наружу, JSON с пометкой нестабильности</span>
+      <span class="badge b-pending">в очереди</span></div>
+    <div class="meta"><span>ждёт: <b>s2ky</b></span><span class="sep">·</span><span>тип feature</span>
+      <span class="sep">·</span><span>файлы: zeus/crates/zeus-cli/src/**</span></div>
+    <div class="body"><div class="sec"><h3>Что просили сделать</h3>
+      <div class="spec">Правила ERC-01/ERC-02 возвращают диагностики структурами в памяти,
+      наружу не выведены: `zeus check &lt;project&gt;` — заглушка. Контракт отчёта — docs/02 §4.1;
+      JSON объявляет нестабильность полем schema: {version: 0, stability: "unstable"}.</div></div></div>
+  </div>
+
+  <div class="card st-done open" data-st="done">
+    <div class="head"><span class="id">c4rp</span>
+      <span class="title">Корпус: убрать дубликаты, добавить реальные проекты бюро</span>
+      <span class="spark" title="находок по раундам: 1 → 4 → 0">
+        <i style="height:6px"></i><i style="height:16px"></i><i style="height:2px" class="last"></i></span>
+      <span class="badge b-done">закрыта</span></div>
+    <div class="meta"><span>коммит <b>48f978d</b></span><span class="sep">·</span>
+      <span>3 итерации</span><span class="sep">·</span><span>$9.14</span><span class="sep">·</span>
+      <span>спор q014 решён расширением границ</span></div>
+    <div class="body">
+      <div class="sec"><h3>Траектория схождения</h3><div class="scroll">
+        <table>
+          <tr><th>раунд</th><th>вердикт</th><th>исход</th><th>находок</th></tr>
+          <tr><td class="mono">1</td><td>request_changes</td><td>спор исполнителя → q014, границы расширены</td><td class="mono">1</td></tr>
+          <tr><td class="mono">2</td><td>request_changes</td><td>исправление</td><td class="mono">4</td></tr>
+          <tr><td class="mono">2</td><td>approve</td><td>нужно подтверждение</td><td class="mono">0</td></tr>
+          <tr><td class="mono">3</td><td>approve</td><td>закрыта, коммит</td><td class="mono">0</td></tr>
+        </table></div>
+        <div class="hint">находки убывают — работа сходится</div></div>
+
+      <div class="sec"><h3>Как шла работа · раунд 2</h3><div class="scroll">
+        <table>
+          <tr><th>фаза</th><th>итог</th><th style="min-width:220px">время</th><th>$</th></tr>
+          <tr><td>исполнитель</td><td>done, 47 событий</td>
+            <td><span class="dur"><i style="width:170px"></i>7.2 мин</span></td><td class="mono">—</td></tr>
+          <tr><td>gate</td><td>зелёный</td>
+            <td><span class="dur gate"><i style="width:11px"></i>27 с</span></td><td class="mono">—</td></tr>
+          <tr><td>ревью</td><td>request_changes</td>
+            <td><span class="dur rev"><i style="width:97px"></i>4.1 мин</span></td><td class="mono">2.06</td></tr>
+        </table></div></div>
+
+      <div class="sec"><h3>Ревьюер, раунд 2 → request_changes</h3>
+        <div class="find"><div class="top">minor · correctness · zeus/corpus/README.md:41</div>
+          <div>Счётчик проектов корпуса в docs/02 остался от старого замера: 14 файлов
+          против фактических 11 после дедупликации.</div>
+          <div class="sug">→ обнови таблицу замера по текущему корпусу</div></div>
+        <div class="answered"><div class="top" style="font:12px var(--mono);color:var(--mut)">
+          q014 · спор исполнителя · отвечено</div>
+          <div>Находка требует правки docs/02-core-architecture.md вне границ задачи.</div>
+          <div class="ans">→ Обнови корпусный замер в docs/02; границы расширены: --add-path docs/02-core-architecture.md</div></div></div>
+
+      <div class="sec"><h3>Что вошло в код</h3>
+        <div class="hint">дифф 214 строк · <code style="font-family:var(--mono)">git -C ~/work/zeus-pilot show 48f978d</code></div></div>
+    </div>
+  </div>
+
+  <div class="card st-done" data-st="done">
+    <div class="head"><span class="id">m6pe</span>
+      <span class="title">ERC-xx: незанятая внутренняя сторона защитного проводника</span>
+      <span class="spark" title="находок по раундам: 3 → 0">
+        <i style="height:12px"></i><i style="height:2px" class="last"></i></span>
+      <span class="badge b-done">закрыта</span></div>
+    <div class="meta"><span>коммит <b>6d94a55</b></span><span class="sep">·</span><span>2 итерации</span>
+      <span class="sep">·</span><span>работа пережила обрыв прогона (retry-note)</span></div>
+    <div class="body"><div class="sec"><h3>—</h3><div class="spec">Содержимое как у c4rp: траектория, фазы, вердикты.</div></div></div>
+  </div>
+
+  <div class="card st-done" data-st="done">
+    <div class="head"><span class="id">k3ad</span>
+      <span class="title">ERC-01: не судить о компонентах со сгенерированным обозначением</span>
+      <span class="spark" title="находок по раундам: 2 → 0">
+        <i style="height:9px"></i><i style="height:2px" class="last"></i></span>
+      <span class="badge b-done">закрыта</span></div>
+    <div class="meta"><span>коммит <b>4aaf502</b></span><span class="sep">·</span><span>2 итерации</span></div>
+    <div class="body"><div class="sec"><h3>—</h3><div class="spec">Содержимое как у c4rp.</div></div></div>
+  </div>
+
+  <div class="card st-blocked" data-st="blocked">
+    <div class="head"><span class="id">v9lb</span>
+      <span class="title">idea: выводами УГО владеет библиотека — требует правки docs/04</span>
+      <span class="badge b-blocked">заблокирована</span></div>
+    <div class="meta"><span>требует правки docs вне границ прогона — решение владельца</span></div>
+    <div class="body"><div class="sec"><h3>—</h3><div class="spec">Idea-задачи блокируются
+      по замыслу: их открывает план-дифф после решения владельца.</div></div></div>
+  </div>
+
+  <div class="rest" data-st="done" id="rest">ещё 11 закрытых задач — показать</div>
+  </div>
+
+  <h2>Хроника</h2>
+  <button class="toggle" id="toggle-ev">показать хронику прогона</button>
+  <div id="events">
+    <div class="ev"><span class="tm">04:18:35</span><span class="kd">память: reflect</span>
+      <span>перепроверено 7 уроков, отвязанных якорей нет</span></div>
+    <div class="ev"><span class="tm">04:18:35</span><span class="kd">память: записан урок</span>
+      <span>c4rp → e39eeba0 (исход corrected: решение человека по q014)</span></div>
+    <div class="ev"><span class="tm">04:18:35</span><span class="kd">шаг завершён</span>
+      <span>c4rp · commit · 48f978d, сообщение сгенерировано хелпером</span></div>
+    <div class="ev"><span class="tm">04:13:06</span><span class="kd">раунд</span>
+      <span>c4rp · итерация 2 · approve → нужно подтверждение</span></div>
+    <div class="ev"><span class="tm">03:31:03</span><span class="kd">вопрос человеку</span>
+      <span>s2ky · q015 · находка о замысле (механических: 5)</span></div>
+  </div>
+
+  <div class="foot">
+    Во время прогона доску отдаёт локальный сервер и страница обновляется
+    на месте — раскрытые карточки, поиск и прокрутка не сбрасываются. Когда
+    прогон завершится, здесь появится пометка «сервер остановлен», данные
+    замрут на финальном состоянии. Снимок без сервера: <code>.swarm/board.html</code>,
+    пересобрать: <code>swarm --root ~/work/zeus-pilot board</code>.<br>
+    Собрано: 2026-08-19 04:18:35 · дизайн-макет: <code>design/board-redesign.html</code>
+  </div>
+</div>
+
+<script>
+document.addEventListener('click', ev => {
+  const btn = ev.target.closest('button.copy');
+  if (btn) {
+    navigator.clipboard.writeText(btn.dataset.cmd).then(() => {
+      const was = btn.textContent; btn.textContent = 'скопировано';
+      setTimeout(() => btn.textContent = was, 1200);
+    });
+    return;
+  }
+  const head = ev.target.closest('.card > .head');
+  if (head) head.parentElement.classList.toggle('open');
+});
+
+const cards = [...document.querySelectorAll('#tasks .card')];
+const rest = document.getElementById('rest');
+function apply() {
+  const f = document.querySelector('.bar button.on')?.dataset.f || 'all';
+  const q = document.getElementById('search').value.toLowerCase();
+  let shown = 0;
+  for (const c of cards) {
+    const okF = f === 'all' || c.dataset.st === f;
+    const okQ = !q || c.textContent.toLowerCase().includes(q);
+    c.style.display = okF && okQ ? '' : 'none';
+    if (okF && okQ) shown++;
+  }
+  rest.style.display = (f === 'all' || f === 'done') && !q ? '' : 'none';
+  document.getElementById('shown').textContent =
+    (f === 'all' && !q) ? '19' : String(shown);
+}
+document.querySelectorAll('.bar button[data-f]').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.bar button[data-f]').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); apply();
+});
+document.getElementById('search').oninput = apply;
+
+document.getElementById('toggle-ev').onclick = e => {
+  const el = document.getElementById('events');
+  el.classList.toggle('show');
+  e.target.textContent = el.classList.contains('show')
+    ? 'скрыть хронику' : 'показать хронику прогона';
+};
+
+let t = new Date(2026, 7, 19, 4, 18, 35);
+setInterval(() => {
+  t = new Date(t.getTime() + 5000);
+  document.getElementById('upd').textContent =
+    '· обновлено ' + t.toTimeString().slice(0, 8);
+}, 5000);
+</script>

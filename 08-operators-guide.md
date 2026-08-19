@@ -2,7 +2,7 @@
 title: "ZeusLogic — Рой агентов: руководство оператора"
 type: guide
 status: draft
-version: 0.9
+version: 0.10
 created: 2026-08-09
 updated: 2026-08-19
 related:
@@ -56,6 +56,14 @@ swarm --root . doctor
 отсутствующий инструмент, урезанный `PATH`. Тридцать секунд здесь
 экономят час диагностики потом.
 
+Про tree-sitter доктор говорит послойно: brew-пакет `tree-sitter` — это
+только C-библиотека, а слою индексации (`map --tree-sitter`, полезен для
+Rust) нужны python-биндинги и обе грамматики. Если стоит лишь часть,
+доктор называет установленный слой и печатает точную команду
+(`pip install tree-sitter tree-sitter-python tree-sitter-rust`) — раньше
+он отвечал «не установлен» человеку, у которого `brew list` показывал
+tree-sitter, и спор шёл о двух разных вещах.
+
 ### Конфигурация прогона
 
 `swarm.toml` в корне целевого репозитория:
@@ -79,6 +87,7 @@ review_budget_usd = 3.0  # потолок на ОДИН вызов ревьюе�
 total_budget_usd = 50.0  # потолок на ВЕСЬ прогон: петля остановится сама
 verification = "milestone"  # проверки исполнением: never | milestone | always
 live_board = true        # перестраивать .swarm/board.html после каждого раунда
+board_port = 7433        # порт живой доски; занят — сервер возьмёт свободный
 quota_backoff_s = [60, 120, 240]  # паузы при отказе провайдера по квоте
 plan_timeout = 900       # секунд на один вызов планировщика
 ```
@@ -250,13 +259,24 @@ swarm --root . board --open    # доска: задачи, фазы, стоим�
 
 Одна страница, на которой видно всё: что сделано и чем закончилось,
 сколько стоила каждая фаза, что вошло в код, где вас ждут (с готовой
-командой ответа) и какие решения вы уже приняли. `run`/`go` сами
-открывают её в браузере на старте (отключить: `board_open = false`) и
-печатают её `file://`-путь в шапке прогона; петля переписывает страницу
-после каждого раунда, а страница перезагружается сама каждые 15 секунд —
-F5 не нужен. Внизу — время последней сборки; если оно не движется,
-значит не движется и прогон. Отключить перестроение: `live_board =
-false` в `swarm.toml`.
+командой ответа) и какие решения вы уже приняли.
+
+Во время прогона доска ЖИВАЯ: `run`/`go` поднимают локальный
+HTTP-сервер (адрес `http://127.0.0.1:<board_port>` печатается в шапке
+прогона, macOS открывает его в браузере сам; отключить всё это:
+`board_open = false`), и страница подтягивает свежие данные каждые
+несколько секунд БЕЗ перезагрузки — раскрытые карточки, поиск, фильтр и
+прокрутка не сбрасываются, в подвале тикает время последнего обновления.
+Когда прогон завершается, страница честно пишет, что сервер остановлен,
+и замирает на финальном состоянии. Порт задаётся ключом `board_port`
+(умолчание 7433); занятый порт не ломает прогон — сервер берёт свободный
+и печатает фактический адрес.
+
+Файл `.swarm/board.html` остаётся снимком на момент последней сборки —
+его переписывает петля после каждого раунда (отключить перестроение:
+`live_board = false`), и он открывается без сервера в любой момент.
+Посмотреть доску живьём вне прогона: `swarm board --serve` (Ctrl+C —
+остановить).
 
 Остановку прогона доска показывает сразу, без раскопок: блок «События
 прогона» (исчерпанный бюджет, сорванное планирование) и блок «Шаги без
@@ -463,6 +483,19 @@ swarm --root . impact <symbol>      # кто зовёт символ перед 
 §1 — оно не формальность.
 
 ## Журнал изменений
+
+### v0.10 (2026-08-19)
+
+- The board went truly live: during a run it is served at
+  `http://127.0.0.1:<board_port>` (default 7433, auto-fallback to a free
+  port) and the page patches itself in place every few seconds — no more
+  full reloads that collapsed open cards mid-reading. Open cards, search,
+  filter and scroll survive updates; when the run exits the page says so
+  and freezes. `.swarm/board.html` stays as a serverless snapshot;
+  `swarm board --serve` serves it interactively after the fact.
+- Doctor explains tree-sitter by layers: the brew package is only the C
+  library, the loop needs the python bindings plus both grammars, and
+  the missing part is named with an exact `pip install` command.
 
 ### v0.9 (2026-08-19, in English per the owner's documentation rule)
 

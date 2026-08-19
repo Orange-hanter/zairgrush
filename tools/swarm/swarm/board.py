@@ -6,8 +6,15 @@
 потрачено, где его ждут, что уже сделано и можно ли этому верить.
 
 Страница самодостаточна: ни одного внешнего ресурса, данные встроены в
-неё при генерации. Обновляется по F5. Потоки исполнителя (сотни килобайт
-на задачу) внутрь не кладутся — на них даётся путь к файлу.
+неё при генерации. Потоки исполнителя (сотни килобайт на задачу) внутрь
+не кладутся — на них даётся путь к файлу.
+
+Во время прогона страницу отдаёт живой сервер (`boardserve.BoardServer`):
+адрес печатает команда запуска, и браузер обновляет содержимое на месте
+без перезагрузки — раскрытые карточки, поиск и прокрутка не сбрасываются
+(см. блок поллинга в конце `JS`). Файл `.swarm/board.html` на диске
+остаётся снимком: его переписывает петля после каждого раунда, и вне
+прогона он читается как обычный статичный файл.
 """
 import html
 import json
@@ -335,7 +342,9 @@ display:flex;gap:10px}
 """
 
 JS = """
-const D = JSON.parse(document.getElementById('data').textContent);
+// `let`, не `const`: живое обновление перепривязывает D к свежему payload
+// (см. apply()) — переменную, объявленную const, переприсвоить нельзя.
+let D = JSON.parse(document.getElementById('data').textContent);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // Имена — из vocab через payload, а не третьей копией здесь: копия уже
@@ -474,7 +483,7 @@ function render() {
     if (t.iterations) bits.push(`раундов ${esc(t.iterations)}`);
     const nf = (t._verdicts || []).reduce((n, v) => n + (v.findings?.length || 0), 0);
     if (nf) bits.push(`находок ${nf}`);
-    return `<div class="card" onclick="if(!event.target.closest('button'))
+    return `<div class="card" data-id="${esc(t.id)}" onclick="if(!event.target.closest('button'))
         this.classList.toggle('open')">
       <div class="head"><div class="t"><span class="id">${esc(t.id)}</span>${esc(t.title)}</div>
       <span class="badge ${CLS[t.status] || ''}">${esc(ST[t.status] || t.status)}</span></div>
@@ -484,38 +493,110 @@ function render() {
   if (!shown) box.innerHTML = '<div class="card"><div class="meta">ничего не найдено</div></div>';
 }
 
-document.querySelectorAll('.bar button[data-f]').forEach(b => b.onclick = () => {
-  document.querySelectorAll('.bar button[data-f]').forEach(x => x.classList.remove('on'));
-  b.classList.add('on'); render();
-});
-document.getElementById('search').oninput = render;
-document.getElementById('toggle-ev').onclick = e => {
-  const el = document.getElementById('events');
-  el.classList.toggle('hidden');
-  e.target.textContent = el.classList.contains('hidden')
-    ? 'показать хронику прогона' : 'скрыть хронику';
-};
+// Привязка обработчиков — отдельной функцией, а не разовым кодом при
+// загрузке: после живой подмены .wrap (см. apply()) старые кнопки и
+// поле поиска уже не те DOM-узлы, к которым что-то привязано, и без
+// повторного вызова фильтр с поиском переставали бы отвечать на клики.
+function bind() {
+  document.querySelectorAll('.bar button[data-f]').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.bar button[data-f]').forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); render();
+  });
+  document.getElementById('search').oninput = render;
+  document.getElementById('toggle-ev').onclick = e => {
+    const el = document.getElementById('events');
+    el.classList.toggle('hidden');
+    e.target.textContent = el.classList.contains('hidden')
+      ? 'показать хронику прогона' : 'скрыть хронику';
+  };
+}
+bind();
 render();
 
-// Автообновление: страницу переписывает петля после каждого раунда, а
-// не человек по F5 — забытое нажатие оставляло на экране снимок часовой
-// давности без единого признака, что он устарел (см. подвал). Позиция
-// прокрутки сохраняется ДО перезагрузки и восстанавливается СРАЗУ после,
-// иначе каждые 15 с обзор карточки в конце списка сбрасывало бы наверх.
-(function () {
-  const KEY = 'swarm-board-scroll';
-  try {
-    const saved = sessionStorage.getItem(KEY);
-    if (saved !== null) {
-      window.scrollTo(0, parseInt(saved, 10) || 0);
-      sessionStorage.removeItem(KEY);
-    }
-  } catch (e) {}
-  setTimeout(() => {
-    try { sessionStorage.setItem(KEY, String(window.scrollY)); } catch (e) {}
-    location.reload();
-  }, 15000);
-})();
+// Живое обновление: раньше страница целиком перезагружала саму себя
+// каждые 15 с — рабочий приём, но раскрытая карточка схлопывалась и
+// прокрутка прыгала ровно тогда, когда её читали. Сервер
+// (boardserve.BoardServer) отдаёт по тому же адресу свежий HTML, а
+// сюда — только подмена DOM: страница жива, вкладка не мигает, никакой
+// навигации не происходит вовсе.
+if (location.protocol !== 'http:' && location.protocol !== 'https:') {
+  // Открыт как файл (file://) — сервера за ним нет и быть не может:
+  // честнее сказать это прямо, чем гонять fetch в никуда.
+  document.getElementById('live').textContent =
+    'это снимок на диске: во время прогона живая доска открывается ' +
+    'сама, её адрес печатает команда запуска — здесь не обновится';
+} else {
+  let etag = null;
+  let misses = 0;
+  const timer = setInterval(() => {
+    const headers = etag ? {'If-None-Match': etag} : {};
+    fetch(location.href, {cache: 'no-store', headers})
+      .then(res => {
+        misses = 0;
+        if (res.status === 304) return null;   // ETag совпал — контент тот же
+        etag = res.headers.get('ETag') || etag;
+        return res.text();
+      })
+      .then(txt => { if (txt) apply(txt); })
+      .catch(() => {
+        // Три подряд неудачи — не сбой сети, а конец прогона: сервер
+        // живёт, пока жива петля, и его исчезновение — единственный
+        // надёжный признак того, что смотреть дальше некуда.
+        if (++misses >= 3) {
+          clearInterval(timer);
+          document.getElementById('live').textContent =
+            'сервер прогона остановлен — прогон завершён, ' +
+            'доска замерла на финальном состоянии';
+        }
+      });
+  }, 5000);
+}
+
+function apply(txt) {
+  const fresh = new DOMParser().parseFromString(txt, 'text/html');
+  const freshData = fresh.getElementById('data');
+  const curData = document.getElementById('data');
+  // Тот же payload — эхо собственного запроса (или пересборка без
+  // изменений на стороне сервера): перерисовывать нечего.
+  if (!freshData || freshData.textContent === curData.textContent) return;
+  const freshWrap = fresh.querySelector('.wrap');
+  const curWrap = document.querySelector('.wrap');
+  if (!freshWrap || !curWrap) return;
+  // Состояние интерфейса живёт в DOM, а не в D — подмена .wrap его
+  // сотрёт, поэтому снимается ДО подмены и возвращается после.
+  const openIds = [...document.querySelectorAll('#tasks .card.open')]
+    .map(c => c.dataset.id);
+  const searchVal = document.getElementById('search').value;
+  const activeFilter = document.querySelector('.bar button.on')?.dataset.f || 'all';
+  const evHidden = document.getElementById('events').classList.contains('hidden');
+
+  curWrap.replaceWith(document.adoptNode(freshWrap));
+  curData.textContent = freshData.textContent;
+  D = JSON.parse(curData.textContent);
+  bind();   // свежий .wrap принёс новые кнопки и поле поиска
+
+  document.getElementById('search').value = searchVal;
+  const btn = document.querySelector(`.bar button[data-f="${activeFilter}"]`);
+  if (btn) {
+    document.querySelectorAll('.bar button[data-f]').forEach(x => x.classList.remove('on'));
+    btn.classList.add('on');
+  }
+  const evEl = document.getElementById('events');
+  if (evHidden) evEl.classList.add('hidden'); else evEl.classList.remove('hidden');
+  document.getElementById('toggle-ev').textContent =
+    evHidden ? 'показать хронику прогона' : 'скрыть хронику';
+
+  render();
+  // CSS.escape: id задачи попадает в селектор атрибута буквально, а не
+  // как текст — без экранирования свои же скобки/точки в id ломали бы
+  // запрос вместо того, чтобы найти карточку.
+  openIds.forEach(id => {
+    const card = document.querySelector(`#tasks .card[data-id="${CSS.escape(id)}"]`);
+    if (card) card.classList.add('open');
+  });
+  document.getElementById('live').textContent =
+    'обновлено ' + new Date().toLocaleTimeString();
+}
 """
 
 
@@ -613,19 +694,21 @@ def render(board: dict[str, Any]) -> str:
         for ev in board["events"])
     parts.append("</div></div>")
 
-    # Формулировка точная намеренно: прежде подвал обещал «обновляется по
-    # F5», а данные вшиты в страницу при генерации. Пока петля не
-    # переписывала файл сама, F5 перечитывал тот же снимок прошлого — и
-    # человек не имел способа отличить «ничего не происходит» от
-    # «страница устарела час назад». Теперь страница переписывается САМА
-    # (см. refresh_board) и перезагружается тоже сама — звать нажимать
-    # F5 стало бы враньём, а не подсказкой.
+    # Формулировка точная намеренно: этот файл — снимок на момент сборки,
+    # а не то, что видит человек во время прогона. Живьём страницу отдаёт
+    # boardserve.BoardServer (см. cli._board_open), и обновляется она на
+    # месте, без перезагрузки (§ подмена .wrap в JS) — врать про F5 или
+    # про самоперезагрузку значило бы обещать то, чего у статичного файла
+    # нет и не может быть.
     parts.append(
-        f'<div class="foot">Во время прогона петля переписывает эту страницу '
-        f'после каждого раунда — сверяйтесь со временем сборки ниже. '
-        f'Страница перезагружается сама каждые 15 с. Вне прогона собрать '
-        f'заново: <code>swarm --root {e(board["root"])} board</code>.<br>'
-        f'Собрано: {e(board["built"])}</div></div>')
+        f'<div class="foot">Этот файл — снимок на момент сборки; во время '
+        f'прогона доска живая (адрес печатает команда запуска) и '
+        f'обновляется на месте без перезагрузки — петля переписывает файл '
+        f'после каждого раунда, живой сервер каждый раз собирает страницу '
+        f'заново. Посмотреть живьём вне прогона: '
+        f'<code>swarm --root {e(board["root"])} board --serve</code>; '
+        f'разовый снимок: <code>swarm --root {e(board["root"])} board</code>.<br>'
+        f'Собрано: {e(board["built"])} <span id="live"></span></div></div>')
 
     # Словари имён едут на страницу ИЗ vocab, а не живут третьей копией в
     # JS: копия уже разошлась — исход раунда доска показывала по-английски,

@@ -61,7 +61,8 @@ class CliCase(unittest.TestCase):
         # каждый вызов run/go в этом файле. Тесты про само поведение
         # (TestBoardAutoOpen) возвращают настоящий помощник явно.
         self._real_board_open = cli._board_open
-        cli._board_open = lambda root, cfg: pathlib.Path(root) / ".swarm" / "board.html"
+        cli._board_open = (lambda root, cfg:
+                           (pathlib.Path(root) / ".swarm" / "board.html", None))
         self.addCleanup(setattr, cli, "_board_open", self._real_board_open)
 
     def tearDown(self):
@@ -313,17 +314,57 @@ class TestDoctor(CliCase):
         _, out = run_cli("--root", str(self.root), "doctor")
         self.assertIn("изменённых файлов", out)
 
+    def _patch_tree_sitter(self, present: set[str], clib: bool) -> None:
+        original = cli.importlib.util.find_spec
+        cli.importlib.util.find_spec = (
+            lambda name: object() if name in present else None)
+        self.addCleanup(setattr, cli.importlib.util, "find_spec", original)
+        original_clib = cli._tree_sitter_clib
+        cli._tree_sitter_clib = lambda: clib
+        self.addCleanup(setattr, cli, "_tree_sitter_clib", original_clib)
+
     def test_missing_tree_sitter_is_reported_honestly(self):
         """find_spec сообщает об отсутствии top-level модуля значением
         None, а не исключением: проверка через try ловила пустоту, и
         доктор объявлял tree-sitter доступным на ЛЮБОЙ машине — ровно
         тот класс лжи о среде, ради которого doctor заведён."""
-        original = cli.importlib.util.find_spec
-        cli.importlib.util.find_spec = lambda name: None
-        self.addCleanup(setattr, cli.importlib.util, "find_spec", original)
+        self._patch_tree_sitter(present=set(), clib=False)
         _, out = run_cli("--root", str(self.root), "doctor")
         line = next(ln for ln in out.splitlines() if "tree-sitter" in ln)
         self.assertIn("не установлен", line)
+        self.assertIn("pip install tree-sitter tree-sitter-python "
+                      "tree-sitter-rust", line)
+
+    def test_brew_clib_alone_is_named_not_denied(self):
+        """brew-пакет tree-sitter — только C-библиотека. Доктор говорил
+        «не установлен» человеку, у которого `brew list` показывает
+        tree-sitter, — спор шёл о двух разных вещах. Теперь доктор
+        называет установленный слой и недостающий."""
+        self._patch_tree_sitter(present=set(), clib=True)
+        _, out = run_cli("--root", str(self.root), "doctor")
+        line = next(ln for ln in out.splitlines() if "tree-sitter" in ln)
+        self.assertIn("C-библиотека", line)
+        self.assertIn("pip install", line)
+        self.assertNotIn("не установлен", line)
+
+    def test_partial_bindings_name_the_missing_grammar(self):
+        """tsindex требует обе грамматики: один модуль tree_sitter без
+        них давал «доступен», а слой падал на импорте грамматик."""
+        self._patch_tree_sitter(present={"tree_sitter", "tree_sitter_python"},
+                                clib=False)
+        _, out = run_cli("--root", str(self.root), "doctor")
+        line = next(ln for ln in out.splitlines() if "tree-sitter" in ln)
+        self.assertIn("неполные", line)
+        self.assertIn("pip install tree-sitter-rust", line)
+
+    def test_full_bindings_report_ok(self):
+        self._patch_tree_sitter(
+            present={"tree_sitter", "tree_sitter_python", "tree_sitter_rust"},
+            clib=False)
+        _, out = run_cli("--root", str(self.root), "doctor")
+        line = next(ln for ln in out.splitlines() if "tree-sitter" in ln)
+        self.assertIn("[  ok ]", line)
+        self.assertIn("грамматики py/rs", line)
 
 
 class TestReport(CliCase):
@@ -673,6 +714,15 @@ class TestBoardAutoOpen(CliCase):
         cli._board_open = self._real_board_open
         self._orig_platform = cli.sys.platform
         self.addCleanup(setattr, cli.sys, "platform", self._orig_platform)
+        # Живой сервер — модульный синглтон (см. докстринг _BOARD_SERVER):
+        # без остановки между тестами он пережил бы тест, привязанный к
+        # уже удалённому tempdir предыдущего теста.
+        self.addCleanup(self._stop_board_server)
+
+    def _stop_board_server(self):
+        if cli._BOARD_SERVER is not None:
+            cli._BOARD_SERVER.stop()
+        cli._BOARD_SERVER = None
 
     def _capture_open_calls(self):
         calls = []
@@ -711,20 +761,22 @@ class TestBoardAutoOpen(CliCase):
         self.assertEqual(calls, [])
 
     def test_not_darwin_prints_header_but_does_not_open(self):
+        """Живой сервер поднимается на любой платформе — платформа решает
+        только судьбу команды `open` (macOS-специфична), не самого
+        сервера. На не-macOS в шапке печатается адрес живой доски, а
+        браузер сам не распахивается."""
         cli.sys.platform = "linux"
         calls = self._capture_open_calls()
         self.fake_loop({"aaaa": "done", "bbbb": "done"})
         _code, out = run_cli("--root", str(self.root), "run")
         self.assertEqual(calls, [])
-        self.assertIn(f"доска: file://{self.root.resolve()}/.swarm/board.html",
-                      out)
+        self.assertRegex(out, r"доска: http://127\.0\.0\.1:\d+/")
 
     def test_go_prints_the_board_header_line(self):
         cli.sys.platform = "linux"
         self.fake_loop({"aaaa": "done", "bbbb": "done"})
         _code, out = run_cli("--root", str(self.root), "go")
-        self.assertIn(f"доска: file://{self.root.resolve()}/.swarm/board.html",
-                      out)
+        self.assertRegex(out, r"доска: http://127\.0\.0\.1:\d+/")
 
     def test_failed_open_only_warns_and_does_not_stop_the_run(self):
         """Наблюдение — не работа (правило доски): любой сбой автооткрытия

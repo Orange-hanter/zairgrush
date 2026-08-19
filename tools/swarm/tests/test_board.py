@@ -272,11 +272,14 @@ class TestRenderSafety(unittest.TestCase):
         self.assertIn('id="data"', page)
 
 
-class TestPageReloadsItself(unittest.TestCase):
-    """Доска обещала «обновляется по F5» — забытое нажатие оставляло
-    человека перед снимком часовой давности без единого признака, что он
-    устарел. Страница обязана перечитывать себя сама, без плагинов и
-    внешних скриптов (CSP та же, что у остальной страницы — inline-JS).
+class TestPageUpdatesLiveWithoutReload(unittest.TestCase):
+    """Доска обещала сначала «обновляется по F5», потом — «перезагружается
+    сама каждые 15 с» (`location.reload()` + костыль sessionStorage ради
+    прокрутки). Оба приёма схлопывали открытую карточку и сбрасывали
+    поиск ровно тогда, когда человек читал находку. Теперь свежие данные
+    приходят с живого сервера (`boardserve.BoardServer`) и подменяют DOM
+    на месте — сама страница никогда не перезагружается, и прокрутке
+    ничего не грозит: беречь её в sessionStorage больше не от чего.
     """
 
     def render_empty(self):
@@ -286,20 +289,29 @@ class TestPageReloadsItself(unittest.TestCase):
                  "built": "2026-08-19 00:00:00"}
         return bd.render(board)
 
-    def test_reload_timer_is_fifteen_seconds(self):
+    def test_no_self_reload_left(self):
         page = self.render_empty()
-        self.assertIn("location.reload()", page)
-        self.assertIn("15000", page)
+        self.assertNotIn("location.reload()", page)
+        self.assertNotIn("sessionStorage", page)
 
-    def test_scroll_position_survives_the_reload(self):
+    def test_polling_fetches_with_etag_and_parses_with_dom_parser(self):
         page = self.render_empty()
-        self.assertIn("sessionStorage", page)
-        self.assertIn("scrollY", page)
-        self.assertIn("scrollTo", page)
+        self.assertIn("DOMParser", page)
+        self.assertIn("fetch(location.href", page)
+        self.assertIn("If-None-Match", page)
+        self.assertIn("cache: 'no-store'", page)
 
-    def test_footer_names_the_auto_reload(self):
+    def test_card_template_carries_its_id(self):
+        # data-id — зацепка, по которой живое обновление находит карточку
+        # заново и возвращает ей класс `open` после подмены DOM.
         page = self.render_empty()
-        self.assertIn("перезагружается сама каждые 15 с", page)
+        self.assertIn('data-id="${esc(t.id)}"', page)
+
+    def test_footer_names_the_live_reality_not_a_reload(self):
+        page = self.render_empty()
+        self.assertIn("живая", page)
+        self.assertIn('id="live"', page)
+        self.assertNotIn("перезагружается сама", page)
 
 
 class TestBuild(unittest.TestCase):

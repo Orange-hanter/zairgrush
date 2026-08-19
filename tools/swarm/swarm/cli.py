@@ -24,6 +24,7 @@
 """
 import argparse
 import contextlib
+import ctypes.util
 import fnmatch
 import importlib.util
 import inspect
@@ -34,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from types import ModuleType
 from typing import Any
@@ -63,7 +65,7 @@ KNOWN_CONFIG_KEYS = frozenset({
     "gate_command", "protected_paths", "max_iterations", "confirmations",
     "gate_timeout", "silence_timeout", "wall_clock_cap", "executor_model",
     "review_budget_usd", "verification", "total_budget_usd", "live_board",
-    "board_open", "map_budget", "tuning_seed", "quota_backoff_s",
+    "board_open", "board_port", "map_budget", "tuning_seed", "quota_backoff_s",
     "plan_budget_usd", "plan_model", "plan_effort", "plan_timeout",
     "review_model", "review_effort", "review_model_pool", "review_effort_pool",
     "confirm_model", "confirm_effort", "confirm_model_pool",
@@ -251,6 +253,23 @@ def _print_next(root: str, tasks: list[dict[str, Any]],
     print(f"\nдальше: {nxt[0]}\n        {nxt[1]}")
 
 
+def _tree_sitter_clib() -> bool:
+    """Есть ли на машине C-библиотека tree-sitter (brew/системная).
+
+    Сама по себе она петле бесполезна — нужна, чтобы доктор отличил
+    «не установлен вовсе» от «установлен не тот слой» и назвал точную
+    команду. find_library на macOS не смотрит в /opt/homebrew, поэтому
+    известные префиксы brew проверяются явно.
+    """
+    if ctypes.util.find_library("tree-sitter"):
+        return True
+    if shutil.which("tree-sitter"):
+        return True
+    return any(pathlib.Path(p, "lib", f"libtree-sitter{ext}").exists()
+               for p in ("/opt/homebrew", "/usr/local")
+               for ext in (".dylib", ".so"))
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Половина дефектов программы была в окружении, а не в петле."""
     root = pathlib.Path(args.root)
@@ -303,14 +322,32 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # find_spec сообщает об отсутствии модуля значением None, а не
     # исключением: проверка через try ловила пустоту, и доктор объявлял
     # tree-sitter доступным на любой машине.
-    try:
-        ts_spec = importlib.util.find_spec("tree_sitter")
-    except Exception:  # noqa: BLE001 — доктор обязан досказать список до конца
-        ts_spec = None
-    if ts_spec is not None:
-        checks.append((True, "tree-sitter", "доступен"))
+    #
+    # Петле нужны python-биндинги И обе грамматики (см. tsindex) — а
+    # brew-пакет tree-sitter ставит только C-библиотеку. Доктор, смотревший
+    # на один модуль tree_sitter, говорил «не установлен» человеку, у
+    # которого brew-пакет стоит, — и спор шёл о двух разных вещах.
+    ts_missing = []
+    for ts_mod in ("tree_sitter", "tree_sitter_python", "tree_sitter_rust"):
+        try:
+            ts_spec = importlib.util.find_spec(ts_mod)
+        except Exception:  # noqa: BLE001 — доктор обязан досказать список до конца
+            ts_spec = None
+        if ts_spec is None:
+            ts_missing.append(ts_mod.replace("_", "-"))
+    if not ts_missing:
+        checks.append((True, "tree-sitter", "python-биндинги и грамматики py/rs"))
     else:
-        checks.append((None, "tree-sitter", "не установлен (опционально)"))
+        ts_hint = "pip install " + " ".join(ts_missing)
+        if len(ts_missing) < 3:
+            checks.append((None, "tree-sitter", f"биндинги неполные: {ts_hint}"))
+        elif _tree_sitter_clib():
+            checks.append((None, "tree-sitter",
+                           ("стоит только C-библиотека (brew), петле нужны "
+                            f"python-биндинги: {ts_hint}")))
+        else:
+            checks.append((None, "tree-sitter",
+                           f"не установлен (опционально): {ts_hint}"))
 
     # Память (E9) — опциональна: её отсутствие деградирует поиск уроков,
     # а не петлю. Доктор называет точные команды настройки, но не
@@ -1144,8 +1181,8 @@ def cmd_go(args: argparse.Namespace) -> int:
     if budget:
         print(f"бюджет прогона: ${budget}, потрачено ${st.total_spend()}\n")
 
-    out = _board_open(args.root, cfg)
-    _ui(f"доска: file://{out.resolve()}")
+    out, board_url = _board_open(args.root, cfg)
+    _ui(f"доска: {board_url}" if board_url else f"доска: file://{out.resolve()}")
 
     with state_mod.SwarmState(args.root) as locked:
         agents = _load("agents").Agents(locked, cfg)
@@ -1179,13 +1216,41 @@ def cmd_go(args: argparse.Namespace) -> int:
 
 
 def cmd_board(args: argparse.Namespace) -> int:
-    """Доска прогона: всё происходящее одной страницей, без посредника."""
+    """Доска прогона: всё происходящее одной страницей, без посредника.
+
+    `--serve` — не то же самое, что живая доска во время `run`/`go`: там
+    сервер живёт фоновым потоком внутри процесса петли и не занимает
+    терминал. Здесь человек попросил посмотреть доску живьём САМ по
+    себе — ей естественно занять терминал на переднем плане и явно
+    остановиться по Ctrl+C, а не повиснуть в фоне процессом, о котором
+    забыли.
+    """
     board_mod = _load("board")
     out, board = board_mod.build(args.root, args.out)
     open_q = [q for q in board["questions"] if q["status"] == "open"]
     print(f"доска: {out}")
     print(f"  задач {len(board['tasks'])}, потрачено ${board['total']}, "
           f"ждут вас {len(open_q)}")
+    if args.serve:
+        cfg = _config(args.root)
+        port = args.port if args.port is not None else cfg.get("board_port", 7433)
+        server = _load("boardserve").BoardServer(args.root, port=port)
+        server.start()
+        print(f"живая доска: {server.url}")
+        print("Ctrl+C — остановить")
+        if args.open and sys.platform == "darwin":
+            subprocess.run(["open", server.url], check=False)
+        try:
+            # Полезной работы у главного потока нет — сервер уже крутится
+            # в своём daemon-потоке (serve_forever); здесь только ждём
+            # сигнала на выход.
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nостанавливаю живую доску…")
+        finally:
+            server.stop()
+        return 0
     if args.open:
         subprocess.run(["open", str(out)], check=False)
     return 0
@@ -1258,30 +1323,53 @@ def _preflight(st: Any, force: bool = False) -> bool:
     return True
 
 
-def _board_open(root: str | pathlib.Path, cfg: dict[str, Any]) -> pathlib.Path:
+# Один сервер на процесс, а не на вызов: `_board_open` дёргается один раз
+# за `run`/`go`, но модульная переменная — единственное, что удерживает
+# объект живым (без ссылки поток serve_forever пережил бы сборщик мусора
+# только по счастливой случайности) и даёт тестам за что остановить его
+# явно, не дожидаясь конца процесса.
+_BOARD_SERVER: Any = None
+
+
+def _board_open(root: str | pathlib.Path,
+                cfg: dict[str, Any]) -> tuple[pathlib.Path, str | None]:
     """Доска открывается сама при старте прогона — правило оператора:
     открывать, пока не отключили явно (`board_open = false`).
 
-    Путь возвращается ВСЕГДА, даже когда автооткрытие не сработало и
-    даже на не-macOS: заголовку прогона он нужен независимо от того,
-    состоялось ли открытие окна, а доску тут же перепишет первый вызов
-    `Loop.run()` — путь верен и до первой настоящей сборки.
+    Путь к статическому файлу возвращается ВСЕГДА, даже когда живой
+    сервер не поднялся: заголовку прогона он нужен независимо от того,
+    состоялась ли живая доска, а сам файл тут же перепишет первый вызов
+    `Loop.run()` — путь верен и до первой настоящей сборки. Адрес живой
+    доски — второй элемент пары, `None`, если сервер не запущен или
+    выключен конфигом.
 
-    Сборка и запуск `open` обёрнуты целиком: наблюдение — не работа
-    (правило доски refresh_board), и сбой здесь не имеет права
-    остановить прогон — только диагностика.
+    Живой сервер и статическая сборка обёрнуты в РАЗНЫЕ try/except:
+    провал сервера не должен лишать человека хотя бы файла, и наоборот.
+    Наблюдение — не работа (правило доски refresh_board), и ни один из
+    двух сбоев не имеет права остановить прогон — только диагностика.
     """
+    global _BOARD_SERVER  # noqa: PLW0603 — один сервер на процесс, см. докстринг переменной
     out = pathlib.Path(root) / ".swarm" / "board.html"
-    if (cfg.get("live_board") is False or cfg.get("board_open") is False
-            or sys.platform != "darwin"):
-        return out
+    if cfg.get("live_board") is False or cfg.get("board_open") is False:
+        return out, None
+    url: str | None = None
+    try:
+        if _BOARD_SERVER is None:
+            _BOARD_SERVER = _load("boardserve").BoardServer(
+                root, port=cfg.get("board_port", 7433))
+            _BOARD_SERVER.start()
+        url = _BOARD_SERVER.url
+    except Exception:
+        log.warning("живая доска не поднялась — открою статический файл",
+                    exc_info=True)
     try:
         board_mod = _load("board")
         out, _board = board_mod.build(root)
-        subprocess.run(["open", str(out)], check=False)
+        if sys.platform == "darwin":
+            subprocess.run(["open", url or str(out)], check=False)
     except Exception:
         log.warning("доска не открылась автоматически", exc_info=True)
-    return out
+    return out, url
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -1301,8 +1389,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             ok, _tail = loop_mod.Loop(st, cfg, None).gate(ready[0])
             print(f"  baseline gate: {'зелёный' if ok else 'КРАСНЫЙ'}")
             return 0
-        out = _board_open(args.root, cfg)
-        _ui(f"доска: file://{out.resolve()}")
+        out, board_url = _board_open(args.root, cfg)
+        _ui(f"доска: {board_url}" if board_url else f"доска: file://{out.resolve()}")
         agents = _load("agents").Agents(st, cfg)
         loop = loop_mod.Loop(st, cfg, agents, ui=_ui)
         results = loop.run(limit=args.limit)
@@ -1455,8 +1543,8 @@ EPILOG = """
   doctor                      проверить среду — тридцать секунд здесь
                               экономят час диагностики потом
   go --goal "цель"            от А до Я: рой сам планирует и сам исполняет
-  board --open                смотреть, как идёт (страница живая: петля
-                              переписывает её после каждого раунда)
+                              (живая доска откроется сама, адрес — в шапке;
+                              страница обновляется на месте, без перезагрузок)
   inbox -> answer <id> "…"    разобрать вопросы, которые петля отложила
   go                          продолжить с того же места
 
@@ -1465,6 +1553,16 @@ EPILOG = """
   report --task <id>          хроника задачи связным текстом
   report --json               то же сырьём, без обрезки
   retry <задача> --note "…"   вернуть в очередь с указанием
+  board --serve               живая доска вне прогона (снимок: board)
+
+память между прогонами (E9, инъекция за флагом [experiments]):
+  memory search "…"           уроки прошлых прогонов (FTS + вектор)
+  memory add "…" --anchor п   урок вручную; useful требует живой якорь
+
+тонкая настройка — swarm.toml в корне репозитория: гейт, бюджеты, пулы
+моделей ревьюера, память E9, эксперименты ([experiments] memory|skeleton),
+confirm_lens, board_open/board_port. Опечатку в имени ключа петля назовёт
+при старте; примеры значений — в руководстве оператора (08-док).
 
 коды возврата run/go — машинный контракт для скрипта поверх петли:
   0   очередь отработана: все взятые задачи done
@@ -1489,7 +1587,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("run", help="прогнать очередь")
-    p.add_argument("--limit", type=int)
+    p.add_argument("--limit", type=int,
+                   help="взять из очереди не больше N задач")
     p.add_argument("--dry-run", action="store_true",
                    help="показать план без вызова агентов")
     p.add_argument("--force", action="store_true",
@@ -1497,31 +1596,44 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("resume", help="продолжить после падения")
-    p.add_argument("--limit", type=int)
-    p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--force", action="store_true")
+    p.add_argument("--limit", type=int,
+                   help="взять из очереди не больше N задач")
+    p.add_argument("--dry-run", action="store_true",
+                   help="показать решения реконсиляции, ничего не меняя")
+    p.add_argument("--force", action="store_true",
+                   help="продолжить, несмотря на незавершённый шаг")
     p.set_defaults(func=cmd_resume)
 
     p = sub.add_parser("plan", help="декомпозиция цели в задачи")
-    p.add_argument("--goal", required=True)
-    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--goal", required=True, help="цель прогона одной фразой")
+    p.add_argument("--dry-run", action="store_true",
+                   help="показать план-дифф, не применяя его к очереди")
     p.set_defaults(func=cmd_plan)
 
     p = sub.add_parser("replan", help="пересмотр плана по спору исполнителя")
-    p.add_argument("task")
+    p.add_argument("task", help="id задачи, вокруг которой спор")
     p.add_argument("--dispute", help="файл с dispute исполнителя")
-    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--dry-run", action="store_true",
+                   help="показать план-дифф, не применяя его к очереди")
     p.set_defaults(func=cmd_plan)
 
     p = sub.add_parser("go", help="от А до Я: рой планирует сам и исполняет")
     p.add_argument("--goal", help="цель; без неё берётся существующая очередь")
-    p.add_argument("--limit", type=int)
-    p.add_argument("--force", action="store_true")
+    p.add_argument("--limit", type=int,
+                   help="взять из очереди не больше N задач")
+    p.add_argument("--force", action="store_true",
+                   help="запуститься на грязном дереве (риск потери работы)")
     p.set_defaults(func=cmd_go)
 
     p = sub.add_parser("board", help="доска прогона одной страницей")
     p.add_argument("--out", help="куда писать (по умолчанию .swarm/board.html)")
     p.add_argument("--open", action="store_true", help="открыть в браузере")
+    p.add_argument("--serve", action="store_true",
+                   help="живой сервер доски на переднем плане (Ctrl+C — "
+                        "остановить); с --open открывает адрес, а не файл")
+    p.add_argument("--port", type=int, default=None,
+                   help="порт живого сервера (по умолчанию board_port из "
+                        "swarm.toml или 7433)")
     p.set_defaults(func=cmd_board)
 
     p = sub.add_parser("status", help="состояние очереди")
@@ -1531,14 +1643,20 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("map", help="карта символов репозитория")
-    p.add_argument("--budget", type=int, default=25)
-    p.add_argument("--tree-sitter", action="store_true")
-    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--budget", type=int, default=25,
+                   help="сколько символов включить в карту")
+    p.add_argument("--tree-sitter", action="store_true",
+                   help="добавить слой tree-sitter (Rust и другие языки "
+                        "без точного разрешателя; нужны python-биндинги, "
+                        "см. doctor)")
+    p.add_argument("--verbose", action="store_true",
+                   help="печатать источники слоёв и сырой JSON карты")
     p.set_defaults(func=cmd_map)
 
     p = sub.add_parser("impact", help="кто вызывает символ")
-    p.add_argument("symbol")
-    p.add_argument("--tree-sitter", action="store_true")
+    p.add_argument("symbol", help="имя функции/класса или файл::имя")
+    p.add_argument("--tree-sitter", action="store_true",
+                   help="добавить слой tree-sitter (см. map)")
     p.set_defaults(func=cmd_impact)
 
     p = sub.add_parser("inbox", help="вопросы к человеку")
@@ -1546,8 +1664,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_inbox)
 
     p = sub.add_parser("answer", help="ответить на вопрос петли")
-    p.add_argument("qid")
-    p.add_argument("text")
+    p.add_argument("qid", help="id вопроса из inbox (например q015)")
+    p.add_argument("text",
+                   help="текст решения — попадёт исполнителю в новый раунд")
     p.add_argument("--add-path", action="append", default=[],
                    help="расширить границы задачи (можно повторять)")
     p.add_argument("--force", action="store_true",
@@ -1563,27 +1682,33 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_policy)
 
     p = sub.add_parser("retry", help="вернуть заблокированную задачу в очередь")
-    p.add_argument("task")
+    p.add_argument("task", help="id заблокированной задачи")
     p.add_argument("--note", help="указание исполнителю")
-    p.add_argument("--add-path", action="append", default=[])
+    p.add_argument("--add-path", action="append", default=[],
+                   help="расширить границы задачи (можно повторять)")
     p.set_defaults(func=cmd_retry)
 
     p = sub.add_parser("memory", help="память между прогонами (E9)")
     mem_sub = p.add_subparsers(dest="mem_cmd", required=True)
     mp = mem_sub.add_parser("add", help="записать урок вручную")
-    mp.add_argument("text")
+    mp.add_argument("text", help="текст урока (до 700 символов)")
     mp.add_argument("--outcome", choices=["useful", "dead_end", "corrected"],
-                    default="useful")
+                    default="useful",
+                    help="класс урока: полезный / тупик / исправленное "
+                         "заблуждение (по умолчанию useful)")
     mp.add_argument("--anchor", action="append", default=[],
                     help="якорь: путь, коммит или id задачи (можно повторять)")
     mp = mem_sub.add_parser("search", help="поиск по урокам")
-    mp.add_argument("query")
-    mp.add_argument("-k", type=int, default=5)
-    mp.add_argument("--json", action="store_true")
+    mp.add_argument("query",
+                    help="запрос: FTS первым, вектор сетью охвата")
+    mp.add_argument("-k", type=int, default=5,
+                    help="сколько уроков вернуть")
+    mp.add_argument("--json", action="store_true",
+                    help="сырые записи вместо прозы")
     mp = mem_sub.add_parser("show", help="урок целиком по id")
-    mp.add_argument("id")
+    mp.add_argument("id", help="id урока (печатает search)")
     mp = mem_sub.add_parser("forget", help="затомбстоунить урок")
-    mp.add_argument("id")
+    mp.add_argument("id", help="id урока (печатает search)")
     mem_sub.add_parser("reflect", help="пересобрать дайджест LESSONS.md")
     mem_sub.add_parser("reindex", help="пересобрать PG-индекс из файлов")
     p.set_defaults(func=cmd_memory)
