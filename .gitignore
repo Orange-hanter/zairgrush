@@ -35,3 +35,4 @@ experiments/verify/
 
 # --- Claude Code локальные настройки (не для всех участников) ---
 .claude/settings.local.json
+.claude/worktrees/
