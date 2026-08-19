@@ -2,9 +2,9 @@
 title: "ZeusLogic — Рой агентов: руководство оператора"
 type: guide
 status: draft
-version: 0.8
+version: 0.9
 created: 2026-08-09
-updated: 2026-08-18
+updated: 2026-08-19
 related:
   - 05-agent-swarm.md
   - 07-experiments-journal.md
@@ -250,11 +250,13 @@ swarm --root . board --open    # доска: задачи, фазы, стоим�
 
 Одна страница, на которой видно всё: что сделано и чем закончилось,
 сколько стоила каждая фаза, что вошло в код, где вас ждут (с готовой
-командой ответа) и какие решения вы уже приняли. Держите её открытой в
-соседней вкладке во время прогона: петля переписывает страницу после
-каждого раунда, так что F5 показывает свежее состояние. Внизу страницы —
-время последней сборки; если оно не движется, значит не движется и
-прогон. Отключить перестроение: `live_board = false` в `swarm.toml`.
+командой ответа) и какие решения вы уже приняли. `run`/`go` сами
+открывают её в браузере на старте (отключить: `board_open = false`) и
+печатают её `file://`-путь в шапке прогона; петля переписывает страницу
+после каждого раунда, а страница перезагружается сама каждые 15 секунд —
+F5 не нужен. Внизу — время последней сборки; если оно не движется,
+значит не движется и прогон. Отключить перестроение: `live_board =
+false` в `swarm.toml`.
 
 Остановку прогона доска показывает сразу, без раскопок: блок «События
 прогона» (исчерпанный бюджет, сорванное планирование) и блок «Шаги без
@@ -461,6 +463,15 @@ swarm --root . impact <symbol>      # кто зовёт символ перед 
 §1 — оно не формальность.
 
 ## Журнал изменений
+
+### v0.9 (2026-08-19, in English per the owner's documentation rule)
+
+- Observability: `run`/`go` auto-open the board in the browser on start
+  (disable with `board_open = false`) and always print its `file://`
+  path in the run header; the board page now reloads itself every 15 s
+  preserving scroll — the «press F5» instruction is gone; when the loop
+  files a dispute or an intent question, the run output prints the
+  question text itself plus a `swarm inbox` hint instead of a bare id.
 
 ### v0.8 (2026-08-18)
 
