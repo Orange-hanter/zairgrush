@@ -127,11 +127,42 @@ class EscalationError(Exception):
 
 
 def quota_error(envelope: Any) -> str | None:
+    """Отказ провайдера, который лечится ожиданием, а не ретраем ответа.
+
+    Два класса сигналов. Первый — дружелюбные формулировки квоты
+    (QUOTA_MARKERS). Второй — замеренная на PILOT-1 транзиентная кромка
+    session limit: HTTP 403 «Failed to authenticate» с НУЛЕВОЙ работой
+    (нет ни токенов, ни стоимости — провайдер отверг запрос до начала).
+    Прямой probe минутами позже отвечал OK, а петля тем временем
+    классифицировала оба захода как invalid_verdict и сожгла
+    ~50-минутный раунд исполнителя терминальным блоком.
+
+    Постоянный 403 (отозванный токен) отсюда не отличим — и не нужно:
+    он исчерпает лестницу бэкоффа и поставит на паузу ВЕСЬ прогон с этим
+    же сообщением провайдера. Это правильный исход и для него — в
+    отличие от блокировки невиновной задачи с ложным диагнозом.
+
+    403 С выполненной работой (токены потрачены) — не квота: провайдер
+    что-то делал, и отказ надо разбирать, а не пережидать.
+    """
     if not isinstance(envelope, dict) or not envelope.get("is_error"):
         return None
     text = str(envelope.get("result") or "").lower()
-    return str(envelope.get("result"))[:200] if any(
-        m in text for m in QUOTA_MARKERS) else None
+    if any(m in text for m in QUOTA_MARKERS):
+        return str(envelope.get("result"))[:200]
+    usage = envelope.get("usage") or {}
+    # «Нулевая работа» — ни одного токена ЛЮБОГО вида, включая кэш:
+    # отказ, пришедший после чтения кэша, — работа провайдера, и его
+    # разбирают, а не пережидают. Ужесточение безопасно в одну сторону:
+    # сомнительный конверт остаётся настоящим отказом, как до фикса.
+    no_work = not (envelope.get("total_cost_usd")
+                   or usage.get("input_tokens") or usage.get("output_tokens")
+                   or usage.get("cache_read_input_tokens")
+                   or usage.get("cache_creation_input_tokens"))
+    if envelope.get("api_error_status") == 403 and no_work:
+        return str(envelope.get("result")
+                   or "HTTP 403 без выполненной работы")[:200]
+    return None
 
 
 def validate_verdict(v: Any) -> bool:

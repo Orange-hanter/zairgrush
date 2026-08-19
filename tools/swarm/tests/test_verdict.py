@@ -143,6 +143,54 @@ class TestQuotaDetection(unittest.TestCase):
         for bad in (None, [], "session limit"):
             self.assertIsNone(lp.quota_error(bad))
 
+    # Транзиентная кромка session limit (PILOT-1, s2ky-i2-a2): 403 без
+    # дружелюбной формулировки, но и без единого потраченного токена.
+    FIXTURE_403 = {
+        "is_error": True, "terminal_reason": "api_error",
+        "api_error_status": 403, "subtype": "success",
+        "result": "Failed to authenticate. API Error: 403 Request not allowed",
+        "total_cost_usd": 0, "num_turns": 1,
+        "usage": {"input_tokens": 0, "output_tokens": 0,
+                  "cache_read_input_tokens": 0},
+    }
+
+    def test_zero_work_403_is_quota(self):
+        msg = lp.quota_error(dict(self.FIXTURE_403))
+        self.assertIsNotNone(msg)
+        self.assertIn("403", str(msg))
+
+    def test_zero_work_403_without_result_text_still_quota(self):
+        env = dict(self.FIXTURE_403, result=None)
+        self.assertIsNotNone(lp.quota_error(env))
+
+    def test_403_with_spent_tokens_is_not_quota(self):
+        """Контроль честности: провайдер работал — отказ разбирается,
+        а не пережидается."""
+        env = dict(self.FIXTURE_403,
+                   usage={"input_tokens": 84, "output_tokens": 512})
+        self.assertIsNone(lp.quota_error(env))
+
+    def test_403_with_cost_is_not_quota(self):
+        env = dict(self.FIXTURE_403, total_cost_usd=1.22)
+        self.assertIsNone(lp.quota_error(env))
+
+    def test_403_after_cache_read_is_not_quota(self):
+        """Чтение кэша — тоже работа, даже если стоимость округлилась
+        в ноль: такой отказ разбирается, а не пережидается."""
+        env = dict(self.FIXTURE_403,
+                   usage={"input_tokens": 0, "output_tokens": 0,
+                          "cache_read_input_tokens": 127094})
+        self.assertIsNone(lp.quota_error(env))
+
+    def test_other_status_zero_work_is_not_quota(self):
+        """Один замер — один класс: не расползаемся на все статусы."""
+        env = dict(self.FIXTURE_403, api_error_status=500)
+        self.assertIsNone(lp.quota_error(env))
+
+    def test_403_without_is_error_is_not_quota(self):
+        env = dict(self.FIXTURE_403, is_error=False)
+        self.assertIsNone(lp.quota_error(env))
+
 
 class _LoopHarness:
     """Общий стенд на mock-агентах: FakeState/FakeAgents и `_loop`.

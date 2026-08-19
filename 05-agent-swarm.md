@@ -2,7 +2,7 @@
 title: "ZeusLogic — Рой агентов: петля «исполнитель ↔ ревьюер»"
 type: design
 status: draft
-version: 0.44
+version: 0.45
 created: 2026-07-30
 updated: 2026-08-19
 related:
@@ -594,7 +594,19 @@ Heartbeat на двух сигналах: (а) процесс жив, (б) из 
   ошибки (session/rate/usage limit, quota, 429) и отдельная ветка паузы.
   Тот же дефект успел повториться уровнем выше: `QuotaExceededError`
   долетал до общего `except Exception` цикла, и квота снова превращалась
-  в «аварию» с blocked — ветка паузы существовала, но была недостижима;
+  в «аварию» с blocked — ветка паузы существовала, но была недостижима.
+  Third recurrence of the same defect class, measured on PILOT-1
+  (s2ky-i2-a2): the transient session-limit edge presents as HTTP 403
+  «Failed to authenticate» with ZERO work done (no tokens, no cost) —
+  no friendly wording for the text detector, so two review attempts
+  were classified `invalid_verdict` and a ~50-minute executor round
+  burned on a terminal block, while a direct probe minutes later
+  returned OK. Detector rule now: a zero-work 403 joins the same
+  backoff ladder; a 403 with tokens actually spent is NOT quota (the
+  provider did work — that refusal must be investigated, not waited
+  out). A permanent 403 (revoked token) is indistinguishable and needs
+  no distinguishing: it exhausts the ladder and pauses the whole run
+  with the provider's message — the right outcome for that case too;
 - **таймаут тишины** 600 с на вызов агента → процедура рестарта (§5.2).
 
 ### 5.4. Коммиты, алиасы, push
@@ -1833,6 +1845,15 @@ verdict = retry (§4.2).
 ---
 
 ## Журнал изменений
+
+### v0.45 (2026-08-19)
+
+- §5.3: the quota detector also recognizes the measured transient
+  session-limit edge — HTTP 403 with zero work done (no tokens, no
+  cost) joins the backoff ladder instead of being misread as
+  `invalid_verdict`; a 403 with spent tokens stays a real failure.
+  Closes the PILOT-1 incident that burned a ~50-minute executor round
+  on a terminal block for a provider-side transient.
 
 ### v0.44 (2026-08-19)
 
