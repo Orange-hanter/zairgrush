@@ -40,6 +40,23 @@ import obs  # noqa: E402 — каталог добавлен строкой вы
 LEGAL_STATUS = {"pending", "in_progress", "in_review", "done", "blocked"}
 TERMINAL = {"done", "blocked"}
 
+# Файлы, принадлежащие ПЕТЛЕ и оператору, а не задаче: конфиг прогона и
+# состояние роя. Ни одно git-представление работы агента их не касается:
+# страж границ не судит, revert/commit/stash не трогают, ревьюер не
+# видит. Урок PILOT-1 (2026-08-19): незакоммиченный swarm.toml уехал в
+# стеш терминального исхода, перезапуск застал чистое дерево, а
+# восстановленный из стеша конфиг был прочитан как работа агента — и
+# исполнитель послушно откатил два решения владельца. Журнал при этом
+# сказал только scope_violation, ни слова «решение потеряно».
+OWNED_ROOTS = ("swarm.toml", ".swarm")
+# То же множество языком git pathspec — для diff.
+OWNED_EXCLUDE_PATHSPECS = tuple(f":(exclude){p}" for p in OWNED_ROOTS)
+
+
+def owned_by_loop(path: str) -> bool:
+    """Файл принадлежит оркестратору, а не задаче."""
+    return any(path == r or path.startswith(r + "/") for r in OWNED_ROOTS)
+
 
 class StateError(Exception):
     """Состояние на диске противоречиво — петля обязана остановиться."""
@@ -306,9 +323,13 @@ class SwarmState:
         `git add -N` (intent-to-add) регистрирует новые файлы в индексе, не
         добавляя их содержимое, — после этого обычный `git diff` показывает
         их как добавления. Историю это не меняет.
+
+        Файлы оркестратора (ORCHESTRATOR_OWNED) в дифф не входят: правка
+        конфига петли — не работа агента, и ревьюер не должен ни судить
+        её, ни тратить на неё бюджет.
         """
         self.git("add", "-A", "-N")
-        return self.git("diff").stdout
+        return self.git("diff", "--", ".", *OWNED_EXCLUDE_PATHSPECS).stdout
 
     def total_spend(self) -> float:
         """Сколько уже стоил прогон. Считается по факту из метрик.

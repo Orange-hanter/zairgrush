@@ -2,7 +2,7 @@
 title: "ZeusLogic — Рой агентов: руководство оператора"
 type: guide
 status: draft
-version: 0.10
+version: 0.11
 created: 2026-08-09
 updated: 2026-08-19
 related:
@@ -41,7 +41,17 @@ cd ~/work/zeus-swarm
 Реализованы preflight (отказ на грязном дереве) и точечный откат, который
 не трогает то, что лежало в дереве до старта задачи, — но изоляция
 процесса не сделана: агент технически может прочитать `.env` или
-выполнить команду вне рабочего дерева. В отдельном клоне терять нечего, а
+выполнить команду вне рабочего дерева.
+
+One class of files is safe by construction: `swarm.toml` and `.swarm/`
+belong to the loop, not to tasks. The scope guard never judges them, the
+loop never reverts, stashes, or commits them, and the reviewer does not
+see their diff — so an operator edit to the run config made mid-run
+stays in the tree untouched (it still takes effect only on the next
+process start, and preflight will name it as dirt). Any other
+uncommitted operator file is likewise spared for the whole run: the loop
+snapshots the dirty list at start (`run_dirt` in the journal) and never
+attributes those files to the executor. В отдельном клоне терять нечего, а
 в основном дереве — есть что.
 
 ### Проверка окружения
@@ -483,6 +493,14 @@ swarm --root . impact <symbol>      # кто зовёт символ перед 
 §1 — оно не формальность.
 
 ## Журнал изменений
+
+### v0.11 (2026-08-19)
+
+- Safety note in «Отдельный клон»: `swarm.toml` and `.swarm/` are
+  loop-owned and untouchable by tasks (never judged, reverted, stashed,
+  or committed); all other operator dirt is spared for the whole run via
+  the `run_dirt` snapshot. Mirrors design doc §5.5.3 after the PILOT-1
+  scope-guard incident.
 
 ### v0.10 (2026-08-19)
 

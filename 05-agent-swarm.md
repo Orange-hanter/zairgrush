@@ -2,7 +2,7 @@
 title: "ZeusLogic — Рой агентов: петля «исполнитель ↔ ревьюер»"
 type: design
 status: draft
-version: 0.43
+version: 0.44
 created: 2026-07-30
 updated: 2026-08-19
 related:
@@ -831,6 +831,44 @@ handoff следующей итерации как решение, обязат�
 проверяться: запись задачи, ссылающаяся на несуществующий stash, отправляет
 оператора искать работу там, где её нет. Не создался — в журнал пишется
 `stash_failed`, а задача остаётся без метки, честно.
+
+### 5.5.3. Orchestrator-owned files: loop config and state are not task material
+
+The stand carries files that belong to the LOOP and its operator, not to
+any task: `swarm.toml` (the orchestrator↔operator contract) and
+`.swarm/` (run state). No git view of the agent's work may touch them:
+
+- the scope guard (§5.5) never judges them — under no circumstances are
+  they reported as `unexpected`, so the executor is never instructed to
+  "clean them up";
+- `revert` spares them, like pre-existing dirt;
+- the task commit stages via add-then-unstage (`git add -A`, then
+  `git reset -- <owned>`): an explicit `:(exclude)` pathspec over the
+  ignored `.swarm/` makes `git add` fail with "Use -f" (measured on git
+  2.50);
+- the terminal-outcome stash (§5.5.1) names the stashable files
+  explicitly instead of stashing everything: operator config edits stay
+  in the tree, visible, and preflight names them on the next run;
+- the reviewer's diff excludes them — judging loop-config edits is not
+  what the review budget is for.
+
+The second half of the defence is a run-level dirt snapshot: `run()`
+captures the dirty-file set once per process (journal event `run_dirt`,
+same list preflight prints) and subtracts it from scope and revert
+judgements alongside per-task `_pre_existing`. The per-task set alone is
+not enough: it is rebuilt by every `run_task` and zeroed by a process
+restart, and a stash/restore cycle can present the guard with a clean
+tree in between.
+
+Chronicle (PILOT-1, 2026-08-19): an uncommitted `swarm.toml` carrying
+two owner decisions (a budget raise and the review-arm redesign) rode
+into a terminal-outcome stash; the relaunch found a clean tree, so
+`_pre_existing` came up empty; when the executor restored the stash, the
+returning config read as agent work — `scope_violation
+unexpected=[swarm.toml]` — and the executor obediently reverted it to
+HEAD. The journal never said "an owner decision was destroyed"; only a
+scope violation blaming the wrong party. Both halves of this rule exist
+so that neither misattribution nor destruction can recur.
 
 ### 5.6. Идемпотентность: step-journal
 
@@ -1795,6 +1833,16 @@ verdict = retry (§4.2).
 ---
 
 ## Журнал изменений
+
+### v0.44 (2026-08-19)
+
+- §5.5.3 (new): orchestrator-owned files. `swarm.toml` and `.swarm/` are
+  excluded from every git view of the agent's work — scope guard, revert,
+  task commit, terminal-outcome stash, and the reviewer's diff. Plus a
+  run-level operator-dirt snapshot (`run_dirt` journal event) that
+  survives process restarts and stash/restore cycles, closing the PILOT-1
+  incident where the guard misread restored operator config as agent work
+  and the executor reverted two owner decisions.
 
 ### v0.43 (2026-08-19)
 
