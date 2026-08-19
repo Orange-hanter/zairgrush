@@ -144,8 +144,13 @@ class TestQuotaDetection(unittest.TestCase):
             self.assertIsNone(lp.quota_error(bad))
 
 
-class TestLoopBranches(unittest.TestCase):
-    """Аварийные ветки конечного автомата на mock-агентах."""
+class _LoopHarness:
+    """Общий стенд на mock-агентах: FakeState/FakeAgents и `_loop`.
+
+    Не наследует unittest.TestCase намеренно — иначе второй класс на том
+    же стенде (TestQuestionIsVisibleInOutput) унаследовал бы и все test_*
+    отсюда, и каждый прогонялся бы дважды под разными именами.
+    """
 
     def setUp(self):
         self.events = []
@@ -210,7 +215,15 @@ class TestLoopBranches(unittest.TestCase):
                 return "msg"
 
         agents = FakeAgents()
-        loop = lp.Loop(self.FakeState(), {}, agents)
+        # Захват self.ui(...) отдельным списком: ветки петли печатают ход
+        # прогона человеку, а не только меняют состояние, и это тоже
+        # часть контракта — без записи текстов проверить нечем.
+        self.ui_messages: list[str] = []
+
+        def capture(*args: object) -> None:
+            self.ui_messages.append(" ".join(str(a) for a in args))
+
+        loop = lp.Loop(self.FakeState(), {}, agents, ui=capture)
         gates = list(gate or [])
 
         def fake_gate(task):
@@ -225,6 +238,10 @@ class TestLoopBranches(unittest.TestCase):
         return loop, agents
 
     TASK = {"id": "t1", "title": "t", "paths": ["a.py"], "type": "feature"}
+
+
+class TestLoopBranches(_LoopHarness, unittest.TestCase):
+    """Аварийные ветки конечного автомата на mock-агентах."""
 
     def test_red_baseline_skips_agents(self):
         loop, agents = self._loop(gate=[(False, "FAILED")])
@@ -293,6 +310,55 @@ class TestLoopBranches(unittest.TestCase):
         loop, _ = self._loop(review=[verdict("blocked", [finding("blocker")])])
         self.assertEqual(loop.run_task(dict(self.TASK)), "blocked")
         self.assertIn(("ask", "escalate_max", None), self.events)
+
+
+class TestQuestionIsVisibleInOutput(_LoopHarness, unittest.TestCase):
+    """«спор исполнителя [q011]» называет id, а не то, о чём спор: чтобы
+    узнать содержание, оператор был вынужден открывать `.swarm/log`
+    посреди прогона. Ветки, где петля заводит вопрос человеку, обязаны
+    печатать сам текст, а не только его номер.
+    """
+
+    def test_dispute_prints_question_snippet_and_inbox_hint(self):
+        loop, _ = self._loop(implement=[
+            {"status": "dispute",
+             "summary": "задача противоречит контракту скелета"}])
+        self.assertEqual(loop.run_task(dict(self.TASK)), "blocked")
+        joined = "\n".join(self.ui_messages)
+        self.assertIn("задача противоречит контракту скелета", joined)
+        self.assertIn("swarm inbox", joined)
+
+    def test_ask_user_prints_question_snippet_and_inbox_hint(self):
+        loop, _ = self._loop(review=[verdict(
+            "request_changes", [finding(category="architecture")])])
+        self.assertEqual(loop.run_task(dict(self.TASK)), "ask_user")
+        joined = "\n".join(self.ui_messages)
+        self.assertIn("описание проблемы", joined,
+                      "issue находки — сама формулировка вопроса")
+        self.assertIn("swarm inbox", joined)
+
+    def test_snippet_is_truncated_not_dumped_whole(self):
+        """~160 символов — черновой предел строки в терминале, а не
+        точное число: тест проверяет усечение, а не конкретную длину."""
+        long_text = "деталь. " * 60
+        loop, _ = self._loop(
+            implement=[{"status": "dispute", "summary": long_text}])
+        loop.run_task(dict(self.TASK))
+        snippet_lines = [m for m in self.ui_messages if "деталь." in m]
+        self.assertTrue(snippet_lines)
+        self.assertLess(len(snippet_lines[0]), len(long_text))
+
+    def test_diagnosis_carrying_branches_are_left_alone(self):
+        """escalate_max уже печатает диагноз — второй виток той же
+        информации не добавляется этой веткой изменений."""
+        loop, _ = self._loop(review=[
+            verdict("request_changes", [finding()]),
+            verdict("request_changes", [finding()]),
+            verdict("request_changes", [finding()])])
+        self.assertEqual(loop.run_task(dict(self.TASK)), "blocked")
+        joined = "\n".join(self.ui_messages)
+        self.assertNotIn("swarm inbox", joined,
+                         "у эскалации свой диагноз, не вопрос-заглушка")
 
 
 if __name__ == "__main__":

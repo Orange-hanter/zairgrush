@@ -865,7 +865,14 @@ class Loop:
                     self.state.set_status(tid, "blocked", reason="dispute",
                                           stash=stash, iterations=iteration,
                                           question_id=qid)
+                    # id вопроса сам по себе ничего не говорит о задаче:
+                    # оператор видел «спор исполнителя [q011]» в выводе и
+                    # шёл читать сырой JSON, чтобы понять, о чём вообще
+                    # спор. Полный текст — в state.ask, здесь только то,
+                    # что должно быть видно не открывая инбокс отдельно.
                     self.ui(f"    спор исполнителя [{qid}]")
+                    self.ui(f"        {question[:160]}")
+                    self.ui("        детали и ответ: swarm inbox")
                     return "blocked"
 
             ok, tail = self.gate(task)
@@ -1075,8 +1082,13 @@ class Loop:
                 self.state.set_status(tid, "blocked", reason="ask_user",
                                       stash=stash, iterations=iteration,
                                       exit_code=code, question_id=qid)
+                # Та же причина, что у спора исполнителя выше: счётчик
+                # находок в одной строке не заменяет саму формулировку,
+                # ради которой петля позвала человека.
                 self.ui(f"    вопрос человеку [{qid}]: {len(intent)} находок "
                         f"о замысле (механических: {len(mechanical)})")
+                self.ui(f"        {question[:160]}")
+                self.ui("        детали и ответ: swarm inbox")
                 return "ask_user"
 
             if outcome in (ESCALATE_MAX, ESCALATE_NONCONV):

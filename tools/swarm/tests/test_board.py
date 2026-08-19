@@ -272,6 +272,36 @@ class TestRenderSafety(unittest.TestCase):
         self.assertIn('id="data"', page)
 
 
+class TestPageReloadsItself(unittest.TestCase):
+    """Доска обещала «обновляется по F5» — забытое нажатие оставляло
+    человека перед снимком часовой давности без единого признака, что он
+    устарел. Страница обязана перечитывать себя сама, без плагинов и
+    внешних скриптов (CSP та же, что у остальной страницы — inline-JS).
+    """
+
+    def render_empty(self):
+        board = {"goal": "цель", "tasks": [], "questions": [],
+                 "events": [], "run_level": [], "unfinished": [],
+                 "spend": {}, "total": 0, "root": "/r", "swarm_dir": "/r/.swarm",
+                 "built": "2026-08-19 00:00:00"}
+        return bd.render(board)
+
+    def test_reload_timer_is_fifteen_seconds(self):
+        page = self.render_empty()
+        self.assertIn("location.reload()", page)
+        self.assertIn("15000", page)
+
+    def test_scroll_position_survives_the_reload(self):
+        page = self.render_empty()
+        self.assertIn("sessionStorage", page)
+        self.assertIn("scrollY", page)
+        self.assertIn("scrollTo", page)
+
+    def test_footer_names_the_auto_reload(self):
+        page = self.render_empty()
+        self.assertIn("перезагружается сама каждые 15 с", page)
+
+
 class TestBuild(unittest.TestCase):
     def test_writes_board_html_next_to_state(self):
         with tempfile.TemporaryDirectory() as tmp:

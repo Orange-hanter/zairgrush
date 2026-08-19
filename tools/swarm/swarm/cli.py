@@ -53,6 +53,7 @@ def _load(name: str) -> ModuleType:
 
 state_mod = _load("state")
 loop_mod = _load("loop")
+log = _load("obs").get_logger("cli")
 
 
 # Все ключи, которые петля где-либо читает. Список закрытый намеренно:
@@ -62,7 +63,7 @@ KNOWN_CONFIG_KEYS = frozenset({
     "gate_command", "protected_paths", "max_iterations", "confirmations",
     "gate_timeout", "silence_timeout", "wall_clock_cap", "executor_model",
     "review_budget_usd", "verification", "total_budget_usd", "live_board",
-    "map_budget", "tuning_seed", "quota_backoff_s",
+    "board_open", "map_budget", "tuning_seed", "quota_backoff_s",
     "plan_budget_usd", "plan_model", "plan_effort", "plan_timeout",
     "review_model", "review_effort", "review_model_pool", "review_effort_pool",
     "confirm_model", "confirm_effort", "confirm_model_pool",
@@ -1143,6 +1144,9 @@ def cmd_go(args: argparse.Namespace) -> int:
     if budget:
         print(f"бюджет прогона: ${budget}, потрачено ${st.total_spend()}\n")
 
+    out = _board_open(args.root, cfg)
+    _ui(f"доска: file://{out.resolve()}")
+
     with state_mod.SwarmState(args.root) as locked:
         agents = _load("agents").Agents(locked, cfg)
         loop = loop_mod.Loop(locked, cfg, agents, ui=_ui)
@@ -1254,6 +1258,32 @@ def _preflight(st: Any, force: bool = False) -> bool:
     return True
 
 
+def _board_open(root: str | pathlib.Path, cfg: dict[str, Any]) -> pathlib.Path:
+    """Доска открывается сама при старте прогона — правило оператора:
+    открывать, пока не отключили явно (`board_open = false`).
+
+    Путь возвращается ВСЕГДА, даже когда автооткрытие не сработало и
+    даже на не-macOS: заголовку прогона он нужен независимо от того,
+    состоялось ли открытие окна, а доску тут же перепишет первый вызов
+    `Loop.run()` — путь верен и до первой настоящей сборки.
+
+    Сборка и запуск `open` обёрнуты целиком: наблюдение — не работа
+    (правило доски refresh_board), и сбой здесь не имеет права
+    остановить прогон — только диагностика.
+    """
+    out = pathlib.Path(root) / ".swarm" / "board.html"
+    if (cfg.get("live_board") is False or cfg.get("board_open") is False
+            or sys.platform != "darwin"):
+        return out
+    try:
+        board_mod = _load("board")
+        out, _board = board_mod.build(root)
+        subprocess.run(["open", str(out)], check=False)
+    except Exception:
+        log.warning("доска не открылась автоматически", exc_info=True)
+    return out
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = _config(args.root)
     with state_mod.SwarmState(args.root) as st:
@@ -1271,6 +1301,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             ok, _tail = loop_mod.Loop(st, cfg, None).gate(ready[0])
             print(f"  baseline gate: {'зелёный' if ok else 'КРАСНЫЙ'}")
             return 0
+        out = _board_open(args.root, cfg)
+        _ui(f"доска: file://{out.resolve()}")
         agents = _load("agents").Agents(st, cfg)
         loop = loop_mod.Loop(st, cfg, agents, ui=_ui)
         results = loop.run(limit=args.limit)

@@ -56,6 +56,13 @@ class CliCase(unittest.TestCase):
                         "commit", "-qm", "init"], cwd=self.root, check=True)
         self.state = cli.state_mod.SwarmState(self.root)
         self.state.save_tasks(json.loads(json.dumps(TASKS)))
+        # Автооткрытие доски (feature 2) реально дёргает macOS `open` —
+        # на машине разработчика это буквально распахнуло бы окно на
+        # каждый вызов run/go в этом файле. Тесты про само поведение
+        # (TestBoardAutoOpen) возвращают настоящий помощник явно.
+        self._real_board_open = cli._board_open
+        cli._board_open = lambda root, cfg: pathlib.Path(root) / ".swarm" / "board.html"
+        self.addCleanup(setattr, cli, "_board_open", self._real_board_open)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -651,6 +658,90 @@ class TestGoGoalGuard(CliCase):
                             "--goal", "тестовая цель")
         self.assertEqual(code, 0, out)
         self.assertIn("планирование пропущено", out)
+
+
+class TestBoardAutoOpen(CliCase):
+    """Доска открывается сама при старте прогона — оператор во время
+    живого прогона не понимал, как за ним следить, пока не открывал
+    доску руками. Правило: открывать, пока не отключили явно.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Базовый CliCase глушит автооткрытие для всех прочих тестов —
+        # здесь проверяется само поведение, поэтому возвращаем помощника.
+        cli._board_open = self._real_board_open
+        self._orig_platform = cli.sys.platform
+        self.addCleanup(setattr, cli.sys, "platform", self._orig_platform)
+
+    def _capture_open_calls(self):
+        calls = []
+        orig_run = subprocess.run
+
+        def fake_run(argv, **kw):
+            if argv and argv[0] == "open":
+                calls.append(argv)
+                return type("R", (), {"returncode": 0})()
+            return orig_run(argv, **kw)
+
+        subprocess.run = fake_run
+        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        return calls
+
+    def test_disabled_by_config_skips_open(self):
+        (self.root / "swarm.toml").write_text("board_open = false\n")
+        cli.sys.platform = "darwin"
+        calls = self._capture_open_calls()
+        self.fake_loop({"aaaa": "done", "bbbb": "done"})
+        run_cli("--root", str(self.root), "run")
+        self.assertEqual(calls, [])
+
+    def test_default_opens_on_darwin(self):
+        cli.sys.platform = "darwin"
+        calls = self._capture_open_calls()
+        self.fake_loop({"aaaa": "done", "bbbb": "done"})
+        run_cli("--root", str(self.root), "run")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "open")
+
+    def test_dry_run_never_opens(self):
+        cli.sys.platform = "darwin"
+        calls = self._capture_open_calls()
+        run_cli("--root", str(self.root), "run", "--dry-run")
+        self.assertEqual(calls, [])
+
+    def test_not_darwin_prints_header_but_does_not_open(self):
+        cli.sys.platform = "linux"
+        calls = self._capture_open_calls()
+        self.fake_loop({"aaaa": "done", "bbbb": "done"})
+        _code, out = run_cli("--root", str(self.root), "run")
+        self.assertEqual(calls, [])
+        self.assertIn(f"доска: file://{self.root.resolve()}/.swarm/board.html",
+                      out)
+
+    def test_go_prints_the_board_header_line(self):
+        cli.sys.platform = "linux"
+        self.fake_loop({"aaaa": "done", "bbbb": "done"})
+        _code, out = run_cli("--root", str(self.root), "go")
+        self.assertIn(f"доска: file://{self.root.resolve()}/.swarm/board.html",
+                      out)
+
+    def test_failed_open_only_warns_and_does_not_stop_the_run(self):
+        """Наблюдение — не работа (правило доски): любой сбой автооткрытия
+        обязан остаться диагностикой, а не остановить прогон."""
+        cli.sys.platform = "darwin"
+        orig_run = subprocess.run
+
+        def boom(argv, **kw):
+            if argv and argv[0] == "open":
+                raise OSError("open недоступен в этой песочнице")
+            return orig_run(argv, **kw)
+
+        subprocess.run = boom
+        self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
+        self.fake_loop({"aaaa": "done", "bbbb": "done"})
+        code, _out = run_cli("--root", str(self.root), "run")
+        self.assertEqual(code, 0)
 
 
 class TestNextStepAfterCrash(CliCase):
