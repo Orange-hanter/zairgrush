@@ -403,5 +403,130 @@ class TestIntegrityCheck(GitCase):
                          "оркестратор обвинил агента в собственном коммите")
 
 
+class OwnedCase(GitCase):
+    """Фикстура с ОТСЛЕЖИВАЕМЫМ swarm.toml — как на реальном стенде."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / "swarm.toml").write_text("total_budget_usd = 80.0\n")
+        git(self.root, "add", "swarm.toml")
+        git(self.root, "commit", "-qm", "config")
+
+    def dirty_config(self):
+        (self.root / "swarm.toml").write_text("total_budget_usd = 95.0\n")
+
+
+class TestOrchestratorOwnedFiles(OwnedCase):
+    """Конфиг и состояние петли — не материал задачи (PILOT-1 scope-guard).
+
+    Хроника дефекта: незакоммиченный swarm.toml уехал в стеш терминального
+    исхода, перезапуск застал чистое дерево (_pre_existing пуст), а
+    вернувшийся из стеша конфиг страж прочитал как работу агента — и
+    исполнитель откатил решения владельца (бюджет и выбор плеч ревью).
+    """
+
+    def test_scope_check_never_judges_loop_config(self):
+        # _pre_existing намеренно пуст — воспроизводит перезапуск процесса
+        self.dirty_config()
+        self.create("src/new_module.py")
+        ok, bad, _ = self.loop.scope_check(dict(self.TASK))
+        self.assertTrue(ok, f"конфиг петли прочитан как нарушение: {bad}")
+
+    def test_owned_dirt_does_not_shield_real_violation(self):
+        """Контроль честности: чужой файл рядом ловится по-прежнему."""
+        self.dirty_config()
+        self.create("src/sneaky.py")
+        ok, bad, _ = self.loop.scope_check(dict(self.TASK))
+        self.assertFalse(ok)
+        self.assertEqual(bad, ["src/sneaky.py"])
+
+    def test_revert_spares_loop_config(self):
+        self.dirty_config()
+        self.create("src/new_module.py")
+        reverted = self.loop.revert()
+        self.assertIn("src/new_module.py", reverted)
+        self.assertNotIn("swarm.toml", reverted)
+        self.assertIn("95.0", (self.root / "swarm.toml").read_text())
+
+    def test_commit_excludes_loop_config(self):
+        self.dirty_config()
+        self.create("src/new_module.py")
+        loop = lp.Loop(self.state, {}, type("A", (), {
+            "commit_message": staticmethod(lambda task, diff: "msg")})())
+        sha = loop.commit(dict(self.TASK))
+        self.assertIsNotNone(sha)
+        committed = git(self.root, "show", "--stat", "HEAD").stdout
+        self.assertIn("new_module.py", committed)
+        self.assertNotIn("swarm.toml", committed)
+        # правка оператора осталась в дереве, грязной и на виду
+        self.assertIn("95.0", (self.root / "swarm.toml").read_text())
+        self.assertIn("swarm.toml", git(self.root, "status",
+                                        "--porcelain").stdout)
+
+    def test_stash_excludes_loop_config(self):
+        self.dirty_config()
+        self.create("src/new_module.py")
+        label = self.loop.cleanup(dict(self.TASK), "quota-pause")
+        self.assertIsNotNone(label)
+        # работа агента унесена в стеш, конфиг оператора остался в дереве
+        self.assertFalse((self.root / "src" / "new_module.py").exists())
+        self.assertIn("95.0", (self.root / "swarm.toml").read_text())
+
+    def test_stash_with_only_config_dirt_is_a_noop(self):
+        """Раньше стеш «нечего уносить» падал и сорил stash_failed."""
+        self.dirty_config()
+        self.assertIsNone(self.loop.cleanup(dict(self.TASK), "quota-pause"))
+        self.assertIn("95.0", (self.root / "swarm.toml").read_text())
+
+    def test_reviewer_diff_excludes_loop_config(self):
+        self.dirty_config()
+        self.create("src/new_module.py")
+        diff = self.state.work_diff()
+        self.assertIn("new_module", diff)
+        self.assertNotIn("swarm.toml", diff)
+
+    def test_owned_covers_state_dir_and_only_root_config(self):
+        self.assertTrue(st.owned_by_loop("swarm.toml"))
+        self.assertTrue(st.owned_by_loop(".swarm/tasks.json"))
+        self.assertTrue(st.owned_by_loop(".swarm/log/run.jsonl"))
+        # чужие файлы с похожими именами — обычный материал задачи
+        self.assertFalse(st.owned_by_loop("subdir/swarm.toml"))
+        self.assertFalse(st.owned_by_loop("src/swarm.toml.example"))
+        self.assertFalse(st.owned_by_loop(".swarmy/x"))
+
+
+class TestRunLevelDirt(GitCase):
+    """Операторская грязь фиксируется на уровне прогона (PILOT-1).
+
+    _pre_existing пересобирается каждым run_task и обнуляется перезапуском
+    процесса; цикл stash/restore успевает показать стражу чистое дерево.
+    Снимок _run_dirt переживает всё это.
+    """
+
+    def test_run_dirt_spares_operator_file_after_reset(self):
+        self.create("notes.md", "черновик оператора\n")
+        self.loop._run_dirt = {"notes.md"}
+        self.loop._pre_existing = set()   # перезапуск / stash-restore
+        self.create("src/new_module.py")
+        ok, bad, _ = self.loop.scope_check(dict(self.TASK))
+        self.assertTrue(ok, f"грязь прогона прочитана как нарушение: {bad}")
+
+    def test_run_dirt_spared_by_revert(self):
+        self.create("notes.md", "черновик оператора\n")
+        self.loop._run_dirt = {"notes.md"}
+        self.loop._pre_existing = set()
+        self.create("src/new_module.py")
+        reverted = self.loop.revert()
+        self.assertNotIn("notes.md", reverted)
+        self.assertTrue((self.root / "notes.md").exists())
+
+    def test_run_captures_dirt_snapshot_and_logs_it(self):
+        self.create("notes.md", "черновик оператора\n")
+        self.loop.run()   # очередь пуста — run() только делает снимок
+        self.assertIn("notes.md", self.loop._run_dirt)
+        journal = (self.root / ".swarm" / "log" / "run.jsonl").read_text()
+        self.assertIn('"run_dirt"', journal)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

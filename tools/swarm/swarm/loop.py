@@ -31,6 +31,7 @@ import board  # noqa: E402 — каталог добавлен строкой в
 import memory as memory_mod  # noqa: E402
 import obs  # noqa: E402
 import pyindex  # noqa: E402
+import state as state_mod  # noqa: E402
 
 log = obs.get_logger("loop")
 
@@ -264,6 +265,7 @@ class Loop:
         self.agents = agents          # объект с .implement() и .review()
         self.ui = ui or (lambda *_a, **_k: None)
         self._pre_existing: set[str] = set()   # дерево до старта задачи
+        self._run_dirt: set[str] = set()       # дерево до старта ПРОГОНА
         self._head_before: str | None = None   # история до старта задачи
         self._state_before: str | None = None  # состояние петли до старта
         self.live_board = bool(config.get("live_board", True))
@@ -466,7 +468,14 @@ class Loop:
         unlocking = [pat for pat in allowed if is_protected(pat)]
         bad, touched_tests = [], []
         for path in self.state.changed_files():
-            if path in self._pre_existing:
+            if state_mod.owned_by_loop(path):
+                # Конфиг и состояние ПЕТЛИ — не материал задачи. Судить
+                # их страж не имеет права ни при каком раскладе: на
+                # PILOT-1 незакоммиченный swarm.toml, вернувшийся из
+                # стеша, был прочитан как работа агента, и исполнитель
+                # откатил два решения владельца (см. state.py).
+                continue
+            if path in self._pre_existing or path in self._run_dirt:
                 # Лежало в дереве ДО старта задачи (`run --force`) — не
                 # работа агента. revert такие файлы щадит, а страж без
                 # этого исключения читал их как нарушение каждый раунд:
@@ -474,6 +483,9 @@ class Loop:
                 # которую никто не мог ни убрать, ни легализовать.
                 # Цена решения: правку агента ПОВЕРХ такого файла страж
                 # тоже не видит — этот риск оператор принял флагом --force.
+                # _run_dirt — то же множество на уровне ПРОГОНА: перезапуск
+                # процесса и цикл stash/restore обнуляют _pre_existing, а
+                # операторская грязь от этого работой агента не становится.
                 continue
             if not any(fnmatch.fnmatch(path, p) for p in allowed):
                 bad.append(path)
@@ -495,8 +507,10 @@ class Loop:
         поимённо то, что реально изменено, — по всему дереву не метём,
         чтобы не задеть чужое.
         """
-        untouchable: set[str] = getattr(self, "_pre_existing", set())
-        changed = [p for p in self.state.changed_files() if p not in untouchable]
+        untouchable: set[str] = (getattr(self, "_pre_existing", set())
+                                 | getattr(self, "_run_dirt", set()))
+        changed = [p for p in self.state.changed_files()
+                   if p not in untouchable and not state_mod.owned_by_loop(p)]
         if not changed:
             return []
         tracked: list[str] = []
@@ -520,7 +534,15 @@ class Loop:
                "GIT_AUTHOR_EMAIL": "executor@swarm.local",
                "GIT_COMMITTER_NAME": "swarm-orchestrator",
                "GIT_COMMITTER_EMAIL": "orchestrator@swarm.local"}
+        # Конфиг петли в коммит задачи не входит: `git add -A` без
+        # исключений закоммитил бы операторскую правку swarm.toml как
+        # работу исполнителя. Именно add-then-unstage, а не pathspec с
+        # :(exclude): явный pathspec поверх игнорируемого .swarm/ роняет
+        # `git add` советом «Use -f» (замерено на 2.50). reset по путям,
+        # которых нет в индексе, — тихий no-op.
         subprocess.run(["git", "add", "-A"], cwd=self.state.root, check=True)
+        subprocess.run(["git", "reset", "-q", "--", *state_mod.OWNED_ROOTS],
+                       cwd=self.state.root, check=True)
         # Здесь код возврата — ОТВЕТ, а не ошибка: 0 значит «нечего
         # коммитить», 1 — «есть изменения». check=True сломал бы логику.
         staged = subprocess.run(["git", "diff", "--cached", "--quiet"],
@@ -551,12 +573,26 @@ class Loop:
            ссылалась на стеш `swarm:g1nt-invalid-verdict`, которого не
            существовало, и отправляла оператора искать работу там, где
            её нет. Не создался — так и скажем.
+
+        3. Конфиг петли в стеш не входит. Именно стеш и был машиной
+           отмывания на PILOT-1: quota-пауза унесла незакоммиченный
+           swarm.toml вместе с работой, перезапуск застал чистое дерево,
+           _pre_existing оказался пуст — и вернувшийся из стеша конфиг
+           страж прочитал как нарушение границ. Операторская правка
+           конфига остаётся в дереве на виду; preflight назовёт её.
         """
-        if not self._sh(["git", "status", "--porcelain"]).stdout.strip():
+        stashable = [p for p in self.state.changed_files()
+                     if not state_mod.owned_by_loop(p)]
+        if not stashable:
             return None
         self._sh(["git", "reset", "-q"])
         label = f"swarm:{task['id']}-{reason}"
-        r = self._sh(["git", "stash", "push", "-u", "-q", "-m", label])
+        # Стеш ПОИМЁННО, а не «всё с исключениями»: явный pathspec с
+        # :(exclude) поверх игнорируемого .swarm/ роняет git тем же
+        # советом «Use -f», что и add (см. commit). Список и так уже
+        # вычислен — им и ограничиваемся.
+        r = self._sh(["git", "stash", "push", "-u", "-q", "-m", label,
+                      "--", *stashable])
         if r.returncode != 0:
             self.state.log("stash_failed", task=task["id"], reason=reason,
                            stderr=(r.stderr or "").strip()[:300])
@@ -1141,6 +1177,15 @@ class Loop:
 
     def run(self, limit: int | None = None) -> dict[str, str]:
         results: dict[str, str] = {}
+        # Операторская грязь фиксируется на уровне ПРОГОНА, не только
+        # задачи: _pre_existing пересобирается каждым run_task и обнуляется
+        # перезапуском процесса, а цикл stash/restore успевает показать
+        # стражу чистое дерево. Снимок здесь — тот же список, что печатает
+        # preflight, — переживает всё это и вычитается из суждений стража
+        # и revert наравне с _pre_existing (PILOT-1, scope-guard).
+        self._run_dirt = set(self.state.changed_files())
+        if self._run_dirt:
+            self.state.log("run_dirt", files=sorted(self._run_dirt))
         # Доска должна существовать с первой секунды прогона, а не с
         # первого раунда: открыть её человек хочет сразу.
         self.refresh_board()

@@ -158,7 +158,7 @@ class TestEveryEmittedKindIsNamed(unittest.TestCase):
         "deviations_declared", "executor_failed", "executor_unavailable",
         "gate_failed", "integrity_violation", "paths_extended", "plan_applied",
         "plan_failed", "policy", "policy_dropped", "policy_suppressed",
-        "pre_existing_dirt", "preflight_forced", "question", "quota_pause",
+        "pre_existing_dirt", "preflight_forced", "question", "quota_pause", "run_dirt",
         "quota_wait", "restore_failed", "retry", "review_budget_exhausted",
         "review_failed", "round", "scope_violation", "signature_violation",
         "stash_failed", "state_written", "step_done", "step_failed",
