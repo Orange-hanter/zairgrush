@@ -11,7 +11,6 @@ import importlib.util
 import json
 import pathlib
 import random
-import re
 import sys
 import time
 from types import ModuleType
@@ -19,6 +18,13 @@ from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCHEMAS = HERE.parent / "schemas"
+
+# Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
+_HERE = str(HERE)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import parsing as parsing_mod  # noqa: E402
 
 # Ревьюер получает дифф целиком, а размер сгенерированных артефактов ничем
 # не ограничен. На пилоте golden-эталон в 15 894 строки дал промпт в 285 000
@@ -36,9 +42,6 @@ SCHEMAS = HERE.parent / "schemas"
 # признаком происхождения, и называть происхождение нельзя (§5.7.2:
 # компонент называет факт, а причину — только если она следует из
 # наблюдаемого однозначно).
-DIFF_FILE_LIMIT = 400
-DIFF_EXCERPT = 40
-
 # Линза подтверждающего раунда (§12, E10: confirm_lens="security"). Блок
 # СТАБИЛЕН — часть неизменного префикса промпта (rules_sha), поэтому текст
 # зафиксирован константой, а не собран из настроек прогона. Формулировка
@@ -58,30 +61,6 @@ Report EVERYTHING you see, security and otherwise; the lens sets emphasis, \
 not a filter.
 """
 
-# Контракт chat-fill (E10, flag skeleton): весь файл — ровно в одном fence,
-# без текста вокруг. Постороннее вокруг fence — не «почти прошло», а отказ:
-# у чат-модели нет структурированного канала отчёта, весь контракт держится
-# на форме ответа, и файл, срезанный посреди преамбулы, хуже отсутствия.
-FENCE_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)\n?```", re.DOTALL)
-
-
-def _extract_fenced_code(text: str) -> str | None:
-    """Единственный код-блок ответа chat-fill, либо None при нарушении формы.
-
-    Несколько fence или текст вне них — отказ, а не «берём что есть»:
-    берём ПОСЛЕДНИЙ fence, но только когда всё, что осталось после вычитания
-    fence-блоков, пусто. Без этого условия преамбула вида «Вот файл:» тихо
-    проходила бы как валидный ответ.
-    """
-    fences: list[str] = FENCE_RE.findall(text)
-    if not fences:
-        return None
-    outside = FENCE_RE.sub("", text).strip()
-    if outside:
-        return None
-    return fences[-1]
-
-
 def _load(name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
     if spec is None or spec.loader is None:
@@ -94,55 +73,9 @@ def _load(name: str) -> ModuleType:
 
 log = _load("obs").get_logger("agents")
 
-
-def condense_diff(diff: str, limit: int = DIFF_FILE_LIMIT,
-                  excerpt: int = DIFF_EXCERPT) -> str:
-    """Свернуть файлы диффа длиннее `limit` строк до сводки.
-
-    Сводка называет файл, число добавленных и удалённых строк, хэш
-    содержимого и выдержку сверху. Утаивание объявляется ПРЯМО: ревьюер,
-    не знающий, что видит не всё, одобряет невиданное — а это ровно то,
-    от чего защищает `git add -A -N` в work_diff.
-
-    Хэш нужен, чтобы вердикт вообще был привязан к содержимому: без него
-    два разных эталона одинаковой длины для ревьюера неразличимы.
-    """
-    if not diff:
-        return diff
-    out = []
-    for chunk in re.split(r"(?m)^(?=diff --git )", diff):
-        if not chunk:
-            continue
-        lines = chunk.splitlines()
-        if not lines[0].startswith("diff --git ") or len(lines) <= limit:
-            out.append(chunk.rstrip("\n"))
-            continue
-        body = lines[1:]
-        added = sum(1 for x in body
-                    if x.startswith("+") and not x.startswith("+++"))
-        removed = sum(1 for x in body
-                      if x.startswith("-") and not x.startswith("---"))
-        digest = hashlib.sha256(chunk.encode("utf-8")).hexdigest()[:12]
-        # Выдержка обязана быть СОДЕРЖИМЫМ. Первые строки куска — это
-        # `new file mode`, `index`, `---`, `+++`, `@@`: их пять, и в
-        # выдержке из пяти строк ревьюер не увидел бы ни одной строки
-        # файла. Заголовок отдаём целиком (он короткий и полезный),
-        # выдержку берём после первого `@@`.
-        cut = next((i + 1 for i, x in enumerate(body) if x.startswith("@@")), 0)
-        head = "\n".join(body[cut:cut + excerpt])
-        out.append(
-            "\n".join(lines[:cut + 1]) + "\n"
-            f"[оркестратор свернул этот файл: {len(body)} строк диффа, "
-            f"+{added} −{removed}, sha256={digest}]\n"
-            f"[показано не всё. Причина одна: файл длиннее {limit} строк. "
-            f"О происхождении файла оркестратор ничего не знает — если это "
-            f"написанный человеком код, суди его как код. Если сгенерированные "
-            f"данные — оценивай КОД, который их строит. Определяешь по "
-            f"содержимому ты, не оркестратор.]\n"
-            f"[если для вердикта нужен файл целиком — это finding "
-            f"severity=major с verdict=request_changes, а не approve вслепую]\n"
-            f"[выдержка, первые {excerpt} строк:]\n{head}\n[…]")
-    return "\n".join(out)
+# Парсинг ответов вынесен в parsing.py; здесь shim для потребителей.
+condense_diff = parsing_mod.condense_diff
+_extract_fenced_code = parsing_mod._extract_fenced_code
 
 
 class Agents:
@@ -478,7 +411,7 @@ fence.
             self._fill_failure(task_id, iteration, wall_s, model,
                                "fill_no_reply", "модель не ответила")
             return None
-        code = _extract_fenced_code(reply)
+        code = parsing_mod._extract_fenced_code(reply)
         if code is None:
             self._fill_failure(task_id, iteration, wall_s, model, "fill_no_fence",
                                "ответ не прошёл контракт: не один чистый fence")
@@ -507,44 +440,13 @@ fence.
 
     @staticmethod
     def _report_in(text: str) -> dict[str, Any] | None:
-        """Последний JSON-объект с полем `status` внутри текста.
-
-        Контракт требует голый JSON, но исполнитель регулярно предваряет его
-        фразой «готово, тесты зелёные». Требовать, чтобы контент НАЧИНАЛСЯ с
-        `{`, — значит терять готовую работу из-за преамбулы: на приёмке v3st
-        так потеряла три круга подряд и заблокировалась при зелёном гейте.
-        Строгость здесь ничего не защищала: отчёт присутствовал и был валиден.
-
-        Сканируем кандидатов с конца и берём первый разобравшийся — так
-        случайный `{` из примера кода в преамбуле не может подменить отчёт.
-        """
-        dec = json.JSONDecoder()
-        for i in range(len(text) - 1, -1, -1):
-            if text[i] != "{":
-                continue
-            try:
-                cand, _ = dec.raw_decode(text[i:])
-            except ValueError:
-                continue
-            if isinstance(cand, dict) and "status" in cand:
-                return cand
-        return None
+        """Делегат к `parsing._report_in`."""
+        return parsing_mod._report_in(text)
 
     @classmethod
     def _extract_report(cls, stream: str) -> dict[str, Any] | None:
-        """Финальный JSON лежит в последнем assistant-событии, а не в
-        последней строке потока (урок SMOKE-1)."""
-        report: dict[str, Any] | None = None
-        for line in stream.splitlines():
-            try:
-                ev = json.loads(line)
-            except ValueError:
-                continue
-            if ev.get("role") == "assistant" and isinstance(ev.get("content"), str):
-                cand = cls._report_in(ev["content"])
-                if cand is not None:
-                    report = cand
-        return report
+        """Делегат к `parsing._extract_report`."""
+        return parsing_mod._extract_report(stream)
 
     # --- ревьюер ----------------------------------------------------------
 
@@ -743,7 +645,7 @@ Acceptance:
         # Голый `git diff` не показывает созданные файлы: ревьюер получал
         # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
         # в историю. Единый источник — state.work_diff (intent-to-add).
-        diff = condense_diff(self.work_diff())
+        diff = parsing_mod.condense_diff(self.work_diff())
         schema = (SCHEMAS / "verdict-v1.schema.json").read_text()
         # Самый дорогой вызов системы шёл в обход слоя живости: голый
         # subprocess.run с жёстким таймаутом, который не отличал «думает»
@@ -912,7 +814,7 @@ Acceptance:
     def commit_message(self, task: dict[str, Any], diff: str) -> str:
         # Хелпер дешёвый, но не бесплатный, и 336 КБ эталона ему так же
         # нечего читать, как и ревьюеру.
-        diff = condense_diff(diff)
+        diff = parsing_mod.condense_diff(diff)
         fallback = f"{task['id']}: {task['title']}"
         if self._helpers is None:
             try:

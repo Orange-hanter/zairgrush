@@ -85,6 +85,10 @@ combine-as-imports = true
 # gitops/reviewcycle — плоские модули, вынесенные из Loop; они обращаются
 # к приватным полям Loop по замыслу, пока делегаты в loop.py их тонко
 # маршрутизируют (долг уйдёт при дальнейшей декомпозиции/публичном API).
+# agents.py — shim к parsing.py: модульные алиасы condense_diff /
+# _extract_fenced_code и делегаты Agents._report_in / _extract_report
+# намеренно указывают на приватные функции parsing ради неизменного API.
+"swarm/agents.py" = ["SLF001"]
 "swarm/gitops.py" = ["SLF001"]
 "swarm/reviewcycle.py" = ["SLF001"]
 # Тесты: assert — их суть; длинные фикстуры и «магические» значения тоже.
