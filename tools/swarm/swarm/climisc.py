@@ -1,0 +1,280 @@
+"""Служебные и вспомогательные команды: doctor, policy, plan, map, impact."""
+import argparse
+import ctypes.util
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+
+# Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
+_HERE = str(pathlib.Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import cli  # noqa: E402
+
+
+def _tree_sitter_clib() -> bool:
+    """Есть ли на машине C-библиотека tree-sitter (brew/системная).
+
+    Сама по себе она петле бесполезна — нужна, чтобы доктор отличил
+    «не установлен вовсе» от «установлен не тот слой» и назвал точную
+    команду. find_library на macOS не смотрит в /opt/homebrew, поэтому
+    известные префиксы brew проверяются явно.
+    """
+    if ctypes.util.find_library("tree-sitter"):
+        return True
+    if shutil.which("tree-sitter"):
+        return True
+    return any(pathlib.Path(p, "lib", f"libtree-sitter{ext}").exists()
+               for p in ("/opt/homebrew", "/usr/local")
+               for ext in (".dylib", ".so"))
+
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Половина дефектов программы была в окружении, а не в петле."""
+    root = pathlib.Path(args.root)
+    print("=== окружение ===")
+    checks: list[tuple[bool | None, str, str]] = []
+
+    for name, probe, hint in (
+        ("kimi", ["kimi", "--version"], "исполнитель"),
+        ("claude", ["claude", "--version"], "ревьюер и планировщик"),
+        ("git", ["git", "--version"], "обязателен"),
+    ):
+        exe = shutil.which(name)
+        if not exe:
+            checks.append((False, name, f"НЕ НАЙДЕН ({hint})"))
+            continue
+        try:
+            out = subprocess.run(probe, capture_output=True, text=True,
+                                 timeout=30,
+                                 check=False).stdout.strip().splitlines()
+            checks.append((True, name, out[0] if out else exe))
+        except (OSError, subprocess.SubprocessError) as e:
+            # Доктор проверяет ЗАПУСКАЕМОСТЬ: сюда попадают отсутствие
+            # прав, битый бинарь и таймаут. Прочее — дефект самого
+            # доктора, и он должен быть виден, а не превращён в строку
+            # отчёта о чужом инструменте.
+            checks.append((False, name, f"ошибка запуска: {e}"))
+
+    # ctags: важно отличить Universal от Exuberant — под именем `ctags`
+    # ставится древняя реализация без JSON и ролей
+    ctags = shutil.which("ctags")
+    if ctags:
+        try:
+            # Таймаут тот же, что у kimi/claude выше: доктор без таймаута
+            # сам становился зависшим инструментом, который диагностирует.
+            ver = subprocess.run([ctags, "--version"], capture_output=True,
+                                 text=True, timeout=30, check=False).stdout
+        except (OSError, subprocess.SubprocessError) as e:
+            checks.append((False, "ctags", f"ошибка запуска: {e}"))
+        else:
+            if "Universal Ctags" in ver:
+                checks.append((True, "ctags", ver.splitlines()[0]))
+            else:
+                checks.append((False, "ctags",
+                               ("Exuberant/BSD — нужен universal-ctags "
+                                "(brew unlink ctags && brew install "
+                                "universal-ctags)")))
+    else:
+        checks.append((None, "ctags", "не установлен (опционально)"))
+
+    # find_spec сообщает об отсутствии модуля значением None, а не
+    # исключением: проверка через try ловила пустоту, и доктор объявлял
+    # tree-sitter доступным на любой машине.
+    #
+    # Петле нужны python-биндинги И обе грамматики (см. tsindex) — а
+    # brew-пакет tree-sitter ставит только C-библиотеку. Доктор, смотревший
+    # на один модуль tree_sitter, говорил «не установлен» человеку, у
+    # которого brew-пакет стоит, — и спор шёл о двух разных вещах.
+    ts_missing = []
+    for ts_mod in ("tree_sitter", "tree_sitter_python", "tree_sitter_rust"):
+        try:
+            ts_spec = cli.importlib.util.find_spec(ts_mod)
+        except Exception:  # noqa: BLE001 — доктор обязан досказать список до конца
+            ts_spec = None
+        if ts_spec is None:
+            ts_missing.append(ts_mod.replace("_", "-"))
+    if not ts_missing:
+        checks.append((True, "tree-sitter", "python-биндинги и грамматики py/rs"))
+    else:
+        ts_hint = "pip install " + " ".join(ts_missing)
+        if len(ts_missing) < 3:
+            checks.append((None, "tree-sitter", f"биндинги неполные: {ts_hint}"))
+        elif cli._tree_sitter_clib():
+            checks.append((None, "tree-sitter",
+                           ("стоит только C-библиотека (brew), петле нужны "
+                            f"python-биндинги: {ts_hint}")))
+        else:
+            checks.append((None, "tree-sitter",
+                           f"не установлен (опционально): {ts_hint}"))
+
+    # Память (E9) — опциональна: её отсутствие деградирует поиск уроков,
+    # а не петлю. Доктор называет точные команды настройки, но не
+    # выполняет их сам: базу и роль создаёт владелец.
+    if shutil.which("psql"):
+        mem_mod = cli._load("memory")
+        cfg_doc = cli._config(args.root)
+        ok_pg, out_pg = mem_mod.pg(cfg_doc, "SELECT version();")
+        if ok_pg:
+            checks.append((True, "memory-pg",
+                           out_pg.split(" on ")[0][:40] or "доступен"))
+        else:
+            checks.append((None, "memory-pg",
+                           ("недоступен (опционально): создать — "
+                            "createdb swarm_memory; уроки при этом "
+                            "копятся в файлах")))
+    else:
+        checks.append((None, "memory-pg", "psql не установлен (опционально)"))
+
+    for ok, name, note in checks:
+        mark = {True: "  ok ", False: "ПРОБЛ", None: " опц "}[ok]
+        print(f"[{mark}] {name:12} {note}")
+
+    print("\n=== репозиторий ===")
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                           capture_output=True, text=True, check=False)
+    if dirty.returncode != 0:
+        print("[ПРОБЛ] это не git-репозиторий")
+    else:
+        files = dirty.stdout.strip().splitlines()
+        print(f"[{'  ok ' if not files else 'ПРОБЛ'}] worktree: "
+              f"{'чист' if not files else f'{len(files)} изменённых файлов'}")
+
+    cfg = cli._config(root)
+    print(f"[ опц ] gate: {cfg.get('gate_command') or 'по умолчанию (unittest)'}")
+    st = cli.state_mod.SwarmState(root)
+    print(f"[  ok ] состояние: {st.dir}")
+    return 0 if all(c[0] is not False for c in checks) else 1
+
+
+
+def cmd_policy(args: argparse.Namespace) -> int:
+    """Политики прогона: решения человека уровня цели, а не задачи."""
+    st = cli.state_mod.SwarmState(args.root)
+    if args.action == "list":
+        policies = st.policies()
+        if not policies:
+            print("политик нет")
+            return 0
+        print(f"активные политики (цель: {st.load_tasks().get('goal', '')[:60]}):")
+        for p in policies:
+            print(f"  {p['pid']}  {p['text']}")
+            # Журнал — данные: match могла оставить строка вместо списка
+            # (прежний формат, правка руками), и `", ".join` рассыпал бы
+            # её в буквы «r, e, l, e, a, s, e».
+            match = p.get("match")
+            words = match if isinstance(match, list) else [match] if match else []
+            print(f"        совпадение по: {', '.join(str(m) for m in words)}")
+        # честность важнее удобства: видно, сколько находок уже подавлено
+        total = 0
+        if st.journal_path.exists():
+            for line in st.journal_path.read_text().splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("kind") == "policy_suppressed":
+                    total += row.get("count", 0)
+        if total:
+            print(f"\nподавлено находок за прогон: {total} "
+                  f"(`swarm report` покажет какие)")
+        return 0
+    if args.action == "add":
+        if not args.text.strip():
+            # nargs="?" с умолчанием "" пропускал пустую политику: она
+            # ничего не выражает, но занимает pid и место в журнале.
+            print('нужен текст политики: policy add "текст" --match слово',
+                  file=sys.stderr)
+            return 2
+        if not args.match:
+            print('нужны ключевые слова: --match "release note"', file=sys.stderr)
+            return 2
+        pid = st.add_policy(args.text, args.match)
+        print(f"политика {pid} добавлена: {args.text}")
+        print(f"будет подавлять находки со словами: {', '.join(args.match)}")
+        print("ревьюер по-прежнему их сообщает — фильтрует оркестратор, "
+              "подавленное видно в `swarm report`")
+        return 0
+    # Осталось только remove: argparse через choices уже закрыл
+    # пространство действий, и хвостовой `return 2` изображал обработку
+    # ошибки, которой не бывает.
+    try:
+        st.drop_policy(args.text)
+    except cli.state_mod.StateError as e:
+        print(f"{e}", file=sys.stderr)
+        return 2
+    print(f"политика {args.text} снята")
+    return 0
+
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Планировщик (§3.1): цель -> план-дифф, валидируемый механически.
+
+    Модуль был написан и покрыт тестами, но не имел входа в CLI — роль
+    существовала как библиотека, а не как участник петли.
+    """
+    planner = cli._load("planner")
+    st = cli.state_mod.SwarmState(args.root)
+    data = st.load_tasks()
+    tasks = data.get("tasks", [])
+    files, suite = planner.repo_map(pathlib.Path(args.root))
+    cfg = cli._config(args.root)
+
+    if args.cmd == "plan":
+        if not args.goal:
+            print("нужна --goal", file=sys.stderr)
+            return 2
+        # Память (E9): уроки прошлых прогонов по этой цели — тупики
+        # прошлых декомпозиций дороже всего именно планировщику.
+        mem_block = cli._load("memory").inject_block(
+            "planner", {"id": "*", "title": args.goal, "paths": []}, st, cfg)
+        prompt = planner.plan_prompt(args.goal, tasks, files, suite,
+                                     memory=mem_block)
+    else:
+        task = next((t for t in tasks if t["id"] == args.task), None)
+        if task is None:
+            print(f"задача {args.task!r} не найдена", file=sys.stderr)
+            return 2
+        dispute = {}
+        if args.dispute:
+            dispute = json.loads(pathlib.Path(args.dispute).read_text())
+        prompt = planner.replan_prompt(task, dispute, tasks, files, suite)
+    diff, errs, reason = planner.plan_with_retry(
+        prompt, args.cmd, tasks, root=args.root,
+        budget=cfg.get("plan_budget_usd"),
+        model=cfg.get("plan_model"), effort=cfg.get("plan_effort"),
+        timeout=cfg.get("plan_timeout"))
+    if errs:
+        print("ЭСКАЛАЦИЯ:", *errs, sep="\n  ", file=sys.stderr)
+        st.log("plan_failed", mode=args.cmd, reason=reason, errors=errs)
+        qid = st.ask("*", "plan_failed", errs[0], mode=args.cmd)
+        print(f"вопрос оператору: {qid}", file=sys.stderr)
+        return 2
+
+    print(f"analysis: {diff['analysis'][:400]}\n")
+    for op in diff["ops"]:
+        task_body = op.get("task") or {}
+        print(f"  {op['op']:6} {op['id']}  {task_body.get('title', '')[:60]}")
+        print(f"         reason: {op['reason'][:150]}")
+    if args.dry_run:
+        print("\ndry-run: план не применён")
+        return 0
+    # Применение — под замком записи и на СВЕЖЕЙ очереди: планирование
+    # длится минуты, и статусы, изменившиеся за это время (бегущий прогон,
+    # ответ оператора), нельзя затирать снимком из начала команды.
+    with st.mutate():
+        data = st.load_tasks()
+        if args.cmd == "plan" and args.goal:
+            data["goal"] = args.goal
+        data["tasks"] = planner.apply_plan_diff(diff, data["tasks"])
+        st.save_tasks(data)
+    st.log("plan_applied", mode=args.cmd, ops=len(diff["ops"]),
+           tasks_after=len(data["tasks"]))
+    print(f"\nприменено: в очереди {len(data['tasks'])} задач(и)")
+    return 0
+
