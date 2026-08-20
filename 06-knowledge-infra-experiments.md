@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.7
+version: 0.8
 created: 2026-08-06
 updated: 2026-08-20
 related:
@@ -298,6 +298,31 @@ summary: >
 - **Status: queued** (one factor per run; after E10's first
   measurement).
 
+### E12. Cheap contour in the review path (proposed)
+
+Full plan: [09-cheap-review-contour.md](09-cheap-review-contour.md).
+Registered here as a program item; **no decision taken yet**.
+
+- **A (current)**: one expensive reviewer per round, plus a paid
+  confirming round on the same diff; cheap models serve chores only
+  (§7.2).
+- **B**: cheap models enter the review path as *material*, never as the
+  verdict owner — a free Ollama juror panel under distinct lenses,
+  a 1 M-context digest that replaces the reviewer's own repository walk,
+  deterministic triage for trivial diffs, and `claude-haiku-4-5` as a
+  drawn review arm alongside `claude-opus-5`.
+- **Hypothesis**: the reviewer's bill is *reading the repository*
+  (94 % of cache write is tool-walk depth, governed by effort), not
+  reading the diff; therefore feeding context and buying extra angles
+  from a flat-rate contour beats swapping the reviewer's model.
+- **Decision by**: the gold-set metric reported as a **pair** — metered
+  $ per endorsed major (baseline $39 on PILOT-1) *and* wall-clock plus
+  cheap-token volume, so unmetered work cannot inflate the ratio.
+- **Zero step**: offline replay of the panel roster against
+  `experiments/goldset/labels.jsonl` — no expensive calls, gate before
+  anything is wired into the loop.
+- **Status: proposed, awaiting owner approval.**
+
 ## 5. Порядок и зависимости
 
 ```
@@ -368,6 +393,17 @@ E8 закрыт (K3 остаётся дефолтом); **ADR-003 → ADR-004** 
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.8 (2026-08-20)
+
+- Зарегистрирован E12 «Cheap contour in the review path» — дешёвые
+  модели входят в путь ревью как материал, а не как владелец вердикта:
+  бесплатная панель присяжных на подписке Ollama, дайджест контекста на
+  модели с 1 M контекста, детерминированная сортировка тривиальных
+  диффов и `claude-haiku-4-5` как рука замера рядом с `claude-opus-5`.
+  Полный план вынесен в отдельный документ
+  [09-cheap-review-contour.md](09-cheap-review-contour.md); статус —
+  предложение, решение не принято.
 
 ### v0.7 (2026-08-20)
 
