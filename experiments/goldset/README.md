@@ -50,6 +50,34 @@ orchestrator's rounds-exhausted diagnosis), `integrity_alarm`,
 - **Integrity alarms: 2/2 operator-caused false alarms**, both of
   which produced tool fixes.
 
+## Derived benches
+
+Two sub-corpora turn labels into regressions. Both are frozen the same
+way the labels are, and both exist because a claim nobody re-runs is a
+memory, not a measurement.
+
+`diagnosis/` — the six escalations where the owner named the true
+cause (q004, q007, q008, q009, q010, q019), replayed against
+`Loop._diagnose` with the evidence in the exact shape the diagnoser
+sees. `replay.py` prints a scorecard; `tools/swarm/tests/
+test_diagnosis_bench.py` runs the same cases inside the gate and fails
+loudly if the case file disappears. Current score 6/6
+(`executor_environment=4, reviewer_disagreement=1, scope_guard=1`);
+the pre-2026-08-20 diagnoser scores 2/6 on it.
+
+`boundaries/` — the seven boundary grants (six executor disputes plus
+one intent question, q005 q011 q012 q014 q016 q017 q020) replayed
+against `planner.boundary_warnings`: for each, the boundary is rolled
+back to its pre-dispute state (subtract exactly what the owner added)
+and the question is whether the linter would have named that file in
+advance. Needs the stand on disk, so it is **not** in the gate —
+`python3 boundaries/replay.py [stand]`, and it exits quietly when the
+stand is absent. Measured 2026-08-20: 4/7 at the shipped cap of 6
+advisory lines, 5/7 at 8; q014 and q016 are not found at any depth.
+Honest caveat: the stand's repository has moved on since the pilot, so
+today's number is an upper bound on what the linter knew on planning
+day.
+
 ## The metric
 
 For a review arm A (model/effort):

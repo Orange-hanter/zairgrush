@@ -257,10 +257,20 @@ def cmd_plan(args: argparse.Namespace) -> int:
         return 2
 
     print(f"analysis: {diff['analysis'][:400]}\n")
+    protected = cfg.get("protected_paths") or []
     for op in diff["ops"]:
         task_body = op.get("task") or {}
         print(f"  {op['op']:6} {op['id']}  {task_body.get('title', '')[:60]}")
         print(f"         reason: {op['reason'][:150]}")
+        # Спутники границы — совет, а не запрет (§3.1.1). На PILOT-1 семь
+        # споров из семи были признаны: граница ставилась неверно, и
+        # каждый спор стоил раунда плюс ожидания человека. Здесь это
+        # видно ДО прогона и правится одной строкой в paths.
+        if not task_body.get("paths"):
+            continue
+        for w in planner.boundary_warnings(args.root, task_body, protected):
+            print(f"         ⚠ граница: {w['file']} ({w['token']}) — "
+                  f"{w['hint']}")
     if args.dry_run:
         print("\ndry-run: план не применён")
         return 0

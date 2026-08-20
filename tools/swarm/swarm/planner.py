@@ -16,7 +16,9 @@ deps, отсутствие циклов, paths/acceptance обязательны
 """
 import argparse
 import copy
+import fnmatch
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -452,6 +454,306 @@ def _missing_ac_ref(t: dict[str, Any]) -> bool:
         # здесь дублировать нечем и незачем.
         return False
     return not any("::" in str(a) for a in acceptance)
+
+
+# --- граница задачи: спутники, которых план обычно не замечает ----------
+#
+# Золотой набор PILOT-1: СЕМЬ споров исполнителя из семи признаны
+# владельцем — каждый раз граница задачи была поставлена неверно, и
+# каждый раз это стоило раунда плюс ожидания ответа человека (медиана
+# 24 минуты, худшее 21 час). Споры складываются в повторяющиеся классы
+# файлов-спутников:
+#
+#   реестр/регистрация  — engine.rs зовёт новое правило (q011)
+#   пришпиленный эталон — golden/corpus/фикстура ждёт прежних чисел
+#                         (q012, q020)
+#   документ с числами  — docs фиксируют формат или замер (q014, q017)
+#   производитель выше  — признак рождается в импортёре (q005, q016)
+#
+# Первая версия искала ОДНУ улику — упоминание основы имени файла задачи
+# в чужом тексте — и на реальном корпусе дала 1 спор из 7 при 7,1
+# предупреждения на задачу: полезного меньше, чем шума. Замер вскрыл
+# три дефекта, и все три чинятся здесь:
+#
+#   1. Глоб выбрасывался целиком, а реальные задачи почти всегда
+#      пишут границу глобом (`src/**`, `rules/*.rs`) — линтер работал
+#      на огрызке границы. Теперь глобы РАСКРЫВАЮТСЯ по дереву.
+#   2. Ссылка бывает прямой: файл ЗАДАЧИ сам называет путь снаружи
+#      (`include_str!("../../tests/fixtures/golden/nets.txt")`). Это
+#      самая сильная улика из всех, и её вообще не искали.
+#   3. Отбор шёл по порядку обхода, а не по силе улики: настоящие
+#      спутники не влезали в потолок, вытесненные случайными
+#      совпадениями из bench/ и .scratch/. Теперь улики ранжируются, и
+#      наружу выходит короткий верх списка.
+#
+# Линтер СОВЕТУЕТ, а не запрещает: ссылка — улика, а не доказательство,
+# и решает человек. Молчание тоже не гарантия: два спора из семи
+# (q005, q016 — «признак рождается в импортёре») текстового следа не
+# имеют вовсе и механически не ловятся ничем.
+_SATELLITE_STOP = {
+    "mod", "lib", "main", "test", "tests", "index", "init", "impl",
+    "util", "utils", "types", "type", "config", "common", "core", "api",
+    "app", "src", "data", "base", "node", "item", "list", "file", "path",
+    "keys", "save", "load", "error", "errors", "state", "model", "view",
+}
+_SKIP_DIRS = {".git", ".svn", ".hg", "target", "node_modules", ".venv",
+              "venv", "__pycache__", ".swarm", "dist", "build", ".mypy_cache",
+              ".pytest_cache", ".ruff_cache", ".claude"}
+_TEXT_SUFFIXES = {".rs", ".py", ".toml", ".md", ".txt", ".json", ".yaml",
+                  ".yml", ".js", ".ts", ".tsx", ".go", ".c", ".h", ".cpp",
+                  ".hpp", ".java", ".rb", ".sh", ".sql", ".cfg", ".ini"}
+_PINNED_MARKERS = ("/tests/", "/test/", "/fixtures/", "/fixture/", "/golden/",
+                   "/corpus/", "/snapshots/", "/testdata/")
+_MAX_SCAN_FILES = 4000
+_MAX_FILE_BYTES = 262_144
+_MAX_OWN_READS = 80
+_LIMIT = 6
+# Путь, названный строкой: `"tests/fixtures/golden/nets.txt"`,
+# `include_str!(...)`, ссылка из markdown. Расширение обязательно —
+# без него в улов идут слова.
+_PATHISH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./\-]{2,}\.[A-Za-z0-9]{1,5}")
+
+
+def _rel(root: pathlib.Path, p: pathlib.Path) -> str:
+    return str(p.relative_to(root)).replace(os.sep, "/")
+
+
+def _own_files(root: pathlib.Path, paths: list[str]) -> set[str]:
+    """Границы задачи в виде КОНКРЕТНЫХ файлов.
+
+    Глоб — это не «нет файлов», а «файлы перечислены иначе»: пока он
+    выбрасывался, линтер видел долю границы и судил по ней (замер
+    PILOT-1: 1 спор из 7).
+    """
+    own: set[str] = set()
+    for p in paths:
+        if not isinstance(p, str) or not p:
+            continue
+        own.add(p.rstrip("/"))
+        if any(ch in p for ch in "*?["):
+            # `src/**` в pathlib раскрывается в КАТАЛОГИ, а не в файлы:
+            # без досыпки `src/**/*` самая частая форма границы давала
+            # пустое множество, и линтер молчал ровно там, где нужен.
+            pats = [p] + ([p.rstrip("/") + "/*"] if p.endswith("**") else [])
+            for pat in pats:
+                try:
+                    matched = list(root.glob(pat))
+                except (ValueError, OSError):
+                    continue
+                own.update(_rel(root, m) for m in matched if m.is_file())
+            continue
+        here = root / p
+        if here.is_dir():
+            own.update(_rel(root, m) for m in here.rglob("*") if m.is_file())
+    return own
+
+
+def _satellite_tokens(own: set[str]) -> tuple[set[str], set[str]]:
+    """Слова, по которым файл задачи узнаётся в чужом тексте.
+
+    Две разные улики, и путать их дорого (замер PILOT-1):
+
+    * ОСНОВА имени (`erc02`) — как файл кода зовут в импортах, реестрах
+      и прозе: `use crate::rules::Erc02…`, `mod erc02`, ссылка из
+      markdown. Регистр не значит ничего: тип называется `Erc02Duplicate…`,
+      а файл — `erc02.rs`, и поиск обязан считать это одним и тем же.
+    * ПОЛНОЕ имя с расширением (`suppressions.toml`) — единственная
+      форма, годная для данных. Основы фикстур и корпусов («Basis_1»,
+      «ArduinoLCD») в чужом тексте — шум: по ним «ссылались» .scratch и
+      бенч, вытесняя настоящих спутников из потолка.
+    """
+    stems: set[str] = set()
+    names: set[str] = set()
+    for p in own:
+        if any(ch in p for ch in "*?["):
+            continue
+        pp = pathlib.PurePosixPath(p)
+        if pp.suffix and len(pp.name) >= 5:
+            names.add(pp.name)
+        if any(m in "/" + p.lower() for m in _PINNED_MARKERS):
+            continue           # данные узнаются только полным именем
+        if len(pp.stem) >= 4 and pp.stem.lower() not in _SATELLITE_STOP:
+            stems.add(pp.stem)
+    return stems, names
+
+
+def _classify_satellite(rel: str, protected: list[str]) -> str:
+    low = "/" + rel.lower()
+    if any(fnmatch.fnmatch(rel, pat) for pat in protected):
+        return "pinned"
+    if any(m in low for m in _PINNED_MARKERS):
+        return "pinned"
+    if rel.lower().endswith((".md", ".rst", ".adoc")):
+        return "docs"
+    return "referrer"
+
+
+_SATELLITE_HINT = {
+    "forward": ("файл задачи прямо ссылается на этот файл — правка почти "
+                "наверняка потребует обновить и его (PILOT-1: q012)"),
+    "pinned_dir": ("файлы задачи называют по имени содержимое этого "
+                   "каталога пришпиленных данных — правка формата тянет "
+                   "за собой фикстуру целиком (PILOT-1: q020)"),
+    "registry": ("файл вне границ ссылается сразу на несколько файлов "
+                 "задачи: похоже на реестр или регистрацию "
+                 "(PILOT-1: q011)"),
+    "referrer": ("файл вне границ ссылается на файл задачи: реестр, "
+                 "документ с числами или производитель выше по потоку "
+                 "(PILOT-1: q014, q017)"),
+}
+
+
+def _proximity(rel: str, own: set[str]) -> int:
+    """Улика тем весомее, чем ближе файл к самой задаче.
+
+    Совпадение основы имени в чужом крейте — чаще всего случайность
+    (замер: bench/ и .scratch/ вытесняли настоящие спутники из потолка).
+    """
+    parts = rel.split("/")
+    best = 0
+    for o in own:
+        op = o.split("/")
+        n = 0
+        while n < min(3, len(parts) - 1, len(op) - 1) and parts[n] == op[n]:
+            n += 1
+        best = max(best, n)
+    return best
+
+def boundary_warnings(root: str | pathlib.Path, task: dict[str, Any],
+                      protected_paths: list[str] | None = None,
+                      limit: int = _LIMIT) -> list[dict[str, str]]:
+    """Файлы-спутники вне `paths`, о которых задача, вероятно, споткнётся.
+
+    Возвращает предупреждения (не ошибки), отсортированные по силе
+    улики и обрезанные до `limit`. Потолок мал намеренно и замером
+    оправдан: на корпусе PILOT-1 подъём потолка с 3 до 10 не добавил
+    НИ ОДНОГО пойманного спора — то, что линтер знает, он знает сразу,
+    а длинный хвост состоит из совпадений. Ничего не читает у
+    планировщика и не зовёт LLM: обычный обход дерева с потолками.
+    """
+    root_p = pathlib.Path(root)
+    paths = [p for p in (task.get("paths") or []) if isinstance(p, str)]
+    own = _own_files(root_p, paths)
+    stems, names = _satellite_tokens(own)
+    protected = list(protected_paths or [])
+
+    # Один обход дерева. Тексты НЕ копятся: с каждого файла снимаются
+    # только совпадения — иначе линтер держал бы в памяти весь репозиторий.
+    inside: list[str] = []                        # файлы задачи
+    all_rel: list[str] = []                       # все пути снаружи границ
+    by_name: dict[str, list[str]] = {}
+    seen: list[tuple[str, set[str], list[str]]] = []   # rel, основы, имена
+    df: dict[str, int] = {}
+    scanned = 0
+    for path in sorted(root_p.rglob("*")):
+        if scanned >= _MAX_SCAN_FILES:
+            break
+        if not path.is_file() or path.suffix.lower() not in _TEXT_SUFFIXES:
+            continue
+        if any(part in _SKIP_DIRS for part in path.parts):
+            continue
+        rel = _rel(root_p, path)
+        scanned += 1
+        if rel in own:
+            inside.append(rel)
+            continue
+        # Указатель — по ПУТИ: чтобы назвать файл спутником, читать его
+        # не нужно. Пришпиленный эталон почти всегда велик (в замере —
+        # 300 КБ), и потолок чтения вычёркивал ровно тот класс файлов,
+        # ради которого линтер написан.
+        by_name.setdefault(path.name, []).append(rel)
+        all_rel.append(rel)
+        try:
+            if path.stat().st_size > _MAX_FILE_BYTES:
+                continue
+            low = path.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            continue
+        matched = {t for t in stems if t.lower() in low}
+        named = sorted({n for n in names if n.lower() in low})
+        if matched or named:
+            seen.append((rel, matched, named))
+        for t in matched:
+            df[t] = df.get(t, 0) + 1
+
+    # Редкость слова — часть улики. «components» или «project» встречает
+    # полрепозитория: это общее слово, а не имя файла задачи, и на
+    # широкой границе (`src/**`) такие совпадения хоронили настоящих
+    # спутников под собой (замер PILOT-1: спорный файл на 22-м месте).
+    common = max(3, len(all_rel) // 10)
+    rare = {t for t in stems if df.get(t, 0) <= common}
+
+    found: dict[str, dict[str, Any]] = {}
+
+    def offer(rel: str, signal: str, token: str, score: int) -> None:
+        prev = found.get(rel)
+        if prev is None or score > int(prev["score"]):
+            found[rel] = {"file": rel, "category": _classify_satellite(
+                rel, protected), "token": token, "signal": signal,
+                "hint": _SATELLITE_HINT[signal], "score": score}
+
+    # 1. Прямая ссылка: файл ЗАДАЧИ называет путь снаружи. Улика сильнее
+    #    всех прочих — она явная, а не выведенная.
+    loose: dict[str, list[str]] = {}
+    for rel in inside[:_MAX_OWN_READS]:
+        try:
+            text = (root_p / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for m in dict.fromkeys(_PATHISH.findall(text)):
+            cand = m.replace("\\", "/").lstrip("./")
+            if not cand or cand in own:
+                continue
+            if "/" in cand:
+                for hit in [r for r in all_rel
+                            if r == cand or r.endswith("/" + cand)][:2]:
+                    offer(hit, "forward", cand, 9 + _proximity(hit, own))
+                continue
+            # Голое имя файла — улика слабее: путь не назван, и годится
+            # она, только если снаружи это пришпиленные данные.
+            for hit in [r for r in by_name.get(cand, [])
+                        if _classify_satellite(r, protected) == "pinned"][:2]:
+                loose.setdefault(str(pathlib.PurePosixPath(hit).parent),
+                                 []).append(hit)
+
+    # Пришпиленные данные ходят каталогами: задача, правящая формат,
+    # называет по имени половину фикстуры. Десять строк про соседние
+    # файлы одного каталога — это одна улика, и говорить о ней надо
+    # один раз, каталогом (замер: иначе спорный файл тонул в своих же
+    # соседях).
+    for folder, hits in loose.items():
+        uniq = sorted(set(hits))
+        if len(uniq) >= 3:
+            offer(folder + "/", "pinned_dir",
+                  f"{len(uniq)} файл(ов)", 8 + _proximity(uniq[0], own))
+        else:
+            for hit in uniq:
+                offer(hit, "forward", pathlib.PurePosixPath(hit).name,
+                      7 + _proximity(hit, own))
+
+    # 2. Обратная ссылка: файл снаружи упоминает файлы задачи.
+    for rel, matched, named in seen:
+        prox = _proximity(rel, own)
+        if named:
+            # Файл снаружи называет файл задачи ПО ИМЕНИ: так пишут
+            # документы, пришпиливающие формат, и тесты, читающие данные
+            # (PILOT-1: q017 — docs/04 §8 держит формат suppressions.toml).
+            # Класс улики в вес НЕ входит: попытка поднять «документы и
+            # пришпиленное» замером отвергнута — вместе со спорным файлом
+            # поднимаются и его соседи по классу, и он же уезжает вниз.
+            offer(rel, "referrer", named[0], 7 + prox)
+        strong = sorted(matched & rare)
+        if len(strong) >= 2:
+            # Реестр узнаётся тем, что зовёт СРАЗУ НЕСКОЛЬКО соседей.
+            offer(rel, "registry", ", ".join(strong[:3]),
+                  5 + min(len(strong), 4) + prox)
+        elif strong:
+            offer(rel, "referrer", strong[0], 2 + prox)
+
+    ranked = sorted(found.values(),
+                    key=lambda w: (-int(w["score"]), str(w["file"])))
+    return [{k: str(v) for k, v in w.items() if k != "score"}
+            for w in ranked[:limit]]
 
 
 def validate_plan_diff(diff: dict[str, Any] | None,
