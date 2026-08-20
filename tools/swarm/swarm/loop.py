@@ -13,9 +13,7 @@
     5.  COMMIT | FEEDBACK
 """
 import datetime as dt
-import fnmatch
 import hashlib
-import os
 import pathlib
 import subprocess
 import sys
@@ -29,10 +27,23 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import board  # noqa: E402 — каталог добавлен строкой выше
+import gitops  # noqa: E402
 import memory as memory_mod  # noqa: E402
 import obs  # noqa: E402
 import pyindex  # noqa: E402
-import state as state_mod  # noqa: E402
+from gitops import (  # noqa: E402
+    _apply_patch as _git_apply_patch,
+    _declared_state_sha as _git_declared_state_sha,
+    _sh as _git_sh,
+    _state_fingerprint as _git_state_fingerprint,
+    _state_sha as _git_state_sha,
+)
+from reviewcycle import (  # noqa: E402
+    _arm as _rc_arm,
+    _diagnose as _rc_diagnose,
+    _review_with_quota_wait as _rc_review_with_quota_wait,
+    _reviewers_disagreed as _rc_reviewers_disagreed,
+)
 from verdicts import (  # noqa: E402,F401
     ASK_USER,
     CATEGORIES,
@@ -60,6 +71,9 @@ from verdicts import (  # noqa: E402,F401
 )
 
 log = obs.get_logger("loop")
+
+# Явный re-export: planner обращается к quota_error через `loop.quota_error`.
+__all__ = ["quota_error"]
 
 # Ревью может не состояться по разным причинам, и лечение у них разное.
 # Оператору отдаётся диагноз, а не голое «invalid_verdict»: на пилоте
@@ -174,12 +188,8 @@ class Loop:
 
     def _sh(self, cmd: list[str],
             timeout: float = 900) -> subprocess.CompletedProcess[str]:
-        # check=False намеренно: `_sh` — общий раннер, и КАЖДЫЙ вызывающий
-        # смотрит returncode сам (ветвление по коду — суть половины
-        # проверок петли). Исключение здесь лишило бы их этой ветки.
-        return subprocess.run(cmd, capture_output=True, text=True,
-                              cwd=self.state.root, timeout=timeout,
-                              check=False)
+        return _git_sh(self, cmd, timeout)
+
 
     @property
     def max_iter(self) -> int:
@@ -189,427 +199,56 @@ class Loop:
         return int(self.config.get("max_iterations", MAX_ITER))
 
     def gate(self, task: dict[str, Any]) -> tuple[bool, str]:
-        cmd = self.config.get("gate_command") or [
-            "python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]
-        # Холодная сборка Rust не влезает в 900 с, а таймаут здесь —
-        # исключение, топившее задачу в in_progress (до §5.3-починки).
-        r = self._sh(cmd, timeout=int(self.config.get("gate_timeout", 900)))
-        tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-3:])
-        ok = r.returncode == 0
-        self.state.metric(task=task["id"], phase="gate", ok=ok, tail=tail[:300])
-        return ok, tail
+        return gitops.gate(self, task)
 
     def integrity_check(self) -> list[str]:
-        """§6.1: неприкосновенность истории и состояния петли.
-
-        Deny-правила у Kimi недокументированы, а промпт — не гарантия:
-        исполнителю ничто не мешает вызвать `git commit`, `git reset` или
-        переписать `.swarm/tasks.json`, пометив задачу выполненной. Здесь
-        проверяется не намерение, а ФАКТ — постфактум, но механически.
-        Возвращает список нарушений.
-        """
-        bad = []
-        head = self._sh(["git", "rev-parse", "HEAD"]).stdout.strip()
-        if self._head_before and head != self._head_before:
-            # Кто сдвинул HEAD, проверка знать не может: у неё есть только
-            # «до» и «после». На PILOT-1 его сдвинул ОПЕРАТОР — закоммитил
-            # правку конфига, пока задача шла в фоне, — а формулировка
-            # «исполнитель вышел за границы доверия» обвинила агента и
-            # стоила круга разбирательства. Поэтому текст нейтрален, а
-            # рядом показан сам коммит: автор и заголовок отвечают на
-            # вопрос «моё это или нет» с одного взгляда.
-            who = self._sh(["git", "log", "-1", "--format=%an: %s",
-                            head]).stdout.strip()
-            bad.append(f"история изменилась во время задачи: HEAD "
-                       f"{self._head_before[:8]} -> {head[:8]}"
-                       + (f" ({who})" if who else "")
-                       + ". Коммитит только оркестратор; если коммит ваш —"
-                         " задачу можно вернуть в очередь как есть")
-        state_now = self._state_fingerprint()
-        if (self._state_before and state_now is not None
-                and state_now != self._state_before):
-            # Изменение состояния само по себе НЕ нарушение: через тот же
-            # `.swarm/` работают и петля (set_status), и оператор
-            # (`swarm answer` из соседнего процесса). Раньше проверка
-            # сравнивала только «до» и «после» и роняла бегущую задачу,
-            # когда оператор отвечал на вопрос ДРУГОЙ, — то есть инбокс,
-            # заведённый чтобы спор не останавливал очередь, останавливал
-            # её сам (пилот, c4rp).
-            #
-            # Разделитель — журнал: законная запись идёт через
-            # `state.save_tasks` и объявляет там свой отпечаток. Если
-            # текущее состояние совпадает с последним объявленным, все
-            # изменения объяснены. Правка файла в обход API следа не
-            # оставляет и остаётся нарушением.
-            #
-            # Граница честности: агент, дописавший в журнал поддельную
-            # строку, обойдёт проверку. Она ловит небрежность и жадность,
-            # а не подделку, — и это по-прежнему больше, чем ловилось до.
-            declared = self._declared_state_sha()
-            if declared is None or declared != self._state_sha(state_now):
-                bad.append("состояние петли (.swarm/) изменено в обход API: "
-                           "правка файла не объявлена в журнале")
-            else:
-                # Объяснено — сдвигаем базу, иначе следующая проверка той же
-                # задачи сработает на том же самом изменении повторно.
-                self._state_before = state_now
-        for marker, what in (("rebase-merge", "rebase"), ("rebase-apply", "rebase"),
-                             ("MERGE_HEAD", "merge"),
-                             ("CHERRY_PICK_HEAD", "cherry-pick")):
-            if (pathlib.Path(self.state.root) / ".git" / marker).exists():
-                bad.append(f"репозиторий оставлен в состоянии {what}")
-        return bad
+        return gitops.integrity_check(self)
 
     def _state_sha(self, blob: str) -> str:
-        """Отпечаток очереди тем же способом, каким его объявляет запись."""
-        state_mod = sys.modules.get("state")
-        if state_mod is not None:
-            sha: str = state_mod.tasks_sha(blob)
-            return sha
-        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+        return _git_state_sha(blob)
 
     def _declared_state_sha(self) -> str | None:
-        """Последний отпечаток, объявленный законной записью состояния."""
-        path = getattr(self.state, "journal_path", None)
-        if path is None:
-            return None
-        state_mod = sys.modules.get("state")
-        if state_mod is None:
-            return None
-        declared: str | None = state_mod.last_declared_sha(path)
-        return declared
+        return _git_declared_state_sha(self)
 
     def _state_fingerprint(self) -> str | None:
-        path = getattr(self.state, "tasks_path", None)
-        if path is None:
-            return None
-        try:
-            text: str = path.read_text(encoding="utf-8")
-        except OSError:
-            return None
-        else:
-            return text
+        return _git_state_fingerprint(self)
 
     def scope_check(self, task: dict[str, Any],
                     ) -> tuple[bool, list[str], list[str]]:
-        """Границы задачи: разрешённые пути и неприкосновенность тестов.
-
-        Принцип один: защита — от правки ЧУЖОГО, а не названного. Файл из
-        защищённой зоны (tests/**, *.toml, ...) можно менять, только если
-        `paths` задачи целятся в него ЯВНО.
-
-        История правила — два урока, оба стоили кругов:
-
-        1. Приёмка: у `feature-tests` исполнитель ОБЯЗАН писать свои
-           тесты, и файлы из `paths` защищёнными не считались — но только
-           для этого типа.
-        2. Пилот (k3ad, s2ky — шесть сгоревших раундов): задача типа
-           `feature` меняет поведение правила, чьё число диагностик
-           ПРИШПИЛЕНО существующим тестом. Тест был явно назван в `paths`
-           — и всё равно откатывался, потому что исключение работало
-           по типу, а не по явности. Ни один тип не позволял «поменять
-           код и обновить пришпиленный к нему тест» — а это самая
-           обычная форма работы.
-
-        Тонкость: широкий глоб защиту НЕ снимает. `crates/**` покрывает и
-        тесты, но не целится в них; снимает защиту только паттерн, сам
-        лежащий в защищённой зоне (`crates/x/tests/*.rs`, `zeus/Cargo.lock`).
-        Иначе любой размашистый paths обнулял бы анти-gaming (§5.5).
-        """
-        allowed = task.get("paths") or []
-        protected = self.config.get("protected_paths") or ["tests/*", "tests/**"]
-
-        def is_protected(path: str) -> bool:
-            return any(fnmatch.fnmatch(path, p) for p in protected)
-
-        unlocking = [pat for pat in allowed if is_protected(pat)]
-        bad, touched_tests = [], []
-        for path in self.state.changed_files():
-            if state_mod.owned_by_loop(path):
-                # Конфиг и состояние ПЕТЛИ — не материал задачи. Судить
-                # их страж не имеет права ни при каком раскладе: на
-                # PILOT-1 незакоммиченный swarm.toml, вернувшийся из
-                # стеша, был прочитан как работа агента, и исполнитель
-                # откатил два решения владельца (см. state.py).
-                continue
-            if path in self._pre_existing or path in self._run_dirt:
-                # Лежало в дереве ДО старта задачи (`run --force`) — не
-                # работа агента. revert такие файлы щадит, а страж без
-                # этого исключения читал их как нарушение каждый раунд:
-                # лимит выгорал об операторскую незакоммиченную правку,
-                # которую никто не мог ни убрать, ни легализовать.
-                # Цена решения: правку агента ПОВЕРХ такого файла страж
-                # тоже не видит — этот риск оператор принял флагом --force.
-                # _run_dirt — то же множество на уровне ПРОГОНА: перезапуск
-                # процесса и цикл stash/restore обнуляют _pre_existing, а
-                # операторская грязь от этого работой агента не становится.
-                continue
-            if not any(fnmatch.fnmatch(path, p) for p in allowed):
-                bad.append(path)
-                continue
-            if is_protected(path) and not any(
-                    fnmatch.fnmatch(path, u) for u in unlocking):
-                touched_tests.append(path)
-        ok = not bad and not touched_tests
-        self.state.metric(task=task["id"], phase="scope", ok=ok,
-                          unexpected=bad, protected=touched_tests)
-        return ok, bad, touched_tests
+        return gitops.scope_check(self, task)
 
     def revert(self) -> list[str]:
-        """Откат работы агента, включая СОЗДАННЫЕ файлы.
-
-        `git checkout -- .` возвращает отслеживаемые файлы, но untracked
-        не трогает: нарушитель оставался на диске и повторно ловился
-        каждый раунд, делая нарушение границ неустранимым. Откатываем
-        поимённо то, что реально изменено, — по всему дереву не метём,
-        чтобы не задеть чужое.
-        """
-        untouchable: set[str] = (getattr(self, "_pre_existing", set())
-                                 | getattr(self, "_run_dirt", set()))
-        changed = [p for p in self.state.changed_files()
-                   if p not in untouchable and not state_mod.owned_by_loop(p)]
-        if not changed:
-            return []
-        tracked: list[str] = []
-        untracked: list[str] = []
-        for path in changed:
-            probe = self._sh(["git", "ls-files", "--error-unmatch", path])
-            (tracked if probe.returncode == 0 else untracked).append(path)
-        if tracked:
-            self._sh(["git", "checkout", "--", *tracked])
-        for path in untracked:
-            # intent-to-add уже мог зарегистрировать файл в индексе
-            self._sh(["git", "rm", "-f", "--quiet", "--ignore-unmatch", path])
-            target = self.state.root / path
-            if target.exists():
-                target.unlink()
-        return changed
+        return gitops.revert(self)
 
     def commit(self, task: dict[str, Any]) -> str | None:
-        """Коммит принятой итерации; пустой diff — не ошибка (§4.4)."""
-        env = {"GIT_AUTHOR_NAME": "swarm-executor",
-               "GIT_AUTHOR_EMAIL": "executor@swarm.local",
-               "GIT_COMMITTER_NAME": "swarm-orchestrator",
-               "GIT_COMMITTER_EMAIL": "orchestrator@swarm.local"}
-        # Конфиг петли в коммит задачи не входит: `git add -A` без
-        # исключений закоммитил бы операторскую правку swarm.toml как
-        # работу исполнителя. Именно add-then-unstage, а не pathspec с
-        # :(exclude): явный pathspec поверх игнорируемого .swarm/ роняет
-        # `git add` советом «Use -f» (замерено на 2.50). reset по путям,
-        # которых нет в индексе, — тихий no-op.
-        subprocess.run(["git", "add", "-A"], cwd=self.state.root, check=True)
-        subprocess.run(["git", "reset", "-q", "--", *state_mod.OWNED_ROOTS],
-                       cwd=self.state.root, check=True)
-        # Здесь код возврата — ОТВЕТ, а не ошибка: 0 значит «нечего
-        # коммитить», 1 — «есть изменения». check=True сломал бы логику.
-        staged = subprocess.run(["git", "diff", "--cached", "--quiet"],
-                                cwd=self.state.root, check=False)
-        if staged.returncode == 0:
-            return None
-        message = self.agents.commit_message(task, self._sh(["git", "diff",
-                                                             "--cached"]).stdout)
-        subprocess.run(["git", "commit", "-qm", message], cwd=self.state.root,
-                       check=True, env={**os.environ, **env})
-        # Коммит оркестратора легален: сдвигаем базу, иначе следующая
-        # проверка целостности обвинит агента в нашей же работе.
-        self._head_before = self._sh(["git", "rev-parse", "HEAD"]).stdout.strip()
-        return self._sh(["git", "rev-parse", "--short", "HEAD"]).stdout.strip()
+        return gitops.commit(self, task)
 
     def cleanup(self, task: dict[str, Any], reason: str) -> str | None:
-        """Терминальный исход оставляет worktree чистым (§5.5.1).
-
-        Два урока пилота, оба стоили работы:
-
-        1. `git stash push` ОТКАЗЫВАЕТСЯ работать поверх записей
-           intent-to-add: «Entry ... not uptodate. Cannot merge». А их
-           оставляет `work_diff` — тот самый `git add -A -N`, которым
-           созданные файлы делаются видимыми для `git diff`. Починка
-           одного представления работы ломала другое, поэтому индекс
-           сбрасывается перед стешем.
-        2. Метка возвращалась БЕЗ проверки кода возврата. Запись задачи
-           ссылалась на стеш `swarm:g1nt-invalid-verdict`, которого не
-           существовало, и отправляла оператора искать работу там, где
-           её нет. Не создался — так и скажем.
-
-        3. Конфиг петли в стеш не входит. Именно стеш и был машиной
-           отмывания на PILOT-1: quota-пауза унесла незакоммиченный
-           swarm.toml вместе с работой, перезапуск застал чистое дерево,
-           _pre_existing оказался пуст — и вернувшийся из стеша конфиг
-           страж прочитал как нарушение границ. Операторская правка
-           конфига остаётся в дереве на виду; preflight назовёт её.
-        """
-        stashable = [p for p in self.state.changed_files()
-                     if not state_mod.owned_by_loop(p)]
-        if not stashable:
-            return None
-        self._sh(["git", "reset", "-q"])
-        label = f"swarm:{task['id']}-{reason}"
-        # Стеш ПОИМЁННО, а не «всё с исключениями»: явный pathspec с
-        # :(exclude) поверх игнорируемого .swarm/ роняет git тем же
-        # советом «Use -f», что и add (см. commit). Список и так уже
-        # вычислен — им и ограничиваемся.
-        r = self._sh(["git", "stash", "push", "-u", "-q", "-m", label,
-                      "--", *stashable])
-        if r.returncode != 0:
-            self.state.log("stash_failed", task=task["id"], reason=reason,
-                           stderr=(r.stderr or "").strip()[:300])
-            return None
-        return label
+        return gitops.cleanup(self, task, reason)
 
     def _apply_patch(self, diff_text: str) -> bool:
-        """Вернуть worktree к сохранённому лучшему состоянию.
-
-        Код возврата `git apply` обязан проверяться. Здесь работа уже
-        снесена `revert`, и молчаливый провал восстановления означает, что
-        петля пойдёт коммитить ПУСТОТУ, считая, что откатилась к лучшему
-        состоянию. Худший из возможных исходов: работа потеряна, а история
-        утверждает обратное.
-        """
-        if not diff_text.strip():
-            return True
-        r = subprocess.run(["git", "apply", "-"], cwd=self.state.root,
-                           input=diff_text, text=True, capture_output=True,
-                           check=False)
-        if r.returncode != 0:
-            self.state.log("restore_failed", stderr=(r.stderr or "").strip()[:300])
-        return r.returncode == 0
+        return _git_apply_patch(self, diff_text)
 
     def _review_with_quota_wait(self, task: dict[str, Any], tail: str,
                                 iteration: int, confirming: bool,
                                 ) -> dict[str, Any] | None:
-        """§5.3: отказ по квоте — пауза с бэкоффом, а не авария.
-
-        Квота — заведомо временное и заведомо повторяемое состояние:
-        блокировать за него задачу значит наказывать её за погоду у
-        провайдера. Ровно это и происходило: QuotaExceededError долетал до
-        общего `except Exception` в run(), задача уходила в blocked с
-        диагнозом «авария», очередь останавливалась, а ветка «пауза по
-        квоте» в CLI была недостижима.
-
-        Теперь ждём по нарастающей (1→2→4 мин по умолчанию, конфиг
-        `quota_backoff_s`) и повторяем. Не отпустило — работа в stash,
-        задача возвращается в очередь как есть (она ни в чём не виновата),
-        исключение уходит наверх: прогон ставится на паузу целиком, и
-        «когда продолжить» решает человек.
-        """
-        delays = list(self.config.get("quota_backoff_s", (60, 120, 240)))
-        while True:
-            try:
-                verdict: dict[str, Any] | None = self.agents.review(
-                    task, tail, iteration, confirming=confirming)
-            except Exception as e:
-                # По имени, не по классу: у Agents своя копия модуля loop,
-                # и её QuotaExceededError — другой объект (см. quota_exception).
-                if not quota_exception(e):
-                    raise
-                if not delays:
-                    stash = self.cleanup(task, "quota-pause")
-                    self.state.log("quota_pause", task=task["id"],
-                                   round=iteration, stash=stash,
-                                   message=str(e)[:200])
-                    self.state.set_status(task["id"], "pending", stash=stash)
-                    self.ui(f"    ПАУЗА ПО КВОТЕ: {str(e)[:120]}")
-                    raise
-                delay = delays.pop(0)
-                self.state.log("quota_wait", task=task["id"], round=iteration,
-                               wait_s=delay, message=str(e)[:200])
-                self.state.metric(task=task["id"], iter=iteration,
-                                  phase="review", quota_wait_s=delay)
-                self.ui(f"    квота провайдера: ждём {delay} с")
-                time.sleep(delay)
-            else:
-                return verdict
+        return _rc_review_with_quota_wait(self, task, tail, iteration, confirming)
 
     @staticmethod
     def _reviewers_disagreed(history: list[dict[str, Any]]
                              ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-        """Последний раунд был подтверждающим и сменил вердикт?
-
-        Подтверждающий раунд ревьюет ТОТ ЖЕ дифф: исполнитель в нём не
-        вызывается, код между раундами не менялся. Значит, смена вердикта
-        — свойство ревьюеров, а не работы. Отличить это от несходимости
-        задачи можно только здесь: дальше по тексту диагноза информации
-        уже нет.
-        """
-        if len(history) < 2 or not history[-1].get("confirming"):
-            return None
-        prev, last = history[-2], history[-1]
-        if prev.get("verdict") == last.get("verdict"):
-            return None
-        return prev, last
+        return _rc_reviewers_disagreed(history)
 
     @staticmethod
     def _arm(row: dict[str, Any]) -> str:
-        """Рука замера словами: без неё «разошлись» нечем проверить."""
-        model = row.get("model") or "сессионная модель"
-        effort = row.get("effort")
-        return f"{model}/{effort}" if effort else str(model)
+        return _rc_arm(row)
 
     @staticmethod
     def _diagnose(outcome: str, history: list[dict[str, Any]],
                   scope_failures: list[list[str]] | None = None,
                   sig_failures: list[list[str]] | None = None) -> str:
-        """Несходимость требует ДИАГНОЗА, а не очередного повтора.
+        return _rc_diagnose(outcome, history, scope_failures, sig_failures)
 
-        Закрытый список гипотез (FuguNano): человеку эскалируется не голый
-        факт «три раунда подряд», а версия о причине.
-
-        Диагноз обязан называть только то, что диагност МОЖЕТ знать. Пока
-        любое исчерпание раундов объявлялось «задача слишком крупная»,
-        петля посылала человека расщеплять задачу, которую сама же
-        одобрила раундом раньше (пилот, e7in), и заодно прятала главное
-        наблюдение прогона — расхождение двух рук на одном диффе. Это
-        третий случай того же класса после проверки целостности и стража
-        путей: предохранитель, называющий причину, которой не знает.
-        """
-        if outcome == ESCALATE_MAX:
-            # Сначала — то, что диагност ЗНАЕТ наверняка (§5.7.2). Сигнатуры
-            # проверяются РАНЬШЕ границ: нарушение замороженного контракта —
-            # факт более точный, чем общий выход за paths, и называть общую
-            # причину, когда известна точная, значит соврать умолчанием.
-            if sig_failures and len(sig_failures) >= 2:
-                changed = sorted({s for row in sig_failures for s in row})
-                shown = ", ".join(changed[:5]) + ("…" if len(changed) > 5 else "")
-                return (f"{len(sig_failures)} раунд(ов) сгорели на нарушении "
-                        f"замороженных сигнатур контракта: {shown}. Это не "
-                        f"вопрос размера задачи — исполнитель меняет то, что "
-                        f"договором запрещено менять. Если контракт скелета "
-                        f"невыполним, нужен пересмотр сигнатур в задаче-"
-                        f"скелете или dispute, а не новая попытка")
-            # Раунды, сгоревшие на границах, — факт из журнала, а не гипотеза:
-            # на пилоте k3ad и s2ky получили «задача слишком крупная —
-            # расщепить», когда обе бились об один защищённый файл.
-            # Расщепление там не помогло бы: любой осколок упёрся бы туда же.
-            if scope_failures and len(scope_failures) >= 2:
-                files = sorted({f for row in scope_failures for f in row})
-                shown = ", ".join(files[:5]) + ("…" if len(files) > 5 else "")
-                return (f"{len(scope_failures)} раунд(ов) сгорели на "
-                        f"нарушении границ — исполнитель каждый раз правил: "
-                        f"{shown}. Расщепление не поможет: любой осколок "
-                        f"упрётся туда же. Добавьте файл в paths задачи явно "
-                        f"или пересмотрите protected_paths")
-            flip = Loop._reviewers_disagreed(history)
-            if flip:
-                prev, last = flip
-                return (
-                    f"ревьюеры разошлись на ОДНОМ И ТОМ ЖЕ диффе: раунд "
-                    f"{prev['round']} ({Loop._arm(prev)}) — {prev['verdict']}, "
-                    f"находок {prev['findings']}; подтверждающий раунд "
-                    f"{last['round']} ({Loop._arm(last)}) — {last['verdict']}, "
-                    f"находок {last['findings']}. Исполнитель между раундами "
-                    f"не вызывался, код не менялся. Расщеплять задачу не "
-                    f"нужно — прочтите оба вердикта в .swarm/log и решите, "
-                    f"чья правда")
-            return "исчерпаны раунды: задача, вероятно, слишком крупная — расщепить"
-        counts = [h["findings"] for h in history]
-        cats = [tuple(h["categories"]) for h in history]
-        if len(set(cats)) == 1 and len(cats) > 1:
-            return ("замечания одного класса повторяются: либо требование "
-                    "сформулировано неясно, либо ревьюер строже спецификации")
-        if counts and counts == sorted(counts, reverse=True):
-            return "находки убывают, но не до нуля: не хватило раундов"
-        return ("число находок не убывает — вероятны качели fix→break; "
-                "нужна другая реализация, а не правки поверх")
 
     # --- цикл --------------------------------------------------------------
 

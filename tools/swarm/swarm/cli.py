@@ -143,7 +143,7 @@ from cliexplain import (  # noqa: E402,F401
 )
 from cliinbox import _paths_mentioned, cmd_answer, cmd_inbox  # noqa: E402,F401
 from climemory import _memory_anchor, cmd_memory  # noqa: E402,F401
-from climisc import (  # noqa: E402,F401
+from climisc import (  # noqa: E402
     _tree_sitter_clib,
     cmd_doctor,
     cmd_plan,
@@ -173,6 +173,26 @@ from clirun import (  # noqa: E402,F401
     cmd_resume,
     cmd_run,
 )
+
+# Явный re-export: подмодули cli обращаются к этим именам через `cli.X`.
+__all__ = [
+    "_tree_sitter_clib",
+    "cmd_ab",
+    "cmd_answer",
+    "cmd_board",
+    "cmd_doctor",
+    "cmd_go",
+    "cmd_impact",
+    "cmd_inbox",
+    "cmd_map",
+    "cmd_memory",
+    "cmd_plan",
+    "cmd_policy",
+    "cmd_report",
+    "cmd_resume",
+    "cmd_run",
+    "importlib",
+]
 
 EPILOG = """
 порядок применения (первый прогон):
