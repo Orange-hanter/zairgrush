@@ -1,8 +1,8 @@
 ---
 title: "ZAIrgRush — План декомпозиции монолитов tools/swarm"
 type: plan
-status: draft
-version: 0.2
+status: done
+version: 0.3
 created: 2026-08-20
 updated: 2026-08-20
 related:
@@ -131,6 +131,21 @@ summary: >
 `swarm/loop.py`, …) и состав экспортируемых имён неизменны.
 
 ## Журнал изменений
+
+### v0.3 (2026-08-20)
+
+- План выполнен полностью, пятью коммитами (`0900c88`…`5e914dd`),
+  каждый с зелёным `./check.sh`. Итог: `cli.py` 1790→424,
+  `loop.py` 1412→829, `memory.py` 1113→109 (shim), `agents.py` 930→832;
+  новые модули: `verdicts.py`, `clirun/cliexplain/clireport/cliinbox/
+  climemory/climisc`, `memstore/mempg/meminject/memreflect`, `gitops.py`,
+  `reviewcycle.py`, `loop_types.py` (Protocol), `parsing.py`. Отступления
+  от первой редакции, снятые по ходу: исключения квоты продублированы в
+  `loop.py` (crash-safety-тест требует разных объектов классов у копий
+  модуля); добавлены `mypy_path = ["swarm"]` и задокументированные долги
+  SLF001 для модулей-делегатов; удалён пустой `swarm/__init__.py`.
+  Резка `Agents.implement`/`review` оставлена за рамками, как и решено
+  в §5.
 
 ### v0.2 (2026-08-20)
 
