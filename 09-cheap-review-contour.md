@@ -2,7 +2,7 @@
 title: "ZeusLogic — Cheap models in the review path: a plan"
 type: design
 status: draft
-version: 0.3
+version: 0.4
 created: 2026-08-20
 updated: 2026-08-20
 related:
@@ -79,13 +79,13 @@ and buy extra angles at zero marginal cost.**
 Confusing them is the main way this goes wrong, so they get separate
 names and separate rules.
 
-| | **Ollama contour** — `deepseek-v4-flash:0731`, `glm-5.1`, `qwen3.5:397b`, `gpt-oss:120b`, `kimi-k2.7-code`, `gemma4:31b` | **Haiku contour** — `claude-haiku-4-5` via `claude -p` |
+| | **Ollama contour** — 19 models on the account; measured leaders `kimi-k2.7-code`, `nemotron-3-nano:30b`, `mistral-large-3:675b`, `glm-5.2`, `gpt-oss:20b`; 1 M context from `minimax-m3` | **Haiku contour** — `claude-haiku-4-5` via `claude -p` |
 | --- | --- | --- |
 | Billing | flat subscription — **$0 marginal per call** | metered: **$1 / $5** per MTok in/out (Opus 5 is $5 / $25) |
 | Output contract | none. `format` with a schema is **silently ignored** — now stated by the vendor too ("Ollama's Cloud currently does not support structured outputs") and re-measured 2026-08-20; prompt-coerce + own validator (ADR-004) | `--json-schema` honored — 25/25 valid verdicts across the whole program |
 | Tools | none. Bare chat: the orchestrator must feed every byte of context | full agentic CLI — it walks the repo itself |
 | Context | 262 K (gemma4 / qwen3.5 / nemotron), **1 M** (deepseek-v4-flash) | 200 K |
-| Depth knob | `think` **per model**: boolean for models that can disable the trace, a level (`low`/`medium`/`high`) for gpt-oss, which ignores booleans — plus `num_predict`, which the trace spends too | `--effort` **is accepted** by `claude -p` on Haiku 4.5, but bought no depth in the probe (2026-08-20: `xhigh` → 36 thinking tokens / $0.0204, `low` → 43 / $0.0162) |
+| Depth knob | `think` **per model**: a boolean for models that can disable the trace; four catalogue models ignore it and reason regardless (both `gpt-oss`, both `minimax`), where a level (`low`/`medium`/`high`) shortens the trace. The trace spends `num_predict`, so the ceiling — not the level — is what decides whether an answer arrives | `--effort` **is accepted** by `claude -p` on Haiku 4.5, but bought no depth in the probe (2026-08-20: `xhigh` → 36 thinking tokens / $0.0204, `low` → 43 / $0.0162) |
 | Latency | 2–6 s (kimi-k2.7-code, deepseek-v4-flash fastest, probe 2026-08-18) | tens of seconds |
 | Cost telemetry | `usage` in tokens; **no USD** — invisible to the budget | real `total_cost_usd` in the envelope |
 
@@ -232,9 +232,12 @@ carry a closing commit: **70 calls, $0.00 metered, 270 s wall, 548 K in /
 21 K out tokens**.
 
 Run A was invalid and is kept in the report as evidence: `ollama_chat`
-hardcoded `think: false`, which **gpt-oss ignores** — it only accepts a
-level — so that juror reasoned away its whole `num_predict` and returned
-empty answers 12 times in 14. Run A read that as "the model is unusable".
+hardcoded `think: false`, which **gpt-oss ignores** — it reasons
+regardless — so that juror spent its whole `num_predict` on the trace and
+returned empty answers 12 times in 14. (The catalogue bake-off later
+refined this: a level was never strictly *required*, the budget was. At
+`num_predict = 4000` gpt-oss answers with `think: false` too, simply
+paying 5395 characters of trace for it.) Run A read that as "the model is unusable".
 `think` turned out to be a property of the model, not a constant of the
 call, and the inverse holds too: a level would destroy the other four.
 Fixed in gated code (per-model `think`, `thinking_chars` in metrics) and
@@ -272,11 +275,29 @@ candidates per diff, silent on 9 of 14 diffs) and the *fastest* (2.1 s),
 and it still ties for the most unique address reach — removing it now
 costs coverage, the exact reverse of Run A.
 
-*Revised gate for P2*: same roster at per-juror cap **2** instead of 5 —
-spending the ranking budget inside the juror, where the lens context still
-exists, rather than in a severity filter that sees only a label. Passes if
-volume is under 10 with major-file coverage still at 4/4. Until then P2
-stays unbuilt and P0/P1/P3 are unaffected.
+*That revised gate was then measured, and it failed on its own terms.*
+Per-juror cap 2 (run D) passes the volume gate for the first time — 5.0
+candidates per diff, max 8 — and **halves major-file coverage, 4/4 to
+2/4**, exactly like the severity filter it was meant to improve on. Every
+lever that squeezes what a juror may *say* buys the gate with the material
+the panel exists to find.
+
+**The lever that works is the roster, not the muzzle.** Scored by *unique*
+address contribution, three of the five modern jurors reach nothing no one
+else reached. Subsets computed offline from candidates already collected,
+with no new calls: `glm-5.1 + gpt-oss:120b + qwen3.5:397b` gives **7.4**
+candidates per diff against 14.3 for all five, loses exactly one address
+(27/34), and **holds major-file coverage at 4/4**. On the modern roster,
+`glm-5.2 + kimi-k3 + minimax-m3` gives 7.9 against 10.6 and loses nothing
+at all. The panel's volume was never padding — it was signal plus
+redundancy, and only the redundancy is safe to cut.
+
+*Next step for P2, and it is not another squeeze*: the `< 10` ceiling is
+this plan's own guess, written before any adjudicator had been run, and
+nothing measured validates it. What decides P2 is **the price of the
+adjudicator** — run an expensive model over the three-juror output and
+measure what it costs. That step is metered, so it awaits owner approval.
+Until then P2 stays unbuilt and P0/P1/P3 are unaffected.
 
 **Step 1 — P0**: tuple-draw fix + Haiku in the pool. Runs inside the next
 pilot queue with no protocol change. *Tuple draw implemented and gated
@@ -310,10 +331,21 @@ review path.
   behaves exactly as it does today, with a warning in the journal.
 - Secret scrub before every external call (`helpers.scrub`); Ollama Cloud
   sends no rate-limit headers, so the circuit breaker stays.
-- Determinism per ADR-004: native `/api/chat`, `think: false`,
+- Determinism per ADR-004: native `/api/chat`, `think` **chosen per
+  model** (four models in the catalogue ignore the boolean and reason
+  regardless — both `gpt-oss`, both `minimax`),
   `temperature 0`, `top_k 1`, `repeat_penalty 1.0`, explicit
   `num_predict`, fixed seed; `done_reason == "length"` → discard the
   answer, a truncated one is worse than none.
+- **`num_predict` is not a place to economise on this contour.** The old
+  ceiling of 900 was inherited from the metered contour, where every
+  output token is money; on a flat subscription output tokens cost only
+  latency. Measured 2026-08-20 across all 19 catalogue models: at 4000,
+  **18 of 19** produce a valid answer; the one holdout (`minimax-m3`,
+  17 K characters of reasoning trace) is fine at 12000. **There are no
+  unusable models in the catalogue** — every prior "this model is
+  unusable" verdict was a verdict on our ceiling. Default raised to 4000;
+  `HELPER_TIMEOUT` likewise (90 s cut the slowest juror mid-thought).
 - Every draw and every helper call lands in metrics. An arm that is not
   in the journal turns the run into unreproducible noise.
 
@@ -365,6 +397,30 @@ confirm it, and both are cheap.
 ---
 
 ## Журнал изменений
+
+### v0.4 (2026-08-20)
+
+- Замечание владельца о составе и о потолке токенов проверено и оказалось
+  верным дважды. Бейк-офф всего каталога (19 моделей): при потолке 4000
+  годны 18, оставшаяся `minimax-m3` годна при 12000 — **непригодных
+  моделей в каталоге нет**, а прежние вердикты «модель непригодна» были
+  вердиктами о нашем потолке. Потолок 900 пришёл из МЕТРИРУЕМОГО контура
+  (§7.1 «не платим за размышления»), где выходной токен — деньги; на
+  плоской подписке он стоит только задержки. Правило добавлено в §5,
+  умолчание поднято до 4000, `HELPER_TIMEOUT` — до 300.
+- Современный состав замерен (прогон C) и оказался ХУЖЕ прежнего по
+  адресному покрытию: 25/33 против 28/34, при вчетверо большем времени.
+  Три модели из пяти новейших не дали ни одного уникального адреса.
+  «Новее» — не замер.
+- **Найден рычаг ворот объёма, и это не тот рычаг, который план
+  рекомендовал.** Потолок находок 2 (прогон D) ворота проходит впервые
+  (5.0 на дифф), но роняет покрытие major-файлов 4/4 → 2/4 — ровно как
+  фильтр по severity. Сокращение СОСТАВА до трёх присяжных даёт 7.4
+  против 14.3, теряет один адрес и удерживает 4/4. Объём панели —
+  сигнал плюс избыточность; резать безопасно только избыточность.
+- Названо честно: ворота «<10» — догадка плана, не замер. Решающий шаг
+  P2 — не сжатие, а ЦЕНА АДЪЮДИКАТОРА; шаг метрируемый и ждёт решения
+  владельца.
 
 ### v0.3 (2026-08-20)
 

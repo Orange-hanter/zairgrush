@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.10
+version: 0.11
 created: 2026-08-06
 updated: 2026-08-20
 related:
@@ -361,11 +361,24 @@ step has been run, the loop has not been touched.
   motivated it corrected the plan: `claude -p --model claude-haiku-4-5
   --effort xhigh` runs fine ($0.0204), so effort is **not** rejected on
   Haiku 4.5 as the plan assumed.
-- **Status: Step 0 done; next measurement is the same roster (all five)
-  at per-juror cap 2. Nothing wired into the loop; every metered
-  insertion point still awaits owner approval, as does the ADR-004
-  clause about not taking gpt-oss-family models for helpers, whose
-  premise this measurement contradicts.**
+- **Volume lever found, and it is the roster.** Per-juror cap 2 was the
+  plan's recommended next step; measured (run D), it passes the volume
+  gate for the first time (5.0 per diff) and **halves** major-file
+  coverage, 4/4 → 2/4 — the same failure as the severity filter. Cutting
+  the *roster* instead: three jurors give 7.4 per diff against 14.3 for
+  five, lose one address (27/34), and hold 4/4. Three of the five modern
+  models contribute zero unique addresses.
+- **The catalogue has no unusable models.** Bake-off over all 19: at a
+  4000-token ceiling 18 answer; `minimax-m3` needs 12000 and then answers
+  too. The 900-token ceiling came from the metered contour's rule "we
+  don't pay for thinking", which is meaningless on a flat subscription
+  where output tokens cost only latency. `gemma4:31b` — the configured
+  helper default — was the weakest model measured; worth revisiting
+  separately.
+- **Status: Step 0 done. What decides P2 is now the price of the
+  adjudicator over three-juror output — a metered step awaiting owner
+  approval, as does the ADR-004 clause about not taking gpt-oss-family
+  models for helpers, whose premise this measurement contradicts.**
 
 ## 5. Порядок и зависимости
 
@@ -437,6 +450,19 @@ E8 закрыт (K3 остаётся дефолтом); **ADR-003 → ADR-004** 
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.11 (2026-08-20)
+
+- E12: бейк-офф всего каталога (19 моделей) и два прогона на современном
+  составе. Непригодных моделей нет — при потолке вывода 4000 годны 18 из
+  19, `minimax-m3` годна при 12000; прежний потолок 900 достался от
+  метрируемого контура и был не числом, а неверным рассуждением.
+  Современный состав оказался хуже прежнего по адресному покрытию
+  (25/33 против 28/34) — «новее» не значит «лучше». Главное: рычаг ворот
+  объёма — это СОСТАВ, а не потолок находок: cap 2 ворота проходит, но
+  роняет покрытие major-файлов вдвое, а сокращение состава до трёх даёт
+  7.4 против 14.3 при 4/4. Ворота «<10» признаны догадкой плана;
+  решающий шаг P2 — цена адъюдикатора.
 
 ### v0.10 (2026-08-20)
 

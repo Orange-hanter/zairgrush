@@ -2,14 +2,19 @@
 
 **Experiment**: E12 (cheap contour in the review path),
 [09-cheap-review-contour.md](../../09-cheap-review-contour.md) §4, Step 0.
-**Runs**: two. Run A 2026-08-20 `20260820T175249-a3460c` — **invalid, kept
-below as evidence**. Run B 2026-08-20, after the API contract was fixed —
-the run this report's numbers come from.
-**Cost**: **$0.00 metered** in both. Run B: 70 calls, 270 s wall,
-548 K input / 21 K output tokens on the flat Ollama subscription.
-**Verdict**: the roster is viable and covers **4 of 4** of the paid
-reviewer's major-finding files; the **volume gate is still not met**, and
-that is now the only thing standing between P2 and its first metered test.
+**Runs**: four, all $0.00 metered.
+**A** — invalid, kept below as evidence (wrong `think` contract).
+**B** — corrected contract, original roster, 900-token ceiling.
+**C** — modern roster (five different vendors), 12000-token ceiling.
+**D** — same modern roster, per-juror cap 2 instead of 5.
+Plus a bake-off of **all 19 models** on the account.
+**Verdict**: the panel is viable and reaches **4 of 4** of the paid
+reviewer's major-finding files. The volume gate can be met — but only by
+the *right* lever. Cutting each juror's output (cap, severity filter)
+passes the gate by **halving** major coverage; **dropping redundant
+jurors** halves volume while keeping 4/4. The gate itself is a guess that
+has never been checked against an actual adjudicator, and pricing that
+adjudicator is now the measurement that decides P2.
 
 ---
 
@@ -144,48 +149,114 @@ naming `load.rs` says nothing about whether they saw the same defect. It
 is reported because it is the only join that survives the material problem
 below.
 
-## Result 3 — the volume gate still FAILS
+## Result 3 — the volume gate, and which lever actually moves it
 
 The plan's §4 gate: fewer than 10 candidates per diff after dedup,
 otherwise the adjudicator is drowned and the free contour has moved cost
-rather than removed it.
+rather than removed it. Run B fails it at **14.3 per diff** (median 16,
+max 20).
 
-**Measured: 14.3 per diff, median 16, maximum 20.** Eleven of 14 diffs are
-over the ceiling. Fixing the contract made this slightly *worse* than Run
-A's 13.4, because a juror that was silently failing now contributes.
+Three levers were measured on identical material. The first two behave
+the same way, and it is not a good way:
 
-The cap is being obeyed — each juror was allowed 5 findings and averaged
-0.8–3.9, so this is five honest jurors summing, not one padding. And
-**dedup barely fires**: 200 raw candidates merge to ~200. The dedup rule is
-same-file plus 0.6 word overlap, and jurors under different lenses
-describe genuinely different claims about the same file. Deduping the
-*panel* was the wrong model of the problem — the panel does not repeat
-itself.
+| Configuration | per diff | max | gate | address | **major-files** |
+| --- | ---: | ---: | --- | ---: | ---: |
+| B — original roster, cap 5 | 14.3 | 20 | ✗ | 28/34 | **4/4** |
+| B + keep only self-rated `major` | 4.3 | 9 | ✓ | 22/34 | 2/4 |
+| B + only files named by ≥2 jurors | 13.2 | 20 | ✗ | 22/34 | 3/4 |
+| C — modern roster, cap 5, 12000 tok | 10.6 | 19 | ✗ | 25/33 | **4/4** |
+| **D — modern roster, cap 2** | **5.0** | **8** | **✓** | 21/34 | 2/4 |
 
-What actually passes the gate, measured over Run B:
+Read the last column. **Every lever that squeezes what a juror may say
+passes the gate by throwing away half the major-finding files.** Cap 2
+was the plan's own recommended next step; it works exactly as designed
+and costs exactly what we cannot afford. The panel's volume is not
+padding — it is signal, and muzzling the jurors cuts signal.
 
-| Filter | candidates | per diff | max | gate | address | **major-file** |
-| --- | ---: | ---: | ---: | --- | ---: | ---: |
-| everything, as run | 200 | 14.3 | 20 | ✗ | 28/34 | **4/4** |
-| drop `nit` | 178 | 12.7 | 18 | ✗ | 26/34 | 3/4 |
-| file named by ≥2 jurors | 185 | 13.2 | 20 | ✗ | 22/34 | 3/4 |
-| **`severity == major` only** | 60 | **4.3** | 9 | **✓** | 22/34 | **2/4** |
-| ≥2 jurors **and** major | 55 | 3.9 | 9 | ✓ | 20/34 | 2/4 |
+The lever that does work was found by decomposition rather than by
+another run. Scoring each juror by *unique* address contribution — files
+the paid reviewer named that **only** this juror reached — shows the
+panel is not five points of view:
 
-The trade is now sharper than it was in Run A. Filtering to the jurors'
-own `major` self-rating passes the gate with room to spare — and **halves
-major-file coverage, 4/4 down to 2/4.** The panel finds every file that
-carried a paid major finding, and the obvious noise filter throws half of
-them away. Severity self-rating is a lossy filter; cross-juror agreement
-is worse still (it removes almost no volume, because jurors agree on files
-and differ on claims, while costing six addresses).
+| Run C juror | unique addresses |
+| --- | ---: |
+| `kimi-k3` | 2 |
+| `minimax-m3` | 2 |
+| `deepseek-v4-pro:0813` | **0** |
+| `glm-5.2` | **0** |
+| `nemotron-3-super` | **0** |
 
-The conclusion for P2 is therefore narrower than the plan assumed: **the
-panel's output cannot be handed to the adjudicator whole, and neither
-obvious way to shrink it is safe.** The next configuration to measure is a
-lower per-juror cap (5 → 2), which spends the ranking budget *inside* the
-juror, where the lens context still exists, rather than in a filter that
-sees only a severity label.
+Three of five contribute nothing no one else found. Computing subsets
+offline from candidates already collected — **no new calls at all**:
+
+| Subset | per diff | max | address | **major-files** |
+| --- | ---: | ---: | ---: | ---: |
+| Run B, all five | 14.3 | 20 | 28/34 | 4/4 |
+| **Run B, `glm-5.1` + `gpt-oss:120b` + `qwen3.5:397b`** | **7.4** | 11 | **27/34** | **4/4** |
+| Run B, `glm-5.1` + `qwen3.5:397b` | 6.6 | 10 | 25/34 | 4/4 |
+| Run C, all five | 10.6 | 19 | 25/33 | 4/4 |
+| **Run C, `glm-5.2` + `kimi-k3` + `minimax-m3`** | **7.9** | 14 | **25/33** | **4/4** |
+
+Dropping two of five jurors **halves the volume and loses one address**,
+holding major coverage at 4/4. On run C's data the three-juror subset
+loses *nothing* at all. So the volume problem was never that jurors talk
+too much; it was that some jurors are redundant. **Cut viewpoints, not
+sentences.**
+
+One caveat kept in plain sight: the `< 10` ceiling is the plan's guess,
+written before an adjudicator had ever been run. Nothing measured here
+validates it. The three-juror subsets sit at 7.4–7.9 average with a max
+of 11–14, so even they clear it only on average. The honest next step is
+therefore **not** more squeezing — it is to price the adjudicator: run an
+expensive model over the three-juror output and see what it actually
+costs. That step is metered and needs owner approval.
+
+## Result 5 — "newer" is not "better", measured
+
+The roster in runs A and B was assembled from whatever was at hand, and
+half of it was stale — `glm-5.1` while `glm-5.2` exists, no `minimax`, no
+`kimi-k3`. Run C fixed that: five different vendors, all current.
+
+It did not help. Address coverage **fell**, 28/34 (82 %) to 25/33 (76 %),
+while wall-clock rose 270 s to 1370 s. `nemotron-3-super` is silent on 13
+of 14 diffs under the safety lens; `deepseek-v4-pro:0813` on 5 of 14; and
+as the table above shows, three of the five newest models contribute zero
+unique addresses. `minimax-m3` earns its place on reach (2 unique) but is
+expensive: **70 s per call**, and it truncates on 5 of 14 diffs *even at
+12000 tokens* — big diffs need more still. A parallel panel costs its
+slowest juror, so one `minimax-m3` sets the panel's latency floor.
+
+Picking models because they are newer is the same mistake as picking them
+out of habit. Both skip the measurement.
+
+## What the whole-catalogue bake-off settled
+
+All 19 models on the account, one diff, a `think` ladder
+(`False` → `"low"` → `"medium"`) stopping at the first parseable answer:
+
+- **At a 4000-token ceiling, 18 of 19 answer.** The one holdout,
+  `minimax-m3`, emits a 17 000-character reasoning trace and is fine at
+  12000. **There are no unusable models in the catalogue** — every prior
+  "this model is unusable" verdict was a verdict on our ceiling.
+- **The ceiling was wrong as reasoning, not just as a number.** `900` came
+  from rule §7.1, "we don't pay for thinking", which was written for the
+  *metered* contour where each output token is money. On a flat
+  subscription output tokens cost only latency. The same applies to
+  `HELPER_TIMEOUT = 90`, which cut the slowest juror mid-thought. Both
+  raised.
+- **Four models ignore the `think` boolean** and reason regardless: both
+  `gpt-oss` sizes and both `minimax`. This also refines the Run A
+  post-mortem above — a *level* was never strictly required for gpt-oss,
+  the *budget* was. At 4000 tokens it answers fine with `think: false`,
+  simply paying 5395 characters of trace for it.
+- **`gemma4:31b` produced 1 candidate where leaders produced 5** — and it
+  is the configured default for every helper in the loop
+  (`HELPER_MODEL`). Worth revisiting, separately from E12.
+- `nemotron-3-ultra` works but takes **77 s**; not roster material while
+  the panel is parallel.
+- Structured outputs remain unavailable on the cloud — now stated by the
+  vendor too, and re-measured: a schema request came back shaped by the
+  prompt, not the schema. ADR-004 stands.
 
 ## The measurement Step 0 could not make
 

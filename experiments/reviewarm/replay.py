@@ -90,11 +90,17 @@ SEVERITIES = {"major", "minor", "nit"}
 
 # `think` — свойство МОДЕЛИ, а не константа вызова (замерено 2026-08-20,
 # подтверждено docs.ollama.com/capabilities/thinking). Булево выключает
-# размышления у большинства, но gpt-oss булево ИГНОРИРУЕТ и ждёт уровень;
-# при этом уровень "low" у остальных размышления, наоборот, включает.
-# Ошибиться здесь — значит сжечь num_predict на размышления, получить
-# пустой content и записать в отчёт «модель непригодна». Ровно это и
-# произошло в первом прогоне REVIEWARM.
+# размышления у большинства; ЧЕТЫРЕ модели каталога его игнорируют и
+# думают всегда — оба gpt-oss и оба minimax. Уровень "low" у остальных
+# размышления, наоборот, ВКЛЮЧАЕТ, поэтому единого значения нет.
+#
+# Уточнение по бейк-оффу всего каталога: уровень не является ОБЯЗАТЕЛЬНЫМ
+# даже там, где булево игнорируется. При щедром num_predict (4000)
+# gpt-oss:120b отвечает и с think=False — просто платит 5395 символами
+# трассы. Обязательным был БЮДЖЕТ, а не уровень: при 900 токенах трасса
+# съедала весь лимит, и модель попадала в отчёт как «непригодная».
+# Уровень здесь оставлен как оптимизация задержки и объёма, а не как
+# условие работоспособности.
 THINK: dict[str, bool | str] = {
     "gpt-oss:120b": "low",
     "gpt-oss:20b": "low",
@@ -102,8 +108,19 @@ THINK: dict[str, bool | str] = {
 THINK_DEFAULT: bool | str = False
 
 
-def think_for(model: str) -> bool | str:
-    """Значение think для модели: семейство важнее точного тега версии."""
+def think_for(model: str, override: str = "auto") -> bool | str:
+    """Значение think для модели: семейство важнее точного тега версии.
+
+    `override` отменяет карту и ставит одно значение всем — это нужно,
+    чтобы вопрос «становится ли присяжный лучше, если дать ему думать»
+    вообще можно было задать замером, а не мнением.
+    """
+    if override and override != "auto":
+        if override in {"off", "false"}:
+            return False
+        if override in {"on", "true"}:
+            return True
+        return override
     for prefix, value in THINK.items():
         if model.startswith(prefix.split(":")[0]):
             return value
@@ -231,7 +248,15 @@ def main() -> int:
     ap.add_argument("--tasks", default="", help="фильтр по id, через запятую")
     ap.add_argument("--max-diff-lines", type=int, default=1200)
     ap.add_argument("--cap", type=int, default=5, help="потолок находок у юрора")
-    ap.add_argument("--max-tokens", type=int, default=900)
+    # Потолок вывода. На ПЛОСКОЙ подписке выходные токены не стоят ничего,
+    # поэтому жадное значение здесь — не расточительность, а отсутствие
+    # ложной экономии: прежние 900 достались от метрируемого контура и
+    # молча резали ответы (см. REPORT.md, прогон A).
+    ap.add_argument("--max-tokens", type=int, default=4000)
+    ap.add_argument("--think", default="auto",
+                    help="auto — карта THINK на модель; off/on/low/medium/high "
+                         "— принудительно, одинаково для всех (для сравнения "
+                         "«с размышлением против без»)")
     ap.add_argument("--out", default=".")
     args = ap.parse_args()
 
@@ -281,7 +306,7 @@ def main() -> int:
             t0 = time.monotonic()
             raw = helpers.ollama_chat(prompt, name=f"panel:{lens}",
                                       max_tokens=args.max_tokens, model=model,
-                                      think=think_for(model))
+                                      think=think_for(model, args.think))
             wall = time.monotonic() - t0
             parsed, refusal = parse_candidates(raw or "", files)
             for c in parsed:
@@ -300,7 +325,7 @@ def main() -> int:
                 "task": task["id"], "model": model, "lens": lens,
                 "wall_s": round(wall, 2), "parsed": len(parsed),
                 "refusal": refusal or (None if raw else "no_answer"),
-                "think": think_for(model),
+                "think": think_for(model, args.think),
                 "diff_truncated": skipped, "raw": (raw or "")[:4000],
             }, ensure_ascii=False) + "\n")
         merged = dedup([c for c in cands if not c["off_diff"]])
