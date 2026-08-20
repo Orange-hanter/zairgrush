@@ -480,11 +480,23 @@ class TestLoopBranches(_LoopHarness, unittest.TestCase):
         self.assertIn("invalid_verdict", reasons,
                       "невалидный вердикт никогда не трактуется как approve")
 
-    def test_no_report_retries_then_escalates(self):
-        loop, agents = self._loop(implement=[None, None, None])
+    def test_no_report_burns_the_futile_budget_not_the_fix_budget(self):
+        """Раунд, в котором исполнитель не вернул отчёт, попыткой не был:
+        судить нечего. Лимит ИСПРАВЛЕНИЙ он не тратит — тратит свой,
+        бесплодный (по умолчанию 4), и эскалация называет исполнителя,
+        а не размер задачи (золотой набор: 0 из 6 верных диагнозов)."""
+        loop, agents = self._loop(implement=[None] * 8)
         self.assertEqual(loop.run_task(dict(self.TASK)), "blocked")
-        self.assertEqual(agents.calls["implement"], lp.MAX_ITER)
+        self.assertEqual(agents.calls["implement"], 4,
+                         "бесплодных раундов ровно max_futile_rounds")
         self.assertEqual(agents.calls["review"], 0)
+        self.assertIn(("ask", "escalate_max", None), self.events)
+
+    def test_futile_cap_is_configurable(self):
+        loop, agents = self._loop(implement=[None] * 8)
+        loop.config["max_futile_rounds"] = 2
+        self.assertEqual(loop.run_task(dict(self.TASK)), "blocked")
+        self.assertEqual(agents.calls["implement"], 2)
 
     def test_reviewer_blocked_escalates(self):
         loop, _ = self._loop(review=[verdict("blocked", [finding("blocker")])])

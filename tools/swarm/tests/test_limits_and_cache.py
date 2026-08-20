@@ -60,24 +60,65 @@ class TestConfigurableLimits(RepoCase):
         loop = lp.Loop(self.state, {"max_iterations": 6}, None)
         self.assertEqual(loop.max_iter, 6)
 
-    def test_raised_limit_gives_more_fix_rounds(self):
-        """Лимит обязан РАБОТАТЬ, а не просто читаться из конфига."""
-        calls = {"n": 0}
+    def _run_with_agents(self, config, implement_result):
+        """Прогон одной задачи на болванках; возвращает счётчики вызовов."""
+        calls = {"implement": 0, "review": 0}
 
         def implement(task, feedback, iteration):
-            calls["n"] += 1
-            return                      # никогда не даёт отчёта
+            calls["implement"] += 1
+            return implement_result
 
-        agents = type("A", (), {"implement": staticmethod(implement),
-                                "commit_message": staticmethod(lambda t, d: "m")})()
-        loop = lp.Loop(self.state, {"max_iterations": 5}, agents, ui=lambda *a: None)
+        def review(task, tail, iteration, confirming=False, **kw):
+            calls["review"] += 1
+            # Число находок УБЫВАЕТ: иначе `decide` объявит несходимость
+            # и задача уйдёт в эскалацию раньше лимита — тест мерил бы
+            # детект топтания, а не лимит исправлений.
+            left = max(1, 8 - calls["review"])
+            return {"analysis": "Разобрал дифф построчно и сверил с задачей.",
+                    "verdict": "request_changes",
+                    "summary": "Замечания по существу задачи остаются.",
+                    "findings": [{"file": "mod_a.py", "severity": "minor",
+                                  "category": "correctness", "confidence": 0.7,
+                                  "issue": f"замечание {n}",
+                                  "suggestion": "как"} for n in range(left)],
+                    "out_of_scope_notes": []}
+
+        agents = type("A", (), {
+            "implement": staticmethod(implement),
+            "review": staticmethod(review),
+            "last_tuning": {},
+            "commit_message": staticmethod(lambda t, d: "m")})()
+        loop = lp.Loop(self.state, config, agents, ui=lambda *a: None)
         loop.gate = lambda task: (True, "OK")
         self.state.save_tasks({"goal": "g", "tasks": [
             {"id": "aaaa", "title": "t", "status": "pending", "deps": [],
              "type": "feature", "paths": ["mod_a.py"]}]})
         loop.run_task({"id": "aaaa", "title": "t", "type": "feature",
                        "paths": ["mod_a.py"]})
-        self.assertEqual(calls["n"], 5, "конфиг прочитан, но не применён")
+        return calls
+
+    def test_raised_limit_gives_more_fix_rounds(self):
+        """Лимит обязан РАБОТАТЬ, а не просто читаться из конфига.
+
+        Считаются раунды, дошедшие ДО ВЕРДИКТА: именно они — попытки
+        исправления, и именно их ограничивает max_iterations."""
+        calls = self._run_with_agents({"max_iterations": 5},
+                                      {"status": "done", "summary": "s"})
+        self.assertEqual(calls["review"], 5, "конфиг прочитан, но не применён")
+
+    def test_futile_rounds_do_not_spend_the_fix_limit(self):
+        """Раунд без отчёта исполнителя судить нечем: он тратит свой
+        потолок (max_futile_rounds), а не лимит исправлений."""
+        calls = self._run_with_agents({"max_iterations": 5,
+                                       "max_futile_rounds": 2}, None)
+        self.assertEqual(calls["implement"], 2)
+        self.assertEqual(calls["review"], 0, "ревьюер не звался ни разу")
+
+    def test_futile_ceiling_follows_the_raised_limit(self):
+        """Терпение — одна ручка: подняв max_iterations, оператор
+        поднимает и терпимость к срывам среды."""
+        calls = self._run_with_agents({"max_iterations": 6}, None)
+        self.assertEqual(calls["implement"], 6)
 
     def _gate_timeout_seen(self, config):
         seen = {}

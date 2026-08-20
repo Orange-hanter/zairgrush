@@ -246,9 +246,45 @@ class Loop:
     @staticmethod
     def _diagnose(outcome: str, history: list[dict[str, Any]],
                   scope_failures: list[list[str]] | None = None,
-                  sig_failures: list[list[str]] | None = None) -> str:
-        return _rc_diagnose(outcome, history, scope_failures, sig_failures)
+                  sig_failures: list[list[str]] | None = None,
+                  exec_failures: list[dict[str, Any]] | None = None) -> str:
+        return _rc_diagnose(outcome, history, scope_failures, sig_failures,
+                            exec_failures)
 
+    def _escalate_futile(self, task: dict[str, Any],
+                         history: list[dict[str, Any]],
+                         futile: list[dict[str, Any]],
+                         scope_failures: list[list[str]],
+                         sig_failures: list[list[str]],
+                         exec_failures: list[dict[str, Any]],
+                         iteration: int) -> str:
+        """Потолок бесплодных раундов: эскалация с ПРИЧИНОЙ.
+
+        Отдельный исход от «раунды исправлений исчерпаны» именно потому,
+        что исправлений не было: работу ни разу не судили. Диагноз здесь
+        всегда механический — futile-раунд по построению знает свою
+        причину, и `_diagnose` выбирает из них точную.
+        """
+        tid = task["id"]
+        causes = sorted({str(f.get("cause")) for f in futile})
+        stash = self.cleanup(task, "futile-rounds")
+        diagnosis = self._diagnose(ESCALATE_MAX, history,
+                                   scope_failures=scope_failures,
+                                   sig_failures=sig_failures,
+                                   exec_failures=exec_failures)
+        diagnosis = (f"{len(futile)} раунд(ов) сорвались, не дойдя до "
+                     f"суждения о работе ({', '.join(causes)}); лимит "
+                     f"исправлений не тронут. " + diagnosis)
+        self.state.log("futile_exhausted", task=tid, rounds=len(futile),
+                       causes=causes, stash=stash)
+        qid = self.state.ask(tid, ESCALATE_MAX, diagnosis, stash=stash,
+                             round=iteration, history=history)
+        self.state.set_status(tid, "blocked", reason="futile_rounds",
+                              stash=stash, iterations=iteration,
+                              exit_code=EXIT_ESCALATE, diagnosis=diagnosis,
+                              question_id=qid)
+        self.ui(f"    эскалация [{qid}]: {diagnosis}")
+        return "blocked"
 
     # --- цикл --------------------------------------------------------------
 
@@ -311,6 +347,25 @@ class Loop:
         # контракта скелета — отдельная причина, не «задача не сходится».
         sig_failures: list[list[str]] = []
         instant_crashes = 0
+        # ЧЕСТНОСТЬ БЮДЖЕТА РАУНДОВ (золотой набор: диагнозы «задача слишком
+        # крупная» — 0 из 6 верных). Лимит исправлений тратит только раунд,
+        # в котором работа ДОШЛА ДО МЕХАНИЧЕСКОГО СУЖДЕНИЯ: гейт вынес
+        # приговор или ревьюер вынес вердикт. Раунд, сорвавшийся раньше —
+        # исполнитель умер, работу снёс страж границ, сигнатуры контракта
+        # разъехались, — попыткой не был: судить было нечего. Пока такие
+        # раунды тратили лимит, петля объявляла «раунды исчерпаны» и
+        # называла размер задачи причиной того, что случилось до первой
+        # оценки: у s2ky это были таймаут, откат по границам и авария
+        # kimi, у k3ad — три отката подряд, ни одного ревью.
+        productive = 0
+        futile: list[dict[str, Any]] = []
+        exec_failures: list[dict[str, Any]] = []
+        # Бесплодные раунды не бесконечны: свой потолок, своя эскалация —
+        # с ПРИЧИНОЙ, а не с догадкой о размере. Умолчание тянется за
+        # max_iterations: терпение — одна ручка, и оператор, поднявший
+        # лимит исправлений, ждёт большей терпимости и к срывам среды.
+        max_futile = int(self.config.get("max_futile_rounds",
+                                         max(4, self.max_iter)))
         # Снимок сигнатур — ДО первого вызова исполнителя: сравнивать после
         # первого раунда не с чем, если снимок взят после него. Один файл на
         # fill-задачу — гарантия валидатора плана (E10, planner._skeleton_
@@ -323,7 +378,14 @@ class Loop:
             if paths:
                 sig_file = self.state.root / paths[0]
                 sig_baseline = pyindex.file_signatures(sig_file)
-        while iteration < self.max_iter + confirm_rounds:
+        while productive < self.max_iter + confirm_rounds:
+            if len(futile) >= max_futile:
+                # Бесплодные раунды исчерпаны. Это НЕ «раунды исправлений
+                # кончились»: до исправлений дело не дошло ни разу, и
+                # эскалация обязана называть то, обо что раунды сгорели.
+                return self._escalate_futile(task, history, futile,
+                                             scope_failures, sig_failures,
+                                             exec_failures, iteration)
             # Бюджет проверяется перед КАЖДОЙ итерацией, а не только между
             # задачами: проверка раз в задачу означала, что одна задача
             # вольна пробить потолок на любую величину — сколько раундов
@@ -366,6 +428,17 @@ class Loop:
                             raise ExecutorUnavailableError(
                                 fail.get("stderr")
                                 or "процесс исполнителя умирает на старте")
+                    # Работы не было — судить нечего: лимит исправлений не
+                    # тратится, но факт идёт в диагноз и в свой потолок.
+                    reason = str(fail.get("reason") or "invalid")
+                    exec_failures.append({"round": iteration, "reason": reason,
+                                          "wall_s": fail.get("wall_s")})
+                    futile.append({"round": iteration,
+                                   "cause": "executor_failed",
+                                   "detail": reason})
+                    self.state.log("round_futile", task=tid, round=iteration,
+                                   cause="executor_failed", detail=reason,
+                                   futile=len(futile), of=max_futile)
                     feedback = {"note": "предыдущий ответ не содержал валидного "
                                         "JSON-отчёта — повтори, соблюдая контракт"}
                     continue
@@ -414,6 +487,9 @@ class Loop:
                 # раунды» шёл через метрики вручную (пилот, k3ad).
                 self.state.log("gate_failed", task=tid, round=iteration,
                                tail=(tail or "")[-300:])
+                # Гейт — механическое суждение о РЕАЛЬНОЙ работе: попытка
+                # состоялась и провалилась. Раунд потрачен честно.
+                productive += 1
                 feedback = {"note": "gate провален", "tests": tail}
                 continue
 
@@ -443,6 +519,15 @@ class Loop:
                 self.state.log("scope_violation", task=tid, round=iteration,
                                unexpected=bad, protected=tests_touched)
                 self.revert()
+                # Работа снесена откатом — ревьюер её не увидит. Судить
+                # нечего, лимит исправлений не тратится (k3ad: три таких
+                # раунда подряд обвинили размер задачи).
+                futile.append({"round": iteration, "cause": "scope_violation",
+                               "detail": ", ".join(sorted(set(bad))[:3])})
+                self.state.log("round_futile", task=tid, round=iteration,
+                               cause="scope_violation",
+                               detail=", ".join(sorted(set(bad))[:3]),
+                               futile=len(futile), of=max_futile)
                 feedback = {"note": "нарушение границ задачи",
                             "unexpected_files": bad,
                             "protected_tests": tests_touched}
@@ -458,6 +543,14 @@ class Loop:
                     sig_failures.append(changed)
                     self.state.log("signature_violation", task=tid,
                                    round=iteration, changed=changed)
+                    # Контракт скелета нарушен — до ревью работа не дошла.
+                    futile.append({"round": iteration,
+                                   "cause": "signature_violation",
+                                   "detail": ", ".join(changed[:3])})
+                    self.state.log("round_futile", task=tid, round=iteration,
+                                   cause="signature_violation",
+                                   detail=", ".join(changed[:3]),
+                                   futile=len(futile), of=max_futile)
                     feedback = {"note": "сигнатуры контракта изменены — "
                                         "верни их в точности; если контракт "
                                         "невыполним, канал dispute",
@@ -486,6 +579,8 @@ class Loop:
                 self.ui(f"    РЕВЬЮ НЕ СОСТОЯЛОСЬ [{qid}]: {diagnosis}")
                 return "blocked"
 
+            # Вердикт получен — работа СУДИМА, раунд потрачен по делу.
+            productive += 1
             raw_findings = verdict.get("findings") or []
             findings, suppressed = apply_policies(
                 raw_findings, self.state.policies())
@@ -518,7 +613,12 @@ class Loop:
             # (подтверждающем) вердикт сменился — и вместо разрешённого
             # 4-го раунда исправлений ушла в эскалацию «раунды
             # исчерпаны». Две записи одного лимита обязаны быть одной.
-            outcome, code = decide(iteration, verdict, history,
+            # Счётчик БЮДЖЕТА, а не номер раунда: `decide` решает «раунды
+            # исчерпаны», и считать в этом решении сорванные до суждения
+            # раунды значит эскалировать за то, чего не судили. Номер
+            # раунда (iteration) остаётся сквозным — по нему журнал, имена
+            # файлов вердиктов и история.
+            outcome, code = decide(productive, verdict, history,
                                    max_rounds=self.max_iter + confirm_rounds,
                                    confirmations=self.config.get("confirmations", 2),
                                    diff_sha=work_sha,
@@ -625,7 +725,14 @@ class Loop:
 
             if outcome in (ESCALATE_MAX, ESCALATE_NONCONV):
                 stash = self.cleanup(task, outcome.replace("_", "-"))
-                diagnosis = self._diagnose(outcome, history)
+                # Все три вида улик, а не только история вердиктов: без них
+                # эскалация посреди цикла знала меньше, чем эскалация по
+                # выходу из него, и выдавала догадку там, где рядом лежал
+                # механический факт.
+                diagnosis = self._diagnose(outcome, history,
+                                           scope_failures=scope_failures,
+                                           sig_failures=sig_failures,
+                                           exec_failures=exec_failures)
                 qid = self.state.ask(tid, outcome, diagnosis, stash=stash,
                                      round=iteration, history=history)
                 self.state.set_status(tid, "blocked", reason=outcome,
@@ -661,7 +768,8 @@ class Loop:
         stash = self.cleanup(task, "max-iterations")
         diagnosis = self._diagnose(ESCALATE_MAX, history,
                                    scope_failures=scope_failures,
-                                   sig_failures=sig_failures)
+                                   sig_failures=sig_failures,
+                                   exec_failures=exec_failures)
         qid = self.state.ask(tid, ESCALATE_MAX, diagnosis, stash=stash,
                              round=self.max_iter, history=history)
         self.state.set_status(tid, "blocked", reason="max_iterations",

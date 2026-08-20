@@ -321,11 +321,13 @@ class TestScopeBurnoutDiagnosis(unittest.TestCase):
         self.assertNotIn("расщеп", text.split("Расщепление не поможет")[0],
                          "нельзя предлагать резать то, что упрётся туда же")
 
-    def test_single_scope_burn_keeps_the_default_hypothesis(self):
-        """Один срыв — ещё не паттерн: полраунда мог съесть и сам агент."""
+    def test_single_scope_burn_is_not_yet_a_pattern(self):
+        """Один срыв — ещё не паттерн: диагноз не объявляет границы
+        причиной, но и не подменяет их догадкой о размере."""
         text = lp.Loop._diagnose(lp.ESCALATE_MAX, [],
                                  scope_failures=[["tests/x.rs"]])
-        self.assertIn("расщепить", text)
+        self.assertNotIn("сгорели на нарушении границ", text)
+        self.assertNotIn("расщепить", text)
 
 
 class TestDisagreementIsNotTaskSize(unittest.TestCase):
@@ -369,17 +371,24 @@ class TestDisagreementIsNotTaskSize(unittest.TestCase):
     def test_same_verdict_twice_is_not_a_disagreement(self):
         history = [round_record(2, 2, ["tests"]),
                    self._confirming(3, 2, "request_changes")]
-        self.assertIn("расщепить", lp.Loop._diagnose(lp.ESCALATE_MAX, history))
+        text = lp.Loop._diagnose(lp.ESCALATE_MAX, history)
+        self.assertNotIn("разошлись", text)
+        self.assertIn("Траектория", text, "нет причины — предъяви факты")
 
     def test_non_confirming_round_is_not_a_disagreement(self):
         """Между обычными раундами работает исполнитель: дифф ДРУГОЙ, и
         смена вердикта ничего не говорит о ревьюерах."""
         history = [round_record(2, 2, ["tests"], kind="approve"),
                    round_record(3, 4, ["correctness"])]
-        self.assertIn("расщепить", lp.Loop._diagnose(lp.ESCALATE_MAX, history))
+        text = lp.Loop._diagnose(lp.ESCALATE_MAX, history)
+        self.assertNotIn("разошлись", text)
 
-    def test_empty_history_keeps_the_old_hypothesis(self):
-        self.assertIn("расщепить", lp.Loop._diagnose(lp.ESCALATE_MAX, []))
+    def test_empty_history_says_no_verdict_was_reached(self):
+        """Раньше здесь стояла догадка о размере. Пустая история значит
+        ровно одно: судить было нечего — так и надо сказать."""
+        text = lp.Loop._diagnose(lp.ESCALATE_MAX, [])
+        self.assertIn("ни один не дошёл до вердикта", text)
+        self.assertNotIn("расщепить", text)
 
 
 class TestExitCodes(unittest.TestCase):
@@ -401,9 +410,46 @@ class TestExitCodes(unittest.TestCase):
 class TestDiagnosis(unittest.TestCase):
     """Эскалация несёт версию о причине, а не голый факт."""
 
-    def test_max_rounds_suggests_splitting(self):
-        text = lp.Loop._diagnose(lp.ESCALATE_MAX, [])
-        self.assertIn("расщепить", text)
+    def test_max_rounds_without_evidence_reports_the_trail_not_a_guess(self):
+        """Золотой набор PILOT-1: «задача слишком крупная» была неверна
+        6 раз из 6. Без механической улики диагноз обязан предъявить
+        траекторию и честно сказать, что причины он не нашёл."""
+        history = [round_record(1, 2, ["tests"]),
+                   round_record(2, 2, ["correctness"])]
+        text = lp.Loop._diagnose(lp.ESCALATE_MAX, history)
+        self.assertIn("Траектория", text)
+        self.assertIn("механической причины петля не нашла", text)
+        self.assertNotIn("расщепить", text)
+
+    def test_wide_unshrinking_front_is_where_size_is_earned(self):
+        """Единственный случай, когда размер — вывод из данных, а не
+        догадка: широкий фронт находок, который не сужается."""
+        history = [round_record(1, 5, ["tests", "correctness", "style"]),
+                   round_record(2, 6, ["tests", "architecture", "scope"])]
+        text = lp.Loop._diagnose(lp.ESCALATE_MAX, history)
+        self.assertIn("расщепление действительно правдоподобно", text)
+
+    def test_executor_failures_blame_the_environment(self):
+        """k3ad и s2ky: раунды сгорели на квоте и таймауте исполнителя —
+        работа не дошла до ревью ни разу, а обвинили размер задачи."""
+        text = lp.Loop._diagnose(
+            lp.ESCALATE_MAX, [],
+            exec_failures=[{"round": 1, "reason": "wall_clock"},
+                           {"round": 2, "reason": "crash"}])
+        self.assertIn("на стороне исполнителя", text)
+        self.assertIn("wall_clock", text)
+        self.assertIn("crash", text)
+        self.assertNotIn("расщепить", text)
+
+    def test_scope_beats_executor_when_both_present(self):
+        """Порядок улик: точная причина важнее общей. Границы называют
+        файл, аварии — только среду."""
+        text = lp.Loop._diagnose(
+            lp.ESCALATE_MAX, [],
+            scope_failures=[["a.rs"], ["a.rs"]],
+            exec_failures=[{"round": 1, "reason": "crash"},
+                           {"round": 2, "reason": "crash"}])
+        self.assertIn("границ", text)
 
     def test_repeated_class_suggests_spec_or_reviewer(self):
         history = [round_record(1, 2, ["style"]), round_record(2, 2, ["style"])]
@@ -925,10 +971,13 @@ class TestSignatureDiagnosisPriority(unittest.TestCase):
         self.assertIn("сигнатур", text)
         self.assertIn("add(a, b, c)", text)
 
-    def test_single_signature_burn_keeps_the_default_hypothesis(self):
+    def test_single_signature_burn_is_not_yet_a_pattern(self):
+        """Один срыв — не паттерн; но и догадкой о размере его не
+        подменяют (золотой набор: 0 из 6 таких догадок были верны)."""
         text = lp.Loop._diagnose(lp.ESCALATE_MAX, [],
                                  sig_failures=[["add(a, b, c)"]])
-        self.assertIn("расщепить", text)
+        self.assertNotIn("сгорели на нарушении", text)
+        self.assertNotIn("расщепить", text)
 
     def test_signatures_outrank_scope_when_both_repeat(self):
         text = lp.Loop._diagnose(

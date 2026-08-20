@@ -492,8 +492,13 @@ class TestNoSilentBlocking(unittest.TestCase):
         loop = self._loop()
         loop.run_task({"id": "t1", "title": "t", "paths": ["a.py"],
                        "type": "feature"})
-        self.assertIn("расщепить", self.asked[0][2],
+        # Версия о причине, а не голый факт. Догадка «слишком крупная»
+        # выведена из диагноста (золотой набор: 0 из 6 верных), поэтому
+        # здесь проверяется именно НАЛИЧИЕ разбора, а не его прежний текст.
+        self.assertIn("сорвались", self.asked[0][2],
                       "вопрос обязан нести версию о причине")
+        self.assertIn("лимит исправлений не тронут", self.asked[0][2],
+                      "человеку важно знать, что попыток ещё не было")
 
 
 class TestAnswerPathGuardEscape(unittest.TestCase):

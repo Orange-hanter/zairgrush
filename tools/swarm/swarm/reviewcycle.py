@@ -96,7 +96,8 @@ def _arm(row: dict[str, Any]) -> str:
 
 def _diagnose(outcome: str, history: list[dict[str, Any]],
               scope_failures: list[list[str]] | None = None,
-              sig_failures: list[list[str]] | None = None) -> str:
+              sig_failures: list[list[str]] | None = None,
+              exec_failures: list[dict[str, Any]] | None = None) -> str:
     """Несходимость требует ДИАГНОЗА, а не очередного повтора.
 
     Закрытый список гипотез (FuguNano): человеку эскалируется не голый
@@ -136,6 +137,18 @@ def _diagnose(outcome: str, history: list[dict[str, Any]],
                     f"{shown}. Расщепление не поможет: любой осколок "
                     f"упрётся туда же. Добавьте файл в paths задачи явно "
                     f"или пересмотрите protected_paths")
+        # Аварии исполнителя — среда, а не работа: процесс умер, был
+        # убит по таймауту или не вернул отчёт. На пилоте так сгорели
+        # раунды k3ad (квота kimi) и s2ky (таймаут 30 минут), и обе
+        # задачи получили обвинение в размере.
+        if exec_failures and len(exec_failures) >= 2:
+            reasons = sorted({str(f.get("reason") or "?")
+                              for f in exec_failures})
+            return (f"{len(exec_failures)} раунд(ов) сорвались на стороне "
+                    f"исполнителя ({', '.join(reasons)}) — работа не "
+                    f"дошла до ревью ни разу. Это среда, а не задача: "
+                    f"смотрите квоту провайдера, silence_timeout и "
+                    f"wall_clock_cap, а не размер задачи")
         flip = _reviewers_disagreed(history)
         if flip:
             prev, last = flip
@@ -148,7 +161,35 @@ def _diagnose(outcome: str, history: list[dict[str, Any]],
                 f"не вызывался, код не менялся. Расщеплять задачу не "
                 f"нужно — прочтите оба вердикта в .swarm/log и решите, "
                 f"чья правда")
-        return "исчерпаны раунды: задача, вероятно, слишком крупная — расщепить"
+        # Механической причины нет. Раньше здесь стояло «задача,
+        # вероятно, слишком крупная — расщепить»: на золотом наборе
+        # PILOT-1 этот диагноз был неверен 6 раз из 6, и каждый раз
+        # посылал человека расщеплять задачу, у которой была совсем
+        # другая беда. Догадку заменяет ТРАЕКТОРИЯ — то, что диагност
+        # действительно знает, — и размер называется гипотезой только
+        # когда на него указывают сами цифры: широкий фронт находок,
+        # который не сужается.
+        if not history:
+            return ("раунды исчерпаны, но ни один не дошёл до вердикта: "
+                    "механической причины в журнале нет — смотрите "
+                    ".swarm/log за этой задачей")
+        trail = "; ".join(
+            f"раунд {h.get('round')} ({_arm(h)}) — "
+            f"{h.get('verdict')}, находок {h.get('findings')}"
+            for h in history[-4:])
+        seen_cats = {c for h in history for c in (h.get("categories") or [])}
+        round_counts = [int(h.get("findings") or 0) for h in history]
+        wide = len(seen_cats) >= 3 and round_counts and min(round_counts) >= 3
+        hypothesis = (
+            "фронт замечаний широкий и не сужается "
+            f"({len(seen_cats)} категорий, минимум {min(round_counts)} "
+            f"находок за раунд) — вот здесь расщепление действительно "
+            f"правдоподобно"
+            if wide else
+            "механической причины петля не нашла: ни границ, ни "
+            "сигнатур, ни аварий исполнителя, ни расхождения ревьюеров. "
+            "Размер задачи — НЕ вывод из этих данных, читайте вердикты")
+        return f"раунды исчерпаны. Траектория: {trail}. {hypothesis}"
     counts = [h["findings"] for h in history]
     cats = [tuple(h["categories"]) for h in history]
     if len(set(cats)) == 1 and len(cats) > 1:

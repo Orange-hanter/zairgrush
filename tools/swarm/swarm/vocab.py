@@ -73,6 +73,8 @@ KIND_RU = {
     "memory_forgotten": "урок забыт",
     "memory_synced": "индекс памяти досыпан",
     "quota_resume": "автовозобновление после квоты",
+    "round_futile": "раунд сорвался до суждения",
+    "futile_exhausted": "бесплодные раунды исчерпаны",
 }
 # Записи-бухгалтерия: сопровождают каждую запись состояния и событием
 # прогона не являются. В блоках «прогон в целом» они хоронили под собой
@@ -462,6 +464,17 @@ NARRATORS: dict[str, Narrator] = {
          f"{r.get('wait_s')} с (до {_s(r.get('until'))}): "
          f"{_s(r.get('message'))}"),
         {"attempt", "of", "wait_s", "until", "message"}),
+    # Раунд, не дошедший до суждения о работе, лимит исправлений не тратит:
+    # человек обязан видеть и сам факт, и то, обо что раунд сгорел.
+    "round_futile": lambda r: (
+        (f"раунд {r.get('round')} сорвался до суждения о работе "
+         f"({_s(r.get('cause'))}: {_s(r.get('detail'))}) — лимит исправлений "
+         f"не тронут, бесплодных {r.get('futile')} из {r.get('of')}"),
+        {"round", "cause", "detail", "futile", "of"}),
+    "futile_exhausted": lambda r: (
+        (f"бесплодные раунды исчерпаны: {r.get('rounds')} сорвались до "
+         f"суждения ({', '.join(map(str, _seq(r.get('causes')) or ['?']))})"),
+        {"rounds", "causes", "stash"}),
 }
 
 
