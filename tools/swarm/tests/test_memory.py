@@ -551,6 +551,40 @@ class TestNormsBlock(MemCase):
             mem.norms_block(_FakeState(self.root), cfg, {"id": "t"}), "")
 
 
+class TestRolesAreSwitchedOneAtATime(MemCase):
+    """Правило программы: один фактор на прогон. Флаг памяти — имя РОЛИ,
+    и включённая роль не имеет права тянуть за собой остальные."""
+
+    def test_planner_alone_leaves_executor_and_reviewer_dry(self):
+        cfg = {"experiments": {"memory": "planner"}}
+        self.assertTrue(mem.enabled_for(cfg, "planner"))
+        self.assertFalse(mem.enabled_for(cfg, "executor"))
+        self.assertFalse(mem.enabled_for(cfg, "reviewer"))
+
+    def test_all_opens_every_role(self):
+        cfg = {"experiments": {"memory": "all"}}
+        for role in ("planner", "executor", "reviewer"):
+            self.assertTrue(mem.enabled_for(cfg, role), role)
+
+    def test_off_is_the_default(self):
+        for cfg in ({}, {"experiments": {}}, {"experiments": {"memory": "off"}}):
+            self.assertFalse(mem.enabled_for(cfg, "planner"), cfg)
+
+    def test_planner_block_is_built_for_the_planner_role(self):
+        self.addCleanup(setattr, mem, "retrieve", mem.retrieve)
+        mem.retrieve = lambda *a, **k: [
+            {"id": "b1", "outcome": "corrected", "count": 1,
+             "body": "границы задачи расширены на реестр правил"}]
+        cfg = {"experiments": {"memory": "planner"}}
+        task = {"id": "*", "title": "новое правило ERC"}
+        block = mem.inject_block("planner", task, _FakeState(self.root), cfg)
+        self.assertIn("Project memory", block)
+        self.assertIn("реестр правил", block)
+        self.assertEqual(
+            mem.inject_block("executor", task, _FakeState(self.root), cfg), "",
+            "включённый планировщик не смеет включать исполнителя")
+
+
 class TestFpPromotion(MemCase):
     """Промоция подавлений — только через человека: память не смеет
     затыкать ревьюера сама."""

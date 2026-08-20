@@ -186,14 +186,21 @@ def plan_prompt(goal: str, tasks: list[dict[str, Any]], files: str,
 
 
 def replan_prompt(task: dict[str, Any], dispute: str,
-                  tasks: list[dict[str, Any]], files: str, suite: str) -> str:
+                  tasks: list[dict[str, Any]], files: str, suite: str,
+                  memory: str = "") -> str:
+    # Память (E9) нужна ЗДЕСЬ больше, чем где-либо: replan вызывают
+    # ровно после спора о границах, а прошлые споры — это и есть то,
+    # что владелец уже решил (PILOT-1: семь границ из семи расширены,
+    # каждая — раунд и ожидание человека). Пустая строка оставляет
+    # промпт байт-в-байт прежним.
+    mem = f"\n{memory.rstrip()}\n" if memory else ""
     return f"""Ты — планировщик в автоматической петле разработки. \
 Ответ парсится механически.
 
 ## Ситуация
 Задача ушла в blocked через канал dispute: исполнитель заявил, что требования
 невыполнимы в заданных рамках. Твоя работа — устранить причину диффом к плану.
-
+{mem}
 ## Задача
 {json.dumps(task, ensure_ascii=False, indent=1)}
 

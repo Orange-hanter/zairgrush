@@ -298,6 +298,20 @@ class TestConfigValidation(CliCase):
         self.assertEqual(err, "")
         self.assertEqual(cfg["max_iterations"], 5)
 
+    def test_memory_mode_that_is_not_a_role_warns(self):
+        """Значение флага памяти — имя роли. Опечатка в нём выключает
+        подсистему целиком и ничем не отличима от `off`: замер «ноль
+        вызовов эмбеддера за пилот» начинался ровно с такой тишины."""
+        _cfg, err = self._config_stderr(
+            '[experiments]\nmemory = "planer"\n')
+        self.assertIn("не роль", err)
+        self.assertIn("planner", err, "подсказка обязана назвать роли")
+
+    def test_planner_mode_is_a_role_and_stays_silent(self):
+        _cfg, err = self._config_stderr(
+            '[experiments]\nmemory = "planner"\n')
+        self.assertEqual(err, "")
+
 
 class TestDoctor(CliCase):
     def test_reports_environment(self):

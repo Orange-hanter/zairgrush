@@ -243,7 +243,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
         dispute = {}
         if args.dispute:
             dispute = json.loads(pathlib.Path(args.dispute).read_text())
-        prompt = planner.replan_prompt(task, dispute, tasks, files, suite)
+        # Та же память, что и у plan: спор о границах решается знанием
+        # прошлых таких решений, а не заново с чистого листа.
+        mem_block = cli._load("memory").inject_block(
+            "planner", task, st, cfg)
+        prompt = planner.replan_prompt(task, dispute, tasks, files, suite,
+                                       memory=mem_block)
     diff, errs, reason = planner.plan_with_retry(
         prompt, args.cmd, tasks, root=args.root,
         budget=cfg.get("plan_budget_usd"),

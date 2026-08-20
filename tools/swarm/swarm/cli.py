@@ -75,6 +75,12 @@ KNOWN_CONFIG_KEYS = frozenset({
 KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
                                    "skeleton"})
 
+# Значения флага `[experiments] memory` — это имена ролей (см.
+# memory.enabled_for): каждая включается отдельно, чтобы замер шёл по
+# одному фактору за прогон, и "all" существует только для полного
+# включения после того, как роли замерены поодиночке.
+MEMORY_MODES = frozenset({"off", "executor", "reviewer", "planner", "all"})
+
 
 def _config(root: str | pathlib.Path) -> dict[str, Any]:
     path = pathlib.Path(root) / "swarm.toml"
@@ -104,6 +110,16 @@ def _config(root: str | pathlib.Path) -> dict[str, Any]:
                     print(f"ВНИМАНИЕ: {path}: незнакомые флаги "
                           f"[experiments] ({', '.join(unknown_exp)}) — "
                           f"петля их не читает", file=sys.stderr)
+                # Значение флага памяти — имя РОЛИ, и опечатка в нём
+                # молча выключает подсистему целиком: `memory = "planer"`
+                # неотличим от `"off"` ни в одном выводе. Тот же довод,
+                # что и у закрытого списка ключей.
+                mem_mode = exp.get("memory")
+                if mem_mode is not None and mem_mode not in MEMORY_MODES:
+                    print(f"ВНИМАНИЕ: {path}: [experiments] memory = "
+                          f"{mem_mode!r} — не роль; память ВЫКЛЮЧЕНА. "
+                          f"Допустимо: {', '.join(sorted(MEMORY_MODES))}",
+                          file=sys.stderr)
             cfg.update(parsed)
     return cfg
 

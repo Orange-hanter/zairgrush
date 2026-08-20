@@ -677,6 +677,22 @@ class TestMemoryInPlanPrompt(unittest.TestCase):
         self.assertLess(text.index("## Project memory"),
                         text.index("## Текущее состояние"))
 
+    def test_replan_prompt_unchanged_without_memory(self):
+        base = rp.replan_prompt(task(), {"claim": "x"}, [], "files", "ok")
+        self.assertEqual(base, rp.replan_prompt(task(), {"claim": "x"}, [],
+                                                "files", "ok", memory=""))
+
+    def test_replan_carries_memory_before_the_task(self):
+        """replan зовут ПОСЛЕ спора о границах, а прошлые споры — это
+        решения владельца, уже принятые (PILOT-1: семь границ из семи
+        расширены). Планировщик обязан видеть их до самой задачи."""
+        text = rp.replan_prompt(task(), {"claim": "x"}, [], "files", "ok",
+                                memory="## Project memory\n[DATA]\n- урок")
+        self.assertLess(text.index("## Ситуация"),
+                        text.index("## Project memory"))
+        self.assertLess(text.index("## Project memory"),
+                        text.index("## Задача"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
