@@ -148,7 +148,8 @@ def _metric(**row: Any) -> None:
 
 
 def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
-                temperature: float = 0.0, model: str | None = None) -> str | None:
+                temperature: float = 0.0, model: str | None = None,
+                think: bool | str = False) -> str | None:
     """Один вызов дешёвой модели через НАТИВНЫЙ /api/chat.
 
     Почему не OpenAI-совместимый /v1 (замерено на OLLAMA-1):
@@ -159,10 +160,38 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
       даёт воспроизводимость, а `done_reason == "length"` — единственный
       честный признак обрезанного ответа.
 
+    `think` — НЕ глобальная константа, а свойство модели (замерено
+    2026-08-20, REVIEWARM; подтверждено docs.ollama.com/capabilities/
+    thinking). Поле принимает булево ИЛИ уровень "low"|"medium"|"high"|
+    "max", и семейства расходятся ровно наоборот:
+
+    - deepseek-v4-flash, glm-5.1, qwen3.5, kimi-k2.7-code: `False`
+      выключает размышления (ответ за 317–422 токена); уровень "low",
+      наоборот, их ВКЛЮЧАЕТ и съедает весь num_predict;
+    - gpt-oss: булево **игнорируется** (так сказано в документации), модель
+      рассуждает всегда и ждёт уровень. С `think=False` она сожгла 900
+      токенов на 4450 символов размышления и вернула ПУСТОЙ content;
+      с `think="low"` — 558 токенов и годный ответ.
+
+    Отсюда правило вызывающего: think выбирается на модель. Значение по
+    умолчанию `False` сохранено — оно верно для всех моделей третьего
+    контура, кроме gpt-oss.
+
+    Размышления приходят ОТДЕЛЬНЫМ полем `message.thinking` и не попадают
+    в результат, но токены на них тратятся из того же `num_predict`.
+    Поэтому метрика несёт `thinking_chars`: строка «обрезан» без него
+    читается как «модель плоха», хотя на деле бюджет ушёл в размышления,
+    которых мы не просили.
+
     `model=None` — модель хелперов третьего контура (MODEL, умолчание §7).
     Явный `model` пускает через тот же контракт вызов ЛЮБОЙ модели Ollama
     Cloud (E10, chat-fill исполнителя) — транспорт и предохранитель общие,
     занижать надёжность отдельной модели незачем.
+
+    Структурный вывод (`format` со схемой) не задаётся сознательно: облако
+    Ollama его не поддерживает — это сказано в документации вендора и
+    замерено ещё раз 2026-08-20 (ответ пришёл по промпту, а не по схеме).
+    Формат вымогается промптом и проверяется вызывающим (ADR-004).
 
     Любая ошибка -> None (§7.3 fail-open).
     """
@@ -180,7 +209,7 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
         return None
     body = json.dumps({
         "model": resolved_model, "stream": False,
-        "think": False,                       # не платим за размышления (§7.1)
+        "think": think,                       # не платим за размышления (§7.1)
         "options": {
             "num_predict": max_tokens,        # дефолт -1 = без ограничения
             "temperature": temperature,
@@ -217,12 +246,17 @@ def ollama_chat(prompt: str, name: str, max_tokens: int = 400,
                     api_error=str(resp["error"])[:120], request_id=request_id)
             return None
         _state["failures"] = 0
-        text = (resp.get("message", {}).get("content") or "").strip()
+        message = resp.get("message", {}) or {}
+        text = (message.get("content") or "").strip()
+        # Размышления не идут в результат, но тратят тот же num_predict.
+        # Без этого числа обрезанный ответ не отличить от «модель плоха».
+        thinking_chars = len((message.get("thinking") or "").strip())
         truncated = resp.get("done_reason") == "length"
         _metric(helper=name, model=resolved_model, dur_s=round(time.time() - t0, 1),
                 tokens_in=resp.get("prompt_eval_count"),
                 # eval_count включает reasoning-токены, если think не выключен
                 tokens_out=resp.get("eval_count"),
+                think=think, thinking_chars=thinking_chars,
                 truncated=truncated, request_id=request_id,
                 # ok — пригодность результата: обрезанный ответ строкой ниже
                 # выбрасывается, и ok=True при этом был ложью метрики.

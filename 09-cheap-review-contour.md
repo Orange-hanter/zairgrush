@@ -2,7 +2,7 @@
 title: "ZeusLogic — Cheap models in the review path: a plan"
 type: design
 status: draft
-version: 0.2
+version: 0.3
 created: 2026-08-20
 updated: 2026-08-20
 related:
@@ -82,10 +82,10 @@ names and separate rules.
 | | **Ollama contour** — `deepseek-v4-flash:0731`, `glm-5.1`, `qwen3.5:397b`, `gpt-oss:120b`, `kimi-k2.7-code`, `gemma4:31b` | **Haiku contour** — `claude-haiku-4-5` via `claude -p` |
 | --- | --- | --- |
 | Billing | flat subscription — **$0 marginal per call** | metered: **$1 / $5** per MTok in/out (Opus 5 is $5 / $25) |
-| Output contract | none. `format` with a schema is **silently ignored**; prompt-coerce + own validator (ADR-004) | `--json-schema` honored — 25/25 valid verdicts across the whole program |
+| Output contract | none. `format` with a schema is **silently ignored** — now stated by the vendor too ("Ollama's Cloud currently does not support structured outputs") and re-measured 2026-08-20; prompt-coerce + own validator (ADR-004) | `--json-schema` honored — 25/25 valid verdicts across the whole program |
 | Tools | none. Bare chat: the orchestrator must feed every byte of context | full agentic CLI — it walks the repo itself |
 | Context | 262 K (gemma4 / qwen3.5 / nemotron), **1 M** (deepseek-v4-flash) | 200 K |
-| Depth knob | `think: false` + `num_predict` | `--effort` **is accepted** by `claude -p` on Haiku 4.5, but bought no depth in the probe (2026-08-20: `xhigh` → 36 thinking tokens / $0.0204, `low` → 43 / $0.0162) |
+| Depth knob | `think` **per model**: boolean for models that can disable the trace, a level (`low`/`medium`/`high`) for gpt-oss, which ignores booleans — plus `num_predict`, which the trace spends too | `--effort` **is accepted** by `claude -p` on Haiku 4.5, but bought no depth in the probe (2026-08-20: `xhigh` → 36 thinking tokens / $0.0204, `low` → 43 / $0.0162) |
 | Latency | 2–6 s (kimi-k2.7-code, deepseek-v4-flash fastest, probe 2026-08-18) | tens of seconds |
 | Cost telemetry | `usage` in tokens; **no USD** — invisible to the budget | real `total_cost_usd` in the envelope |
 
@@ -223,46 +223,60 @@ findings held constant against the gold set.
 
 ## 4. Sequencing — each step falsifiable before the next is built
 
-**Step 0 — offline replay. No expensive calls at all. — RUN 2026-08-20,
-gate NOT met.** `experiments/reviewarm/replay.py` + `analyze.py`, full
-report in [experiments/reviewarm/REPORT.md](experiments/reviewarm/REPORT.md).
+**Step 0 — offline replay. No expensive calls at all. — RUN TWICE
+2026-08-20, gate NOT met.** `experiments/reviewarm/replay.py` +
+`analyze.py`, full report in
+[experiments/reviewarm/REPORT.md](experiments/reviewarm/REPORT.md).
 Five models under five distinct lenses over the 14 PILOT-1 diffs that
-carry a closing commit: **70 calls, $0.00 metered, 347 s wall, 548 K in /
-30 K out tokens**.
+carry a closing commit: **70 calls, $0.00 metered, 270 s wall, 548 K in /
+21 K out tokens**.
+
+Run A was invalid and is kept in the report as evidence: `ollama_chat`
+hardcoded `think: false`, which **gpt-oss ignores** — it only accepts a
+level — so that juror reasoned away its whole `num_predict` and returned
+empty answers 12 times in 14. Run A read that as "the model is unusable".
+`think` turned out to be a property of the model, not a constant of the
+call, and the inverse holds too: a level would destroy the other four.
+Fixed in gated code (per-model `think`, `thinking_chars` in metrics) and
+recorded as an amendment to ADR-004, whose prose had contained the rule
+all along. Numbers below are Run B.
 
 The gate as written was *"recovers ≥1 of the 2 majors with < 10
 candidates per diff"*. Neither half survived contact intact, and for
 different reasons:
 
-- **Volume: failed.** 13.4 candidates per diff after dedup (median 15,
-  max 19), over on 10 of 14 diffs. Dedup turned out not to be the lever —
-  187 raw candidates merge to ~187, because jurors under different lenses
+- **Volume: failed.** 14.3 candidates per diff after dedup (median 16,
+  max 20), over on 11 of 14 diffs — slightly *worse* than Run A, because a
+  juror that had been silently failing now works. Dedup is not the lever:
+  200 raw candidates merge to ~200, because jurors under different lenses
   make genuinely *different* claims about the same file. The panel does
-  not repeat itself; it really does produce 13 distinct claims. Filtering
-  to self-rated `major` passes at 4.1/diff but drops coverage of the paid
-  reviewer's major-finding files from 3/4 to 2/4 — a lossy filter, not a
-  free win.
+  not repeat itself. And the obvious noise filter is worse than it looked:
+  keeping only self-rated `major` passes the gate at 4.3/diff while
+  **halving** coverage of the paid reviewer's major-finding files, 4/4 down
+  to 2/4. Cross-juror agreement is worse still — it barely reduces volume
+  (jurors agree on files, differ on claims) and costs six addresses.
 - **Recall: not measurable this way at all.** Every endorsed finding of
   PILOT-1 was fixed *before* the commit closing its task, so `git show`
   shows the correction, not the defect. What Step 0 can report is
-  *address* agreement — the panel named 26 of the 34 files the paid
-  reviewer named (76 %), and 3 of its 4 major-finding files — and that is
-  not recall. Recall needs a replay over the executor session logs, which
+  *address* agreement — the panel named 28 of the 34 files the paid
+  reviewer named (82 %), and **all 4** of its major-finding files — and
+  that is not recall. Recall needs a replay over the executor session logs, which
   do carry full tool-call arguments; that harness does not exist yet.
 
-Two things the run settled cheaply and permanently:
-**zero off-diff candidates in 70 calls** — the address validator the plan
-worried about rejects nothing, so contract-free jurors are not confused
-about where they are looking; and `gpt-oss:120b` leaves the roster (12/14
-answers truncated at the 900-token cap and discarded per ADR-004, zero
-coverage cost to remove), while the slowest juror `qwen3.5:397b` stays as
-the only one with repeated unique reach.
+One thing the runs settled cheaply and permanently: **zero off-diff
+candidates in 140 calls and 200 candidates across both runs** — the
+address validator the plan worried about rejects nothing, so contract-free
+jurors are not confused about where they are looking. The roster keeps all
+five: correctly configured, `gpt-oss:120b` is the *quietest* juror (0.8
+candidates per diff, silent on 9 of 14 diffs) and the *fastest* (2.1 s),
+and it still ties for the most unique address reach — removing it now
+costs coverage, the exact reverse of Run A.
 
-*Revised gate for P2*: same roster minus `gpt-oss:120b` at per-juror cap
-**2** instead of 5 — spending the ranking budget inside the juror, where
-the lens context still exists, rather than in a severity filter that sees
-only a label. Passes if volume is under 10 with major-file coverage still
-at 3/4. Until then P2 stays unbuilt and P0/P1/P3 are unaffected.
+*Revised gate for P2*: same roster at per-juror cap **2** instead of 5 —
+spending the ranking budget inside the juror, where the lens context still
+exists, rather than in a severity filter that sees only a label. Passes if
+volume is under 10 with major-file coverage still at 4/4. Until then P2
+stays unbuilt and P0/P1/P3 are unaffected.
 
 **Step 1 — P0**: tuple-draw fix + Haiku in the pool. Runs inside the next
 pilot queue with no protocol change. *Tuple draw implemented and gated
@@ -351,6 +365,22 @@ confirm it, and both are cheap.
 ---
 
 ## Журнал изменений
+
+### v0.3 (2026-08-20)
+
+- Нулевой шаг пересчитан на исправленном контракте Ollama. Вскрыто, что
+  `think` — свойство МОДЕЛИ, а не константа вызова: обёртка зашивала
+  `think: false`, который gpt-oss игнорирует, и присяжный сжигал весь
+  `num_predict` на размышления. Прогон A признан недействительным в части
+  состава; его вывод «gpt-oss непригоден» отозван — исправленный, это
+  самый быстрый и самый немногословный присяжный, и удаление его теперь
+  стоит покрытия. Обновлены §2 (строки про глубину и про structured
+  outputs) и §4.
+- Числа §4 заменены на прогон B: адресное совпадение 28/34 (82%), файлы с
+  major дорогого ревьюера покрыты полностью (4/4), 270 с, 21K выходных
+  токенов. Ворота объёма по-прежнему НЕ пройдены — 14.3 на дифф, и размен
+  стал резче: фильтр по самооценке `major` режет покрытие major-файлов
+  вдвое.
 
 ### v0.2 (2026-08-20)
 

@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.9
+version: 0.10
 created: 2026-08-06
 updated: 2026-08-20
 related:
@@ -323,26 +323,36 @@ step has been run, the loop has not been touched.
 - **Zero step**: offline replay of the panel roster against
   `experiments/goldset/labels.jsonl` — no expensive calls, gate before
   anything is wired into the loop.
-- **Step 0 result (2026-08-20, $0.00 metered, 70 calls, 347 s)**: the
-  free contour produces mechanically valid material — **zero off-diff
-  candidates in 70 calls**, i.e. the address validator the plan built
-  rejects nothing. But the **volume gate fails**: 13.4 candidates per
-  diff after dedup against a ceiling of 10, over on 10 of 14 diffs.
+- **Step 0 result (2026-08-20, run twice, $0.00 metered, 70 calls,
+  270 s)**: the free contour produces mechanically valid material —
+  **zero off-diff candidates across 140 calls and 200 candidates**, i.e.
+  the address validator the plan built rejects nothing. Coverage is
+  better than expected: the panel names 28 of the 34 files the paid
+  reviewer named (82 %) and reaches **all 4** files carrying a paid
+  `major` finding. But the **volume gate fails**: 14.3 candidates per
+  diff after dedup against a ceiling of 10, over on 11 of 14 diffs.
   Dedup is not the lever (jurors under different lenses make different
-  claims about the same file, so 187 raw merge to ~187); filtering to
-  self-rated `major` passes the gate at 4.1/diff but drops paid-major
-  file coverage from 3/4 to 2/4 — a lossy filter, not a free win.
-  Roster decisions: `gpt-oss:120b` out (12/14 answers truncated at the
-  900-token cap, discarded per ADR-004, zero coverage cost to remove);
-  `qwen3.5:397b` stays despite being slowest, as the only juror with
-  repeated unique reach.
+  claims about the same file, so 200 raw merge to ~200), and the obvious
+  filter is worse than it looks — keeping only self-rated `major` passes
+  at 4.3/diff while **halving** major-file coverage, 4/4 to 2/4.
+- **Run A was invalid and is kept as evidence**: the wrapper hardcoded
+  `think: false`, which gpt-oss **ignores** (it only accepts a level), so
+  that juror reasoned away its whole `num_predict` and returned empty
+  answers 12 times in 14 — read at the time as "the model is unusable".
+  `think` is a property of the model, not a constant of the call, and the
+  inverse holds: a level destroys the four models that *can* disable the
+  trace. Corrected, `gpt-oss:120b` is the quietest and fastest juror and
+  ties for the most unique reach. The rule had been written in ADR-004
+  seven months earlier and lived only in prose; it is now enforced in
+  code (`ollama_chat(..., think=)`, per-model map, `thinking_chars` in
+  metrics, 4 tests) and recorded as an ADR-004 amendment.
 - **Blocked measurement**: recall against endorsed labels is **not
   obtainable from committed diffs** — every endorsed finding of PILOT-1
   was fixed *before* the commit closing its task, so `git show` displays
   the correction, not the defect. Recall needs a replay over
   `.swarm/log/<task>-i<N>-executor.jsonl`, which does carry full
-  tool-call arguments. Reported as address agreement (26/34 files, 76 %)
-  and explicitly not as recall.
+  tool-call arguments. Reported as address agreement (28/34 files, 82 %;
+  all 4 major-finding files) and explicitly not as recall.
 - **Also implemented** (P0's prerequisite, gated green): review arms are
   drawn as `(model, effort)` **pairs** — `review_arm_pool` /
   `confirm_arm_pool` in `agents.py::_draw_arm` — so a mixed pool stops
@@ -351,9 +361,11 @@ step has been run, the loop has not been touched.
   motivated it corrected the plan: `claude -p --model claude-haiku-4-5
   --effort xhigh` runs fine ($0.0204), so effort is **not** rejected on
   Haiku 4.5 as the plan assumed.
-- **Status: Step 0 done; next measurement is the same roster at
-  per-juror cap 2 without `gpt-oss:120b`. Nothing wired into the loop;
-  every metered insertion point still awaits owner approval.**
+- **Status: Step 0 done; next measurement is the same roster (all five)
+  at per-juror cap 2. Nothing wired into the loop; every metered
+  insertion point still awaits owner approval, as does the ADR-004
+  clause about not taking gpt-oss-family models for helpers, whose
+  premise this measurement contradicts.**
 
 ## 5. Порядок и зависимости
 
@@ -425,6 +437,20 @@ E8 закрыт (K3 остаётся дефолтом); **ADR-003 → ADR-004** 
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.10 (2026-08-20)
+
+- E12: нулевой шаг пересчитан после того, как вскрылся дефект обвязки —
+  `think` у Ollama является свойством модели, а обёртка зашивала
+  `think: false`, который gpt-oss игнорирует. Прогон A признан
+  недействительным в части состава, вывод «gpt-oss непригоден» отозван.
+  Правило было записано в ADR-004 семь месяцев назад и жило только в
+  прозе; теперь оно исполняется кодом, а ADR получил уточнение. Числа
+  прогона B: адресное покрытие 28/34 (82%), файлы с major дорогого
+  ревьюера покрыты полностью (4/4), ноль кандидатов мимо диффа за 140
+  вызовов. Ворота объёма по-прежнему не пройдены (14.3 на дифф), и размен
+  стал резче: фильтр по самооценке `major` режет покрытие major-файлов
+  вдвое.
 
 ### v0.9 (2026-08-20)
 

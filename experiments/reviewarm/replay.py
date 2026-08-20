@@ -27,7 +27,7 @@ dressed as a number.
 
 Determinism: model calls go through the house wrapper
 (`tools/swarm/swarm/helpers.ollama_chat`) — native /api/chat,
-`think: false`, temperature 0, top_k 1, fixed seed, secret scrub,
+per-model `think` (see THINK below), temperature 0, top_k 1, fixed seed, scrub,
 circuit breaker, fail-open. Same input, same roster, same numbers.
 
 Usage:
@@ -87,6 +87,27 @@ Answer with a JSON array and NOTHING else, each element:
 """
 
 SEVERITIES = {"major", "minor", "nit"}
+
+# `think` — свойство МОДЕЛИ, а не константа вызова (замерено 2026-08-20,
+# подтверждено docs.ollama.com/capabilities/thinking). Булево выключает
+# размышления у большинства, но gpt-oss булево ИГНОРИРУЕТ и ждёт уровень;
+# при этом уровень "low" у остальных размышления, наоборот, включает.
+# Ошибиться здесь — значит сжечь num_predict на размышления, получить
+# пустой content и записать в отчёт «модель непригодна». Ровно это и
+# произошло в первом прогоне REVIEWARM.
+THINK: dict[str, bool | str] = {
+    "gpt-oss:120b": "low",
+    "gpt-oss:20b": "low",
+}
+THINK_DEFAULT: bool | str = False
+
+
+def think_for(model: str) -> bool | str:
+    """Значение think для модели: семейство важнее точного тега версии."""
+    for prefix, value in THINK.items():
+        if model.startswith(prefix.split(":")[0]):
+            return value
+    return THINK_DEFAULT
 
 
 def sh(args: list[str]) -> str:
@@ -259,7 +280,8 @@ def main() -> int:
                                    diff=diff)
             t0 = time.monotonic()
             raw = helpers.ollama_chat(prompt, name=f"panel:{lens}",
-                                      max_tokens=args.max_tokens, model=model)
+                                      max_tokens=args.max_tokens, model=model,
+                                      think=think_for(model))
             wall = time.monotonic() - t0
             parsed, refusal = parse_candidates(raw or "", files)
             for c in parsed:
@@ -278,6 +300,7 @@ def main() -> int:
                 "task": task["id"], "model": model, "lens": lens,
                 "wall_s": round(wall, 2), "parsed": len(parsed),
                 "refusal": refusal or (None if raw else "no_answer"),
+                "think": think_for(model),
                 "diff_truncated": skipped, "raw": (raw or "")[:4000],
             }, ensure_ascii=False) + "\n")
         merged = dedup([c for c in cands if not c["off_diff"]])
