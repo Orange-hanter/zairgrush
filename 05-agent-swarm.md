@@ -2,7 +2,7 @@
 title: "ZeusLogic — Рой агентов: петля «исполнитель ↔ ревьюер»"
 type: design
 status: draft
-version: 0.46
+version: 0.47
 created: 2026-07-30
 updated: 2026-08-20
 related:
@@ -606,7 +606,24 @@ Heartbeat на двух сигналах: (а) процесс жив, (б) из 
   provider did work — that refusal must be investigated, not waited
   out). A permanent 403 (revoked token) is indistinguishable and needs
   no distinguishing: it exhausts the ladder and pauses the whole run
-  with the provider's message — the right outcome for that case too;
+  with the provider's message — the right outcome for that case too.
+  **Auto-resume (opt-in).** `quota_resume = "auto"` lets the run outlive
+  the pause instead of exiting with code 4: the loop parses the reset
+  time out of the provider's own message («resets 3:10pm
+  (Europe/Minsk)» — am/pm and 24h forms, timezone from the parentheses,
+  machine timezone otherwise), sleeps past it (+90 s safety margin), and
+  continues the queue; unparseable message → a flat
+  `quota_resume_fallback_s` (3600) nap. Guard rails, each returning the
+  decision to the human rather than waiting silently: at most
+  `quota_resume_max` (3) resumes per run, and a reset farther than
+  `quota_resume_max_wait_s` (21600) away is refused — tomorrow's quota
+  is a money-and-priorities decision, not a timer. Every resume is a
+  journal event (`quota_resume`: attempt, wait, until, message).
+  Motivated by PILOT-1/speed-analysis: run calendar time was dominated
+  not by compute but by quota pauses plus the human's relaunch latency
+  (median 0.4 h, worst 21 h). The default stays `off`: auto-resume
+  spends money with no human in the loop, that is switched on
+  deliberately;
 - **таймаут тишины** 600 с на вызов агента → процедура рестарта (§5.2).
 
 ### 5.4. Коммиты, алиасы, push
@@ -1845,6 +1862,14 @@ verdict = retry (§4.2).
 ---
 
 ## Журнал изменений
+
+### v0.47 (2026-08-20)
+
+- §5.3: quota auto-resume (opt-in `quota_resume = "auto"`) — the run
+  parses the provider's reset time, sleeps past it and continues,
+  capped by attempts (`quota_resume_max`) and wait ceiling
+  (`quota_resume_max_wait_s`); journal event `quota_resume`. Converts
+  multi-hour operator stalls into zero-touch continuations.
 
 ### v0.46 (2026-08-20)
 

@@ -66,6 +66,8 @@ KNOWN_CONFIG_KEYS = frozenset({
     "gate_timeout", "silence_timeout", "wall_clock_cap", "executor_model",
     "review_budget_usd", "verification", "total_budget_usd", "live_board",
     "board_open", "board_port", "map_budget", "tuning_seed", "quota_backoff_s",
+    "quota_resume", "quota_resume_max", "quota_resume_max_wait_s",
+    "quota_resume_fallback_s",
     "plan_budget_usd", "plan_model", "plan_effort", "plan_timeout",
     "review_model", "review_effort", "review_model_pool", "review_effort_pool",
     "confirm_model", "confirm_effort", "confirm_model_pool",

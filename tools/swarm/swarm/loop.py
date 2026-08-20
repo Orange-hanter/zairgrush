@@ -12,13 +12,16 @@
     4.  REVIEW         — ревьюер; вердикт валидируется механически
     5.  COMMIT | FEEDBACK
 """
+import datetime as dt
 import fnmatch
 import hashlib
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
+import zoneinfo
 from collections.abc import Callable
 from typing import Any
 
@@ -90,6 +93,51 @@ REVIEW_DIAGNOSIS = {
 }
 QUOTA_MARKERS = ("session limit", "rate limit", "quota", "usage limit",
                  "429", "too many requests")
+# Замеренный формат: «You've hit your session limit · resets 3:10pm
+# (Europe/Minsk)»; понимаем и 24-часовую форму, и «resets 3pm».
+_QUOTA_RESET_RE = re.compile(
+    r"resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?"
+    r"(?:\s*\(([^)]+)\))?", re.IGNORECASE)
+
+
+def parse_quota_reset(message: str,
+                      now: dt.datetime | None = None) -> dt.datetime | None:
+    """Момент сброса квоты из текста провайдера, если он там назван.
+
+    Часовой пояс — из скобок после времени; не назван или незнаком —
+    время читается в поясе машины (оператор и провайдер в одном поясе —
+    замеренный случай). Названное время уже прошло — значит, завтра.
+    Ничего не разобрано -> None: наверху решают fallback-паузой, а не
+    выдуманным временем.
+    """
+    m = _QUOTA_RESET_RE.search(message or "")
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2) or 0)
+    ampm = (m.group(3) or "").lower()
+    if not m.group(2) and not ampm:
+        return None          # голое «resets 3» — слишком мало, не гадаем
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    if ampm == "am" and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59:
+        return None
+    moment = now or dt.datetime.now(dt.UTC)
+    tz: dt.tzinfo | None = None
+    if m.group(4):
+        try:
+            tz = zoneinfo.ZoneInfo(m.group(4).strip())
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError, KeyError):
+            tz = None        # незнакомый пояс = пояс машины, честный дефолт
+    if tz is None:
+        tz = moment.astimezone().tzinfo
+    local_now = moment.astimezone(tz)
+    target = local_now.replace(hour=hour, minute=minute,
+                               second=0, microsecond=0)
+    if target <= local_now:
+        target += dt.timedelta(days=1)
+    return target
 
 
 class ExecutorUnavailableError(Exception):
@@ -1217,6 +1265,9 @@ class Loop:
         self._run_dirt = set(self.state.changed_files())
         if self._run_dirt:
             self.state.log("run_dirt", files=sorted(self._run_dirt))
+        # Счётчик автовозобновлений — на ПРОГОН, не на задачу: квота
+        # общая, и каждая пауза тратит одну попытку из quota_resume_max.
+        resumes = 0
         # Доска должна существовать с первой секунды прогона, а не с
         # первого раунда: открыть её человек хочет сразу.
         self.refresh_board()
@@ -1264,11 +1315,28 @@ class Loop:
                     # Не авария: задача уже возвращена в pending, работа в
                     # stash (_review_with_quota_wait). _rescue здесь
                     # превратил бы паузу в blocked с диагнозом «авария» —
-                    # ровно тот дефект, который эта ветка чинит. Наверх,
-                    # к exit-коду 4. Проверка по имени класса: исключение
-                    # могло подняться из чужой копии модуля.
+                    # ровно тот дефект, который эта ветка чинит. Проверка
+                    # по имени класса: исключение могло подняться из чужой
+                    # копии модуля.
                     self.refresh_board()
-                    raise
+                    wait_s = self._quota_resume_wait(str(e), resumes)
+                    if wait_s is None:
+                        # Дефолт прежний: наверх, к exit-коду 4 — «когда
+                        # продолжить» решает человек.
+                        raise
+                    resumes += 1
+                    cap = int(self.config.get("quota_resume_max", 3))
+                    until = (dt.datetime.now(dt.UTC)
+                             + dt.timedelta(seconds=wait_s)).astimezone()
+                    self.state.log("quota_resume", attempt=resumes, of=cap,
+                                   wait_s=wait_s,
+                                   until=until.isoformat(timespec="seconds"),
+                                   message=str(e)[:200])
+                    self.ui(f"    АВТОВОЗОБНОВЛЕНИЕ {resumes}/{cap}: ждём "
+                            f"{wait_s // 60} мин (до {until:%H:%M}), "
+                            f"причина: {str(e)[:120]}")
+                    time.sleep(wait_s)
+                    continue
                 # убивать очередь; задача обязана остаться разбираемой
                 log.exception("задача упала", extra={"swarm_task": task["id"]})
                 results[task["id"]] = self._rescue(task, f"{type(e).__name__}: {e}")
@@ -1286,6 +1354,39 @@ class Loop:
         if results:
             self._memory_reflect()
         return results
+
+    def _quota_resume_wait(self, message: str, resumes: int) -> int | None:
+        """Сколько спать перед автовозобновлением; None = отдать человеку.
+
+        Строго opt-in (`quota_resume = "auto"`): пауза по квоте остаётся
+        дефолтом — автопродолжение тратит деньги без человека в контуре,
+        такое включают явно. Ограничения, каждое отдаёт решение человеку,
+        а не молча ждёт: исчерпан лимит попыток на прогон
+        (`quota_resume_max`); названный сброс дальше потолка ожидания
+        (`quota_resume_max_wait_s` — завтрашняя квота это решение о
+        деньгах и приоритетах, не таймер). Время сброса не разобрано —
+        ждём `quota_resume_fallback_s`: короткая слепая пауза дешевле
+        потерянного вечера, а лимит попыток не даст ей зациклиться.
+
+        Родилось из замера PILOT-1/speed-analysis: календарное время
+        прогона определяли не вычисления, а паузы по квоте плюс задержка
+        человека на перезапуск (медиана 0.4 ч, худшее 21 ч).
+        """
+        if str(self.config.get("quota_resume") or "off") != "auto":
+            return None
+        if resumes >= int(self.config.get("quota_resume_max", 3)):
+            return None
+        reset = parse_quota_reset(message)
+        if reset is None:
+            wait = int(self.config.get("quota_resume_fallback_s", 3600))
+        else:
+            now = dt.datetime.now(dt.UTC)
+            # +90 с запаса: граница сброса и рассинхрон часов; попытка
+            # ровно в названную минуту снова упирается в лимит.
+            wait = int((reset - now).total_seconds()) + 90
+        if wait > int(self.config.get("quota_resume_max_wait_s", 21600)):
+            return None
+        return max(wait, 60)
 
     def _rescue(self, task: dict[str, Any], reason: str) -> str:
         """Спасти задачу и работу после аварии: stash, blocked, вопрос."""

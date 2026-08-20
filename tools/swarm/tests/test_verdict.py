@@ -192,6 +192,138 @@ class TestQuotaDetection(unittest.TestCase):
         self.assertIsNone(lp.quota_error(env))
 
 
+class TestQuotaResetParse(unittest.TestCase):
+    """Время сброса — из текста провайдера, без выдумывания."""
+
+    # Фиксированный «сейчас»: 12:00 UTC = 15:00 в Europe/Minsk (UTC+3).
+    NOW = lp.dt.datetime(2026, 8, 19, 12, 0, tzinfo=lp.dt.timezone.utc)
+
+    def _delta_min(self, target):
+        return int((target - self.NOW).total_seconds()) // 60
+
+    def test_measured_format_pm_with_timezone(self):
+        t = lp.parse_quota_reset(
+            "You've hit your session limit · resets 3:10pm (Europe/Minsk)",
+            now=self.NOW)
+        self.assertIsNotNone(t)
+        self.assertEqual(self._delta_min(t), 10)   # 15:10 Минска = 12:10 UTC
+
+    def test_past_time_means_tomorrow(self):
+        t = lp.parse_quota_reset("resets 2:00pm (Europe/Minsk)", now=self.NOW)
+        self.assertEqual(self._delta_min(t), 23 * 60)   # завтра 14:00 Минска
+
+    def test_24h_form(self):
+        t = lp.parse_quota_reset("limit resets 15:10 (Europe/Minsk)",
+                                 now=self.NOW)
+        self.assertEqual(self._delta_min(t), 10)
+
+    def test_bare_hour_with_ampm(self):
+        t = lp.parse_quota_reset("resets 4pm (Europe/Minsk)", now=self.NOW)
+        self.assertEqual(self._delta_min(t), 60)
+
+    def test_noon_and_midnight_edges(self):
+        t = lp.parse_quota_reset("resets 12:00pm (UTC)", now=self.NOW)
+        self.assertEqual(self._delta_min(t), 24 * 60)   # полдень UTC прошёл
+        t = lp.parse_quota_reset("resets 12:30am (UTC)", now=self.NOW)
+        self.assertEqual(self._delta_min(t), 12 * 60 + 30)
+
+    def test_unknown_timezone_falls_back_to_machine(self):
+        t = lp.parse_quota_reset("resets 11:00pm (Планета Шелезяка)",
+                                 now=self.NOW)
+        self.assertIsNotNone(t, "незнакомый пояс — не отказ, а пояс машины")
+
+    def test_garbage_is_none(self):
+        for msg in ("", "Failed to authenticate", "resets soon",
+                    "resets 3", "resets 25:99 (UTC)", None):
+            self.assertIsNone(lp.parse_quota_reset(msg, now=self.NOW), msg)
+
+
+class TestQuotaAutoResume(unittest.TestCase):
+    """§5.3: автовозобновление — строго opt-in, с потолками."""
+
+    TASK = {"id": "q1", "title": "т"}
+
+    def _loop(self, config, quota_raises=99):
+        outer = self
+
+        class FakeState:
+            def changed_files(self):
+                return []
+
+            def ready_tasks(self):
+                return [dict(outer.TASK)]
+
+            def total_spend(self):
+                return 0.0
+
+            def log(self, kind, **payload):
+                outer.logged.append((kind, payload))
+
+        loop = lp.Loop(FakeState(), config, None)
+        loop.refresh_board = lambda: None
+        state = {"n": 0}
+
+        def fake_run_task(task):
+            state["n"] += 1
+            if state["n"] > quota_raises:
+                return "done_stub"
+            # Сообщение БЕЗ времени сброса: тест не должен зависеть от
+            # настенных часов — путь с разбором времени покрывает
+            # TestQuotaResetParse, здесь работает fallback-пауза.
+            raise lp.QuotaExceededError("usage limit reached, retry later")
+        loop.run_task = fake_run_task
+        loop._memory_record = lambda task: None
+        loop._memory_reflect = lambda: None
+        self.logged = []
+        self.slept = []
+        self.addCleanup(setattr, lp.time, "sleep", lp.time.sleep)
+        lp.time.sleep = self.slept.append
+        return loop
+
+    def test_default_off_raises_as_before(self):
+        loop = self._loop({"live_board": False})
+        with self.assertRaises(lp.QuotaExceededError):
+            loop.run()
+        self.assertEqual(self.slept, [])
+
+    def test_auto_resumes_until_cap_then_raises(self):
+        loop = self._loop({"live_board": False, "quota_resume": "auto",
+                           "quota_resume_max": 2,
+                           "quota_resume_fallback_s": 300})
+        with self.assertRaises(lp.QuotaExceededError):
+            loop.run()
+        self.assertEqual(len(self.slept), 2, "две попытки — потом человеку")
+        resumes = [p for k, p in self.logged if k == "quota_resume"]
+        self.assertEqual([r["attempt"] for r in resumes], [1, 2])
+        self.assertTrue(all(r["of"] == 2 for r in resumes))
+
+    def test_auto_recovers_when_quota_lifts(self):
+        # limit=1: FakeState не убирает задачу из очереди после успеха —
+        # без лимита стенд кружил бы по «done_stub» вечно.
+        loop = self._loop({"live_board": False, "quota_resume": "auto"},
+                          quota_raises=1)
+        results = loop.run(limit=1)
+        self.assertEqual(results.get("q1"), "done_stub")
+        self.assertEqual(len(self.slept), 1)
+
+    def test_wait_beyond_ceiling_goes_to_human(self):
+        loop = self._loop({"live_board": False, "quota_resume": "auto",
+                           "quota_resume_fallback_s": 120,
+                           "quota_resume_max_wait_s": 60})
+        with self.assertRaises(lp.QuotaExceededError):
+            loop.run()
+        self.assertEqual(self.slept, [],
+                         "далёкий сброс — решение человека, не таймер")
+
+    def test_fallback_delay_is_used_and_floored(self):
+        loop = self._loop({"live_board": False, "quota_resume": "auto",
+                           "quota_resume_max": 1,
+                           "quota_resume_fallback_s": 420})
+        with self.assertRaises(lp.QuotaExceededError):
+            loop.run()
+        self.assertEqual(self.slept, [420])
+
+
 class _LoopHarness:
     """Общий стенд на mock-агентах: FakeState/FakeAgents и `_loop`.
 

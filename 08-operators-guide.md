@@ -2,7 +2,7 @@
 title: "ZeusLogic — Рой агентов: руководство оператора"
 type: guide
 status: draft
-version: 0.12
+version: 0.13
 created: 2026-08-09
 updated: 2026-08-20
 related:
@@ -99,6 +99,10 @@ verification = "milestone"  # проверки исполнением: never | m
 live_board = true        # перестраивать .swarm/board.html после каждого раунда
 board_port = 7433        # порт живой доски; занят — сервер возьмёт свободный
 quota_backoff_s = [60, 120, 240]  # паузы при отказе провайдера по квоте
+quota_resume = "auto"    # квота кончилась — дождаться сброса и продолжить
+                         # самому (дефолт off: пауза и exit-код 4);
+                         # потолки: quota_resume_max = 3 попытки на прогон,
+                         # quota_resume_max_wait_s = 21600 (дальше — человеку)
 plan_timeout = 900       # секунд на один вызов планировщика
 ```
 
@@ -512,6 +516,12 @@ swarm --root . impact <symbol>      # кто зовёт символ перед 
 §1 — оно не формальность.
 
 ## Журнал изменений
+
+### v0.13 (2026-08-20)
+
+- Config sample: `quota_resume = "auto"` — the loop waits out the
+  provider's reset time and continues on its own (capped attempts and
+  wait ceiling; default remains off/exit-code 4).
 
 ### v0.12 (2026-08-20)
 

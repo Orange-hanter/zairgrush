@@ -72,6 +72,7 @@ KIND_RU = {
     "memory_unavailable": "хранилище памяти недоступно",
     "memory_forgotten": "урок забыт",
     "memory_synced": "индекс памяти досыпан",
+    "quota_resume": "автовозобновление после квоты",
 }
 # Записи-бухгалтерия: сопровождают каждую запись состояния и событием
 # прогона не являются. В блоках «прогон в целом» они хоронили под собой
@@ -456,6 +457,11 @@ NARRATORS: dict[str, Narrator] = {
          f"векторов добавлено {r.get('vectors')}, "
          f"без вектора {r.get('unembedded')}"),
         {"rows", "vectors", "unembedded"}),
+    "quota_resume": lambda r: (
+        (f"автовозобновление {r.get('attempt')}/{r.get('of')}: ждём "
+         f"{r.get('wait_s')} с (до {_s(r.get('until'))}): "
+         f"{_s(r.get('message'))}"),
+        {"attempt", "of", "wait_s", "until", "message"}),
 }
 
 
