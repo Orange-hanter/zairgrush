@@ -71,6 +71,7 @@ KNOWN_CONFIG_KEYS = frozenset({
     "confirm_model", "confirm_effort", "confirm_model_pool",
     "confirm_effort_pool", "confirm_lens",
     "memory_db", "memory_budget_chars", "memory_top_k", "memory_embed_model",
+    "memory_index",
     "fill_num_predict",
     "experiments",
 })
@@ -889,6 +890,11 @@ def cmd_memory(args: argparse.Namespace) -> int:
     store = mem.MemoryStore(args.root)
     root = pathlib.Path(args.root)
     repo, stand = mem.repo_identity(args.root)
+    # Счётчик хелперов — и для CLI-путей: без этого вызовы эмбеддера из
+    # search/reindex/sync не оставляли следа в helper-metrics.jsonl, и
+    # вопрос «а использовался ли эмбеддер?» решался только по дашборду
+    # провайдера (замерено на пилоте: metering gap).
+    mem.helpers.configure(st.dir / "helper-metrics.jsonl")
 
     if args.mem_cmd == "add":
         anchors = [_memory_anchor(root, a) for a in (args.anchor or [])]
@@ -964,6 +970,22 @@ def cmd_memory(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         print(f"индекс пересобран: {n} строк(и) для стенда {stand}")
+        return 0
+
+    if args.mem_cmd == "sync":
+        synced = mem.sync(cfg, store, repo, stand)
+        if synced is None:
+            print("индекс не досыпан: PG недоступен (уроки целы в файлах; "
+                  "поиск работает локальным сканом)", file=sys.stderr)
+            return 2
+        rows, vectors, unembedded = synced
+        if vectors:
+            st.log("memory_synced", rows=rows, vectors=vectors,
+                   unembedded=unembedded)
+        tail = (f", без вектора осталось {unembedded}" if unembedded
+                else "")
+        print(f"индекс досыпан: {rows} строк(и) стенда {stand}, "
+              f"векторов добавлено {vectors}{tail}")
         return 0
     return 2
 
@@ -1558,6 +1580,9 @@ EPILOG = """
 память между прогонами (E9, инъекция за флагом [experiments]):
   memory search "…"           уроки прошлых прогонов (FTS + вектор)
   memory add "…" --anchor п   урок вручную; useful требует живой якорь
+  memory sync                 досыпать PG-индекс до файлов (строки+вектора);
+                              memory_index = "auto" делает это автоматически
+                              на каждом терминальном исходе и в рефлексии
 
 тонкая настройка — swarm.toml в корне репозитория: гейт, бюджеты, пулы
 моделей ревьюера, память E9, эксперименты ([experiments] memory|skeleton),
@@ -1711,6 +1736,8 @@ def main(argv: list[str] | None = None) -> int:
     mp.add_argument("id", help="id урока (печатает search)")
     mem_sub.add_parser("reflect", help="пересобрать дайджест LESSONS.md")
     mem_sub.add_parser("reindex", help="пересобрать PG-индекс из файлов")
+    mem_sub.add_parser("sync", help="досыпать индекс до файлов: строки и "
+                                    "вектора (инкрементально, без DELETE)")
     p.set_defaults(func=cmd_memory)
 
     p = sub.add_parser("ab", help="сводка по рукам замера (модель/усилие)",

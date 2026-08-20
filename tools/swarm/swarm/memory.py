@@ -486,12 +486,13 @@ def reindex(config: dict[str, Any], store: MemoryStore,
 
 
 def _backfill_embeddings(config: dict[str, Any],
-                         records: list[dict[str, Any]]) -> None:
+                         records: list[dict[str, Any]]) -> int:
     """Досыпать вектора после пересборки. Сбой эмбеддера не событие:
-    строка остаётся искомой через FTS, вектор догонит следующий reindex."""
+    строка остаётся искомой через FTS, вектор догонит следующий
+    reindex/sync. Возвращает число записанных векторов."""
     model = str(config.get("memory_embed_model") or "")
     if not model or not records:
-        return
+        return 0
     vectors: list[tuple[str, list[float]]] = []
     for rec in records:
         text = f"{rec.get('title') or ''} {rec.get('body') or ''}".strip()
@@ -499,13 +500,69 @@ def _backfill_embeddings(config: dict[str, Any],
         if vec:
             vectors.append((str(rec.get("id")), vec))
     if not vectors:
-        return
+        return 0
     if not ensure_vector(config, len(vectors[0][1]), repin=True):
-        return
+        return 0
+    written = 0
     for lesson_id, vec in vectors:
-        pg(config, "UPDATE lessons SET embedding = :'qv'::vector "
-                   "WHERE id = :'lid';",
-           {"qv": _vec_literal(vec), "lid": lesson_id})
+        ok, _out = pg(config, "UPDATE lessons SET embedding = :'qv'::vector "
+                              "WHERE id = :'lid';",
+                      {"qv": _vec_literal(vec), "lid": lesson_id})
+        if ok:
+            written += 1
+    return written
+
+
+def index_enabled(config: dict[str, Any]) -> bool:
+    """Право трогать общий PG-индекс вне ручных команд.
+
+    Два независимых входа: включённый эксперимент памяти (инъекции нужен
+    свежий индекс) или явный opt-in стенда `memory_index = "auto"` —
+    автоматическая индексация БЕЗ инъекции, чтобы write-side копил
+    строки и вектора, пока A/B по инъекции ещё не решён. Дефолт —
+    manual: прогон с дефолтным конфигом не имеет права трогать ОБЩУЮ
+    базу, тесты петли уже сорили в неё уроками с временных стендов.
+    """
+    if str((config.get("experiments") or {}).get("memory", "off")) != "off":
+        return True
+    return str(config.get("memory_index") or "manual") == "auto"
+
+
+def sync(config: dict[str, Any], store: MemoryStore, repo: str,
+         stand: str, embed_cap: int = 64) -> tuple[int, int, int] | None:
+    """Инкрементальная досыпка индекса до файлов: строки, затем вектора.
+
+    Родилась из замера: OpenRouter показал НОЛЬ вызовов эмбеддера за
+    весь пилот — вектора появлялись только от ручного `reindex`, который
+    никто не запускал. Идемпотентна и самовосстанавливающаяся: upsert
+    всех файловых записей (конфликт по id лишь обновляет счётчики),
+    затем эмбеддинг строк БЕЗ вектора — не больше `embed_cap` за вызов,
+    остаток догонит следующий sync. Ручной `reindex` остаётся операцией
+    ПЕРЕСБОРКИ (DELETE + полная досыпка); sync никогда не удаляет.
+
+    Любой сбой PG -> None: индекс производный, прогон живёт (§7.3).
+    Возвращает (строк стенда в индексе, векторов добавлено, осталось
+    без вектора).
+    """
+    if not ensure_schema(config):
+        return None
+    records = [dict(r, repo=repo, stand=stand) for r in store.records()]
+    if records and not upsert(config, records):
+        return None
+    added = 0
+    missing: list[str] = []
+    if str(config.get("memory_embed_model") or ""):
+        ok, out = pg(config,
+                     "SELECT id FROM lessons WHERE stand = :'stand' "
+                     "AND embedding IS NULL AND NOT tombstone;",
+                     {"stand": stand})
+        if not ok:
+            return None
+        missing = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        by_id = {str(r.get("id")): r for r in records}
+        batch = [by_id[i] for i in missing[:embed_cap] if i in by_id]
+        added = _backfill_embeddings(config, batch)
+    return (len(records), added, max(len(missing) - added, 0))
 
 
 def _repo_filter() -> str:
@@ -908,16 +965,18 @@ def record_task_outcome(state: Any, task: dict[str, Any],
     lesson_id = store.append(record)
     state.log("memory_written", task=tid, lesson=lesson_id, outcome=outcome)
     # Файлы — всегда (память копится и при выключенном эксперименте);
-    # PG — только при включённом: индекс производный, `reindex` догонит
-    # его одной командой, а прогон с дефолтным конфигом не имеет права
-    # трогать ОБЩУЮ базу — тесты петли на живом PG уже насорили в неё
-    # уроками с временных стендов.
-    mode = str((config.get("experiments") or {}).get("memory", "off"))
-    if mode != "off" and ensure_schema(config):
-        stored = next((r for r in store.records()
-                       if r.get("id") == lesson_id), None)
-        if stored is not None:
-            upsert(config, [dict(stored, repo=repo, stand=stand)])
+    # PG — по праву index_enabled: включённый эксперимент или явный
+    # memory_index="auto" стенда. Прогон с дефолтным конфигом по-прежнему
+    # не имеет права трогать ОБЩУЮ базу — тесты петли на живом PG уже
+    # насорили в неё уроками с временных стендов. sync вместо точечного
+    # upsert: досыпаются и строки, и ВЕКТОРА (замер OpenRouter показал
+    # ноль вызовов эмбеддера за пилот — вектора рождались только от
+    # ручного reindex), плюс автоматически догоняется накопившийся хвост.
+    if index_enabled(config):
+        synced = sync(config, store, repo, stand)
+        if synced and synced[1]:
+            state.log("memory_synced", rows=synced[0], vectors=synced[1],
+                      unembedded=synced[2])
     return lesson_id
 
 
@@ -1018,9 +1077,15 @@ def reflect_after_run(state: Any, config: dict[str, Any]) -> None:
             if not ok_flag:
                 unlinked += 1
             marks.append({"id": str(r.get("id")), "ok": ok_flag})
-        mode = str((config.get("experiments") or {}).get("memory", "off"))
-        if marks and mode != "off":
+        if marks and index_enabled(config):
             _repo, stand = repo_identity(state.root)
+            # Рефлексия — второй триггер автоиндексации (первый — каждый
+            # терминальный исход): догоняет всё, что пропустили сбои
+            # эмбеддера или cap за раунд, прежде чем валидировать якоря.
+            synced = sync(config, store, _repo, stand)
+            if synced and synced[1]:
+                state.log("memory_synced", rows=synced[0],
+                          vectors=synced[1], unembedded=synced[2])
             # S608: только константный текст; пары id/ok — в -v jsonb.
             pg(config,
                "UPDATE lessons l SET anchors_ok = r.ok, "

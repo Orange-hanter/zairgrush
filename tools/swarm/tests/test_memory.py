@@ -636,5 +636,129 @@ class TestLocalScan(MemCase):
         self.assertEqual(mem._local_scan([lesson("а и б")], "а и", 5), [])
 
 
+class TestIndexEnabled(MemCase):
+    """Право на общий PG-индекс: эксперимент ИЛИ явный opt-in стенда."""
+
+    def test_default_is_off(self):
+        self.assertFalse(mem.index_enabled({}))
+
+    def test_experiment_flag_enables(self):
+        self.assertTrue(mem.index_enabled(
+            {"experiments": {"memory": "executor"}}))
+
+    def test_auto_enables_without_experiment(self):
+        self.assertTrue(mem.index_enabled({"memory_index": "auto"}))
+
+    def test_explicit_manual_stays_off(self):
+        self.assertFalse(mem.index_enabled({"memory_index": "manual"}))
+
+
+class TestSync(MemCase):
+    """Автоиндексация: досыпка строк и векторов до состояния файлов.
+
+    Родилась из замера: за весь пилот OpenRouter не увидел НИ ОДНОГО
+    вызова эмбеддера — вектора появлялись только от ручного reindex."""
+
+    CFG = {"memory_embed_model": "openrouter:m@3"}
+
+    def _wire(self, missing_ids, upsert_ok=True):
+        calls = []
+
+        def fake_pg(config, sql, params=None):
+            calls.append((sql, params or {}))
+            if "INSERT INTO lessons" in sql and not upsert_ok:
+                return False, "err"
+            if "SELECT id FROM lessons" in sql:
+                return True, "\n".join(missing_ids())
+            return True, ""
+
+        self.addCleanup(setattr, mem, "pg", mem.pg)
+        mem.pg = fake_pg
+        self.addCleanup(setattr, mem, "ensure_schema", mem.ensure_schema)
+        mem.ensure_schema = lambda cfg: True
+        self.addCleanup(setattr, mem, "ensure_vector", mem.ensure_vector)
+        mem.ensure_vector = lambda cfg, dim, repin=False: True
+        embedded = []
+        self.addCleanup(setattr, mem.helpers, "embed_text",
+                        mem.helpers.embed_text)
+        mem.helpers.embed_text = (
+            lambda text, model: embedded.append(text) or [0.1, 0.2])
+        return calls, embedded
+
+    def test_embeds_only_rows_without_vector(self):
+        self.store.append(lesson("первый урок про стеш"))
+        lid2 = self.store.append(lesson("второй совсем другой про квоту"))
+        _calls, embedded = self._wire(lambda: [lid2])
+        got = mem.sync(self.CFG, self.store, "репо", "стенд")
+        self.assertEqual(got, (2, 1, 0))
+        self.assertEqual(len(embedded), 1)
+        self.assertIn("квоту", embedded[0])
+
+    def test_cap_limits_embeddings_and_reports_remainder(self):
+        ids = [self.store.append(lesson(f"урок номер {i} про {'х' * i}"))
+               for i in range(1, 4)]
+        _calls, embedded = self._wire(lambda: ids)
+        got = mem.sync(self.CFG, self.store, "репо", "стенд", embed_cap=2)
+        self.assertEqual(got, (3, 2, 1))
+        self.assertEqual(len(embedded), 2)
+
+    def test_without_embed_model_rows_only(self):
+        self.store.append(lesson("урок без модели"))
+        calls, embedded = self._wire(lambda: ["никогда"])
+        got = mem.sync({}, self.store, "репо", "стенд")
+        self.assertEqual(got, (1, 0, 0))
+        self.assertEqual(embedded, [])
+        self.assertFalse(any("embedding IS NULL" in sql for sql, _p in calls),
+                         "без модели нечего искать среди безвекторных")
+
+    def test_pg_down_is_none_not_crash(self):
+        self.store.append(lesson("урок при лежащем PG"))
+        self._wire(list)
+        mem.ensure_schema = lambda cfg: False
+        self.assertIsNone(mem.sync(self.CFG, self.store, "репо", "стенд"))
+
+    def test_upsert_failure_is_none(self):
+        self.store.append(lesson("урок при битой досыпке"))
+        self._wire(list, upsert_ok=False)
+        self.assertIsNone(mem.sync(self.CFG, self.store, "репо", "стенд"))
+
+
+class TestAutoIndexTriggers(MemCase):
+    """memory_index="auto": индекс досыпается сам на терминальном исходе."""
+
+    def _state(self, task):
+        return _FakeState(self.root, tasks=[task])
+
+    def test_outcome_triggers_sync_and_journals_vectors(self):
+        seen = []
+        self.addCleanup(setattr, mem, "sync", mem.sync)
+        mem.sync = lambda *a, **k: seen.append(a) or (5, 2, 1)
+        state = self._state({"id": "t9", "title": "х", "status": "blocked",
+                             "diagnosis": "тупик"})
+        mem.record_task_outcome(state, {"id": "t9"},
+                                {"memory_index": "auto"})
+        self.assertEqual(len(seen), 1, "auto обязан звать sync")
+        self.assertIn(("memory_synced",
+                       {"rows": 5, "vectors": 2, "unembedded": 1}),
+                      state.logged)
+
+    def test_rows_only_sync_stays_out_of_journal(self):
+        """Нечего рассказывать — нет записи: вектора не добавлялись."""
+        self.addCleanup(setattr, mem, "sync", mem.sync)
+        mem.sync = lambda *a, **k: (5, 0, 0)
+        state = self._state({"id": "t9", "title": "х", "status": "blocked",
+                             "diagnosis": "тупик"})
+        mem.record_task_outcome(state, {"id": "t9"},
+                                {"memory_index": "auto"})
+        self.assertFalse(any(k == "memory_synced" for k, _p in state.logged))
+
+    def test_default_config_never_syncs(self):
+        self.addCleanup(setattr, mem, "sync", mem.sync)
+        mem.sync = lambda *a, **k: self.fail("дефолт не имеет права в PG")
+        state = self._state({"id": "t9", "title": "х", "status": "blocked",
+                             "diagnosis": "тупик"})
+        mem.record_task_outcome(state, {"id": "t9"}, {})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -2,9 +2,9 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.6
+version: 0.7
 created: 2026-08-06
-updated: 2026-08-18
+updated: 2026-08-20
 related:
   - 05-agent-swarm.md
   - 05-agent-swarm-audit.md
@@ -237,6 +237,15 @@ summary: >
   dead_end — первоклассный исход.
 - **Статус: этап 1 реализован** (2026-08-18, за флагом, по умолчанию
   выключен; findings E9).
+- **Auto-indexing added** (2026-08-20, findings E9/auto-index): index
+  maintenance was split from the injection factor. `memory_index =
+  "auto"` (per-stand opt-in, default `manual`) makes the loop `sync`
+  rows AND vectors to PG on every terminal outcome and in after-run
+  reflection; the injection flag alone previously left vectors to a
+  manual `reindex` nobody ran — an entire pilot produced zero embedder
+  calls (measured on the OpenRouter dashboard). The A/B protocol is
+  unaffected: injection stays the single measured factor, index
+  freshness is now identical in both arms.
 
 ### E10. Contract-first skeleton + model routing (in English per owner's rule)
 
@@ -359,6 +368,11 @@ E8 закрыт (K3 остаётся дефолтом); **ADR-003 → ADR-004** 
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.7 (2026-08-20)
+
+- E9: auto-indexing status note — index maintenance split from the
+  injection factor (`memory_index = "auto"`), A/B protocol unaffected.
 
 ### v0.6 (2026-08-18)
 

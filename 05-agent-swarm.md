@@ -2,9 +2,9 @@
 title: "ZeusLogic — Рой агентов: петля «исполнитель ↔ ревьюер»"
 type: design
 status: draft
-version: 0.45
+version: 0.46
 created: 2026-07-30
-updated: 2026-08-19
+updated: 2026-08-20
 related:
   - docs/00-conventions.md
   - docs/01-requirements.md
@@ -1845,6 +1845,17 @@ verdict = retry (§4.2).
 ---
 
 ## Журнал изменений
+
+### v0.46 (2026-08-20)
+
+- Memory auto-indexing (E9): new `memory_index = "auto"` stand opt-in
+  (default `manual`) — the loop syncs the PG index (rows and vectors,
+  ≤64 embeddings per call) on every terminal task outcome and in
+  after-run reflection; new `swarm memory sync` CLI (incremental, never
+  deletes) and journal event `memory_synced`. Embedder calls are now
+  metered in helper-metrics.jsonl from CLI paths too. Born from a
+  measurement: the entire pilot produced zero embedder calls because
+  vectors only ever came from a manual reindex nobody ran.
 
 ### v0.45 (2026-08-19)
 

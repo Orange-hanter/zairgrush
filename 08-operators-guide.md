@@ -2,9 +2,9 @@
 title: "ZeusLogic — Рой агентов: руководство оператора"
 type: guide
 status: draft
-version: 0.11
+version: 0.12
 created: 2026-08-09
-updated: 2026-08-19
+updated: 2026-08-20
 related:
   - 05-agent-swarm.md
   - 07-experiments-journal.md
@@ -300,8 +300,27 @@ HTTP-сервер (адрес `http://127.0.0.1:<board_port>` печатаетс
 swarm --root . memory search "гейт cargo"   # уроки прошлых прогонов
 swarm --root . memory add "текст" --anchor путь/файл   # урок вручную
 swarm --root . memory reflect               # пересобрать LESSONS.md
-swarm --root . memory reindex               # починить PG-индекс из файлов
+swarm --root . memory sync                  # досыпать индекс: строки+вектора
+swarm --root . memory reindex               # ПЕРЕСБОРКА индекса (DELETE+всё)
 ```
+
+**Index maintenance is automatic when the stand opts in** with
+`memory_index = "auto"` in `swarm.toml` (default `"manual"` — a run
+with default config never touches the shared PG). With `auto`, the loop
+runs `sync` itself on every terminal task outcome and again in the
+after-run reflection: rows AND vectors catch up to the files, at most
+64 embeddings per call, journal event `memory_synced` whenever vectors
+were added. You never run `reindex` by hand anymore — it remains the
+repair operation (full rebuild) for a corrupted index. Born from a
+measured incident: an entire pilot produced ZERO embedder calls because
+vectors only ever came from a manual `reindex` nobody ran. Embedder
+calls are now metered in `helper-metrics.jsonl` from CLI paths too
+(`helper: "embed"`, with provider-reported cost), so "was the embedder
+used at all?" is answerable from the stand, not the provider dashboard.
+For a calendar-based catch-up without runs (e.g. anchors drifting while
+humans commit), schedule `swarm --root <stand> memory sync` via cron or
+launchd — same code path, safe to run at any moment, including during a
+live run (sync never deletes and never touches task state).
 
 Петля сама пишет урок из каждого терминального исхода задачи (done —
 урок, blocked — тупик с диагнозом, решения человека — принятое решение)
@@ -493,6 +512,13 @@ swarm --root . impact <symbol>      # кто зовёт символ перед 
 §1 — оно не формальность.
 
 ## Журнал изменений
+
+### v0.12 (2026-08-20)
+
+- Memory section: automatic index maintenance (`memory_index = "auto"`),
+  the `memory sync` command vs `reindex`-as-repair distinction, embed
+  metering in helper-metrics.jsonl, and the cron/launchd recipe for
+  calendar-based catch-up.
 
 ### v0.11 (2026-08-19)
 

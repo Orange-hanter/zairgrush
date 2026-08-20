@@ -71,6 +71,7 @@ KIND_RU = {
     "memory_reflect": "память переосмыслена",
     "memory_unavailable": "хранилище памяти недоступно",
     "memory_forgotten": "урок забыт",
+    "memory_synced": "индекс памяти досыпан",
 }
 # Записи-бухгалтерия: сопровождают каждую запись состояния и событием
 # прогона не являются. В блоках «прогон в целом» они хоронили под собой
@@ -450,6 +451,11 @@ NARRATORS: dict[str, Narrator] = {
         {"lessons"}),
     "memory_forgotten": lambda r: (
         f"урок {_s(r.get('lesson'))} затомбстоунен", {"lesson"}),
+    "memory_synced": lambda r: (
+        (f"индекс памяти досыпан: строк {r.get('rows')}, "
+         f"векторов добавлено {r.get('vectors')}, "
+         f"без вектора {r.get('unembedded')}"),
+        {"rows", "vectors", "unembedded"}),
 }
 
 
