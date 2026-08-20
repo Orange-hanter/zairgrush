@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.8
+version: 0.9
 created: 2026-08-06
 updated: 2026-08-20
 related:
@@ -298,10 +298,12 @@ summary: >
 - **Status: queued** (one factor per run; after E10's first
   measurement).
 
-### E12. Cheap contour in the review path (proposed)
+### E12. Cheap contour in the review path (Step 0 measured)
 
 Full plan: [09-cheap-review-contour.md](09-cheap-review-contour.md).
-Registered here as a program item; **no decision taken yet**.
+Step 0 report: [experiments/reviewarm/REPORT.md](experiments/reviewarm/REPORT.md).
+Registered here as a program item; **no decision taken yet** — the zero
+step has been run, the loop has not been touched.
 
 - **A (current)**: one expensive reviewer per round, plus a paid
   confirming round on the same diff; cheap models serve chores only
@@ -321,7 +323,37 @@ Registered here as a program item; **no decision taken yet**.
 - **Zero step**: offline replay of the panel roster against
   `experiments/goldset/labels.jsonl` — no expensive calls, gate before
   anything is wired into the loop.
-- **Status: proposed, awaiting owner approval.**
+- **Step 0 result (2026-08-20, $0.00 metered, 70 calls, 347 s)**: the
+  free contour produces mechanically valid material — **zero off-diff
+  candidates in 70 calls**, i.e. the address validator the plan built
+  rejects nothing. But the **volume gate fails**: 13.4 candidates per
+  diff after dedup against a ceiling of 10, over on 10 of 14 diffs.
+  Dedup is not the lever (jurors under different lenses make different
+  claims about the same file, so 187 raw merge to ~187); filtering to
+  self-rated `major` passes the gate at 4.1/diff but drops paid-major
+  file coverage from 3/4 to 2/4 — a lossy filter, not a free win.
+  Roster decisions: `gpt-oss:120b` out (12/14 answers truncated at the
+  900-token cap, discarded per ADR-004, zero coverage cost to remove);
+  `qwen3.5:397b` stays despite being slowest, as the only juror with
+  repeated unique reach.
+- **Blocked measurement**: recall against endorsed labels is **not
+  obtainable from committed diffs** — every endorsed finding of PILOT-1
+  was fixed *before* the commit closing its task, so `git show` displays
+  the correction, not the defect. Recall needs a replay over
+  `.swarm/log/<task>-i<N>-executor.jsonl`, which does carry full
+  tool-call arguments. Reported as address agreement (26/34 files, 76 %)
+  and explicitly not as recall.
+- **Also implemented** (P0's prerequisite, gated green): review arms are
+  drawn as `(model, effort)` **pairs** — `review_arm_pool` /
+  `confirm_arm_pool` in `agents.py::_draw_arm` — so a mixed pool stops
+  emitting the cross product of two independent draws and the journal can
+  name the configuration that produced a verdict. The probe that
+  motivated it corrected the plan: `claude -p --model claude-haiku-4-5
+  --effort xhigh` runs fine ($0.0204), so effort is **not** rejected on
+  Haiku 4.5 as the plan assumed.
+- **Status: Step 0 done; next measurement is the same roster at
+  per-juror cap 2 without `gpt-oss:120b`. Nothing wired into the loop;
+  every metered insertion point still awaits owner approval.**
 
 ## 5. Порядок и зависимости
 
@@ -393,6 +425,28 @@ E8 закрыт (K3 остаётся дефолтом); **ADR-003 → ADR-004** 
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.9 (2026-08-20)
+
+- E12: проведён нулевой шаг — офлайн-реплей бесплатной панели присяжных
+  по 14 диффам пилота, $0.00 метрируемых, 70 вызовов, 347 с.
+  Главное: **ноль кандидатов мимо диффа** (валидатор адреса, ради
+  которого писался разбор, не отбраковывает ничего) и **ворота объёма
+  не пройдены** — 13.4 кандидата на дифф против потолка 10. Дедуп не
+  рычаг: присяжные под разными линзами предъявляют разные претензии к
+  одному файлу. Отбор по самооценке `major` ворота проходит (4.1), но
+  роняет покрытие файлов с major дорогого ревьюера с 3/4 до 2/4 —
+  фильтр с потерями, а не бесплатная победа. `gpt-oss:120b` выведен из
+  состава (12 из 14 ответов обрываются на потолке в 900 токенов и
+  отбрасываются по ADR-004; удаление не стоит ни одного адреса).
+  Отдельно зафиксировано, что **recall по одобренным ярлыкам из
+  коммитов не измерим**: каждая одобренная находка пилота исправлена ДО
+  закрывающего коммита, замер требует реплея по журналам исполнителя.
+  Отчёт: [experiments/reviewarm/REPORT.md](experiments/reviewarm/REPORT.md).
+- P0-предпосылка реализована и в гейте: руки замера тянутся **парами**
+  `(model, effort)` (`review_arm_pool` / `confirm_arm_pool`), а не
+  произведением двух независимых пулов. Проба поправила план: `--effort`
+  на `claude-haiku-4-5` через `claude -p` принимается, а не отвергается.
 
 ### v0.8 (2026-08-20)
 

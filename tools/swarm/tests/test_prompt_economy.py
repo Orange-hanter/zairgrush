@@ -527,6 +527,70 @@ class TestTuningPools(unittest.TestCase):
         self.assertEqual(a.last_tuning,
                          {"model": "claude-sonnet-5", "effort": "medium"})
 
+    def test_arm_pool_draws_the_pair_together(self):
+        """Рука — пара: усилие не отрывается от модели, которой оно задано."""
+        a = self._agents({"review_arm_pool": [["claude-opus-5", "xhigh"],
+                                              ["claude-haiku-4-5", ""]]})
+        seen = set()
+        for _ in range(40):
+            flags = a._tuning("review")
+            seen.add(tuple(flags))
+        self.assertEqual(
+            seen,
+            {("--model", "claude-opus-5", "--effort", "xhigh"),
+             ("--model", "claude-haiku-4-5")},
+            "жребий породил сочетание, которого нет ни в одной руке")
+
+    def test_arm_pool_never_puts_effort_on_a_model_without_it(self):
+        """Мотив ручки: `--effort` на Haiku 4.5 — вызов, которого никто не
+        задумывал, а независимый жребий по двум пулам его порождает."""
+        a = self._agents({"review_arm_pool": [["claude-haiku-4-5", ""]],
+                          "review_effort_pool": ["xhigh", "medium"]})
+        for _ in range(20):
+            self.assertNotIn("--effort", a._tuning("review"))
+
+    def test_arm_pool_outranks_single_pools(self):
+        a = self._agents({"review_arm_pool": [["claude-opus-5", "medium"]],
+                          "review_model_pool": ["claude-sonnet-5"],
+                          "review_model": "claude-fable-5"})
+        self.assertEqual(a._tuning("review"),
+                         ["--model", "claude-opus-5", "--effort", "medium"])
+
+    def test_confirm_arm_pool_overrides_and_falls_back(self):
+        a = self._agents({"review_arm_pool": [["opus", "xhigh"]],
+                          "confirm_arm_pool": [["haiku", ""]]})
+        self.assertEqual(a._tuning("review", confirming=True),
+                         ["--model", "haiku"])
+        b = self._agents({"review_arm_pool": [["opus", "xhigh"]]})
+        self.assertEqual(b._tuning("review", confirming=True),
+                         ["--model", "opus", "--effort", "xhigh"])
+
+    def test_arm_shapes_are_read_as_data(self):
+        """Конфиг читается как данные: строка, короткий массив и таблица —
+        всё это объявление руки, а не повод уронить прогон."""
+        cases = [("claude-opus-5", ["--model", "claude-opus-5"]),
+                 (["claude-opus-5"], ["--model", "claude-opus-5"]),
+                 ({"model": "claude-opus-5", "effort": "low"},
+                  ["--model", "claude-opus-5", "--effort", "low"])]
+        for arm, expected in cases:
+            a = self._agents({"review_arm_pool": [arm]})
+            self.assertEqual(a._tuning("review"), expected, arm)
+
+    def test_malformed_arm_yields_the_old_path(self):
+        """Рука не той формы не подставляет `None` в журнал: она уступает
+        дорогу прежним одиночным ключам."""
+        a = self._agents({"review_arm_pool": [17],
+                          "review_model": "claude-opus-5"})
+        self.assertEqual(a._tuning("review"), ["--model", "claude-opus-5"])
+        self.assertEqual(a.last_tuning,
+                         {"model": "claude-opus-5", "effort": None})
+
+    def test_arm_choice_is_remembered_for_the_journal(self):
+        a = self._agents({"review_arm_pool": [["claude-haiku-4-5", ""]]})
+        a._tuning("review")
+        self.assertEqual(a.last_tuning,
+                         {"model": "claude-haiku-4-5", "effort": ""})
+
     def test_metric_carries_the_draw(self):
         """Жребий, не попавший в журнал, — это шум, а не замер."""
         import io

@@ -2,7 +2,7 @@
 title: "ZeusLogic — Cheap models in the review path: a plan"
 type: design
 status: draft
-version: 0.1
+version: 0.2
 created: 2026-08-20
 updated: 2026-08-20
 related:
@@ -85,7 +85,7 @@ names and separate rules.
 | Output contract | none. `format` with a schema is **silently ignored**; prompt-coerce + own validator (ADR-004) | `--json-schema` honored — 25/25 valid verdicts across the whole program |
 | Tools | none. Bare chat: the orchestrator must feed every byte of context | full agentic CLI — it walks the repo itself |
 | Context | 262 K (gemma4 / qwen3.5 / nemotron), **1 M** (deepseek-v4-flash) | 200 K |
-| Depth knob | `think: false` + `num_predict` | **no `--effort`** — effort is rejected on Haiku 4.5 |
+| Depth knob | `think: false` + `num_predict` | `--effort` **is accepted** by `claude -p` on Haiku 4.5, but bought no depth in the probe (2026-08-20: `xhigh` → 36 thinking tokens / $0.0204, `low` → 43 / $0.0162) |
 | Latency | 2–6 s (kimi-k2.7-code, deepseek-v4-flash fastest, probe 2026-08-18) | tens of seconds |
 | Cost telemetry | `usage` in tokens; **no USD** — invisible to the budget | real `total_cost_usd` in the envelope |
 
@@ -116,13 +116,29 @@ paired design means every diff is already reviewed twice, so adding
 for free**, and `harvest.py` attributes them without changes.
 
 *Required fix, small but real*: `_draw` picks model and effort as two
-independent factors, so a mixed pool can emit
-`--model claude-haiku-4-5 --effort xhigh` — and **effort is not supported
-on Haiku 4.5**. Arms must be drawn as `(model, effort)` tuples, i.e.
-`review_arm_pool = [["claude-opus-5","xhigh"], ["claude-haiku-4-5", null]]`,
-with the existing scalar keys kept as the fallback. One probe call first
-to see whether the CLI errors or ignores the flag; the tuple draw is
-correct either way, because arm identity is a pair, not a product.
+independent factors, so a mixed pool emits the **cross product** of the
+two pools — every model paired with every effort, whether or not that
+pair is a configuration anyone meant to measure.
+
+The probe (2026-08-20) settled what the flag does: `claude -p --model
+claude-haiku-4-5 --effort xhigh` runs without error ($0.0204, 36 thinking
+tokens), and so does `--effort low` ($0.0162, 43 thinking tokens). So the
+flag is neither rejected nor, on this probe, load-bearing — a plan
+written against "Haiku rejects effort" would have been wrong. The tuple
+draw is still the right fix, for the reason that survives the probe:
+**an arm is a pair, not a product.** A journal that records `model` and
+`effort` from two independent draws cannot name the configuration that
+produced a verdict, and the pair `(haiku, xhigh)` — which we now know is
+runnable — is a different arm from `(opus, xhigh)` and must be drawn, and
+attributed, as one thing.
+
+Implemented: `review_arm_pool` / `confirm_arm_pool` are drawn as one
+choice (`agents.py::_draw_arm`), e.g.
+`review_arm_pool = [["claude-opus-5","xhigh"], ["claude-haiku-4-5",""]]`,
+outranking the scalar pools, which stay as the fallback. Arm shapes are
+read as data (string, list, or `{model, effort}`); a malformed entry
+warns in `swarm config` and falls back to the old path rather than
+failing the run.
 
 Expected effect: a Haiku round at comparable walk depth should land near
 $0.3–0.4 against $2.03. If the Haiku arm re-finds even one of the two
@@ -207,18 +223,51 @@ findings held constant against the gold set.
 
 ## 4. Sequencing — each step falsifiable before the next is built
 
-**Step 0 — offline replay. No expensive calls at all.**
-`experiments/reviewarm/replay.py`: reconstruct each PILOT-1 diff from the
-stand's commits (`tasks.jsonl` carries them), run the candidate panel
-roster over it, and score against `labels.jsonl` — recall of the six
-endorsed escalations (especially the two majors) and noise (candidates
-per diff). This selects the roster before a single line is wired into the
-loop, and it costs subscription time only.
-*Gate*: a roster that recovers ≥1 of the 2 majors with < 10 candidates
-per diff proceeds to P2. Otherwise P2 is dead and we keep P0/P1/P3.
+**Step 0 — offline replay. No expensive calls at all. — RUN 2026-08-20,
+gate NOT met.** `experiments/reviewarm/replay.py` + `analyze.py`, full
+report in [experiments/reviewarm/REPORT.md](experiments/reviewarm/REPORT.md).
+Five models under five distinct lenses over the 14 PILOT-1 diffs that
+carry a closing commit: **70 calls, $0.00 metered, 347 s wall, 548 K in /
+30 K out tokens**.
+
+The gate as written was *"recovers ≥1 of the 2 majors with < 10
+candidates per diff"*. Neither half survived contact intact, and for
+different reasons:
+
+- **Volume: failed.** 13.4 candidates per diff after dedup (median 15,
+  max 19), over on 10 of 14 diffs. Dedup turned out not to be the lever —
+  187 raw candidates merge to ~187, because jurors under different lenses
+  make genuinely *different* claims about the same file. The panel does
+  not repeat itself; it really does produce 13 distinct claims. Filtering
+  to self-rated `major` passes at 4.1/diff but drops coverage of the paid
+  reviewer's major-finding files from 3/4 to 2/4 — a lossy filter, not a
+  free win.
+- **Recall: not measurable this way at all.** Every endorsed finding of
+  PILOT-1 was fixed *before* the commit closing its task, so `git show`
+  shows the correction, not the defect. What Step 0 can report is
+  *address* agreement — the panel named 26 of the 34 files the paid
+  reviewer named (76 %), and 3 of its 4 major-finding files — and that is
+  not recall. Recall needs a replay over the executor session logs, which
+  do carry full tool-call arguments; that harness does not exist yet.
+
+Two things the run settled cheaply and permanently:
+**zero off-diff candidates in 70 calls** — the address validator the plan
+worried about rejects nothing, so contract-free jurors are not confused
+about where they are looking; and `gpt-oss:120b` leaves the roster (12/14
+answers truncated at the 900-token cap and discarded per ADR-004, zero
+coverage cost to remove), while the slowest juror `qwen3.5:397b` stays as
+the only one with repeated unique reach.
+
+*Revised gate for P2*: same roster minus `gpt-oss:120b` at per-juror cap
+**2** instead of 5 — spending the ranking budget inside the juror, where
+the lens context still exists, rather than in a severity filter that sees
+only a label. Passes if volume is under 10 with major-file coverage still
+at 3/4. Until then P2 stays unbuilt and P0/P1/P3 are unaffected.
 
 **Step 1 — P0**: tuple-draw fix + Haiku in the pool. Runs inside the next
-pilot queue with no protocol change.
+pilot queue with no protocol change. *Tuple draw implemented and gated
+(997 tests + 378 subtests green); Haiku in the pool still awaits owner
+approval, since it is metered.*
 
 **Step 2 — P1**: deterministic band, measured against the pilot's own
 diff-size distribution before any classifier is written.
@@ -279,7 +328,7 @@ reason to edit the label.**
 
 ## 7. Stop conditions
 
-- Panel recall of endorsed majors is 0 in Step 0 replay → drop P2.
+- ~~Panel recall of endorsed majors is 0 in Step 0 replay → drop P2.~~ **Void: this condition cannot be evaluated from committed diffs** (§4, Step 0). It is replaced by the volume gate — panel output over 10 candidates per diff that cannot be brought under it without losing major-file coverage → drop P2 — and reinstated in its original form only once an executor-log replay exists.
 - The digest raises reviewer cost or lowers endorsed findings → drop P3;
   the reviewer's own walk was buying something we mispriced.
 - Any cheap arm produces an `approve` that the gold set contradicts →
@@ -302,6 +351,21 @@ confirm it, and both are cheap.
 ---
 
 ## Журнал изменений
+
+### v0.2 (2026-08-20)
+
+- Нулевой шаг проведён, §4 переписан по факту замера: ворота объёма **не
+  пройдены** (13.4 кандидата на дифф против потолка 10), а recall по
+  одобренным ярлыкам из коммитов оказался **принципиально неизмерим** —
+  каждая одобренная находка исправлена до закрывающего коммита.
+  Зафиксированы два дешёвых и окончательных вывода: ноль кандидатов мимо
+  диффа за 70 вызовов и вывод `gpt-oss:120b` из состава. Названы
+  пересмотренные ворота для P2 (тот же состав, потолок находок у
+  присяжного 5 → 2).
+- Исправлено ложное утверждение §2/§3: `--effort` на `claude-haiku-4-5`
+  через `claude -p` **принимается** (проба: xhigh $0.0204, low $0.0162).
+  Обоснование парной руки замера переписано на то, что пробу пережило:
+  рука — это пара, а не произведение двух пулов.
 
 ### v0.1 (2026-08-20)
 

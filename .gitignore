@@ -28,6 +28,7 @@ experiments/neg/
 experiments/pilot/
 experiments/plan/
 experiments/repomap/
+experiments/reviewarm/out/
 experiments/smoke1/
 experiments/stand/
 experiments/stand-*/

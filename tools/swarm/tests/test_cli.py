@@ -298,6 +298,20 @@ class TestConfigValidation(CliCase):
         self.assertEqual(err, "")
         self.assertEqual(cfg["max_iterations"], 5)
 
+    def test_arm_pool_is_a_known_key(self):
+        cfg, err = self._config_stderr(
+            'review_arm_pool = [["claude-opus-5", "xhigh"], '
+            '["claude-haiku-4-5", ""]]\n')
+        self.assertEqual(err, "")
+        self.assertEqual(cfg["review_arm_pool"][1], ["claude-haiku-4-5", ""])
+
+    def test_malformed_arm_warns(self):
+        """Элемент не той формы жребий не забирает: петля тихо уходит на
+        одиночные ключи, а оператор уверен, что меряет пары."""
+        _cfg, err = self._config_stderr("review_arm_pool = [17, []]\n")
+        self.assertIn("review_arm_pool", err)
+        self.assertIn("17", err)
+
 
 class TestDoctor(CliCase):
     def test_reports_environment(self):

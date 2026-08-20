@@ -696,9 +696,17 @@ Acceptance:
         из формальности во второй угол зрения — и дешевле: $0.88
         против $1.17. `confirm_*` без явной настройки падает обратно на
         `review_*`, то есть умолчание остаётся прежним.
+
+        Пул ПАР (`review_arm_pool` / `confirm_arm_pool`, см. `_draw_arm`)
+        старше одиночных пулов: усилие, привязанное к модели, — часть
+        руки, а не независимый фактор.
         """
-        model = self._draw(f"{prefix}_model", confirming)
-        effort = self._draw(f"{prefix}_effort", confirming)
+        arm = self._draw_arm(prefix, confirming)
+        if arm is None:
+            model = self._draw(f"{prefix}_model", confirming)
+            effort = self._draw(f"{prefix}_effort", confirming)
+        else:
+            model, effort = arm
         self.last_tuning = {"model": model, "effort": effort}
         flags = []
         if model:
@@ -706,6 +714,41 @@ Acceptance:
         if effort:
             flags += ["--effort", str(effort)]
         return flags
+
+    def _draw_arm(self, prefix: str, confirming: bool) -> tuple[Any, Any] | None:
+        """Рука замера — ПАРА «модель + усилие», а не произведение двух пулов.
+
+        Независимый жребий по двум ключам порождает сочетания, которых нет
+        ни в одном пуле. Это не теория: `claude-haiku-4-5` усилия не
+        принимает вовсе, и пул `[opus, haiku] × [xhigh, medium]` рано или
+        поздно выдаёт `--model claude-haiku-4-5 --effort xhigh` — вызов,
+        которого никто не задумывал. Рука — это модель ВМЕСТЕ с глубиной;
+        привязка усилия к модели обязана быть частью жребия, а не
+        случайностью порядка ключей.
+
+        Пул пар старше одиночных пулов и одиночных значений: он выражает
+        то, что мы сравниваем, точнее них. Форма элемента свободная, потому
+        что конфиг читается как данные, а не как контракт: `["m", "e"]`,
+        `["m"]`, `"m"`, `{"model": ..., "effort": ...}`. Пустое усилие —
+        это «флаг не передавать», то есть рука без ручки глубины,
+        выраженная явно. Элемент не той формы жребий не забирает: молча
+        подставить `None` значит записать в журнал руку, которой не было,
+        поэтому такой пул уступает дорогу прежнему пути.
+        """
+        pool = self.config.get(f"{prefix}_arm_pool")
+        if confirming:
+            pool = self.config.get("confirm_arm_pool", pool)
+        if not pool:
+            return None
+        arm = self._rng.choice(list(pool))
+        if isinstance(arm, str):
+            return arm, None
+        if isinstance(arm, dict):
+            return arm.get("model"), arm.get("effort")
+        if isinstance(arm, list | tuple) and arm:
+            pair = [*list(arm), None]
+            return pair[0], pair[1]
+        return None
 
     def _draw(self, key: str, confirming: bool) -> Any:
         """Значение параметра: пул со жребием, иначе фиксированная настройка.

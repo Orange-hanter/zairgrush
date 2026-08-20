@@ -70,6 +70,7 @@ KNOWN_CONFIG_KEYS = frozenset({
     "quota_resume_fallback_s",
     "plan_budget_usd", "plan_model", "plan_effort", "plan_timeout",
     "review_model", "review_effort", "review_model_pool", "review_effort_pool",
+    "review_arm_pool", "confirm_arm_pool",
     "confirm_model", "confirm_effort", "confirm_model_pool",
     "confirm_effort_pool", "confirm_lens",
     "memory_db", "memory_budget_chars", "memory_top_k", "memory_embed_model",
@@ -82,6 +83,25 @@ KNOWN_CONFIG_KEYS = frozenset({
 # списка, — опечатка в имени флага молча включала бы умолчание.
 KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
                                    "skeleton"})
+
+
+def _bad_arms(pool: Any) -> list[str]:
+    """Элементы пула рук не той формы (см. `Agents._draw_arm`).
+
+    Рука — это пара «модель, усилие»: строка, массив или инлайн-таблица.
+    Число, булево или пустой массив рукой не являются, и жребий их не
+    возьмёт; вернуть их оператору — дешевле, чем дать ему прочитать в
+    журнале руку `None`.
+    """
+    if not isinstance(pool, list):
+        return []
+    bad = []
+    for item in pool:
+        ok = (isinstance(item, str | dict)
+              or (isinstance(item, list) and item))
+        if not ok:
+            bad.append(repr(item))
+    return bad
 
 
 def _config(root: str | pathlib.Path) -> dict[str, Any]:
@@ -105,6 +125,16 @@ def _config(root: str | pathlib.Path) -> dict[str, Any]:
                       f"({', '.join(unknown)}) — петля их не читает; "
                       f"если это настройка петли, проверь имя",
                       file=sys.stderr)
+            for key in ("review_arm_pool", "confirm_arm_pool"):
+                bad = _bad_arms(parsed.get(key))
+                if bad:
+                    # Та же причина, что у незнакомых ключей: элемент не
+                    # той формы жребий не забирает, петля тихо уходит на
+                    # одиночные пулы — и оператор уверен, что меряет пары.
+                    print(f"ВНИМАНИЕ: {path}: {key} — элементы не той формы "
+                          f"({', '.join(bad)}); рука объявляется парой "
+                          f'["модель", "усилие"], пустое усилие — '
+                          f"«флаг не передавать»", file=sys.stderr)
             exp = parsed.get("experiments")
             if isinstance(exp, dict):
                 unknown_exp = sorted(set(exp) - KNOWN_EXPERIMENT_KEYS)
@@ -482,7 +512,10 @@ def cmd_ab(args: argparse.Namespace) -> int:
     if not pairs:
         print("  пока нет. Пара возникает, когда жребий на двух вызовах")
         print("  одной итерации выпал разным — задайте пул в swarm.toml:")
-        print('  review_model_pool = ["claude-opus-5", "claude-sonnet-5"]')
+        print('  review_arm_pool = [["claude-opus-5", "xhigh"], '
+              '["claude-haiku-4-5", ""]]')
+        print("  (рука — пара «модель, усилие»; пустое усилие означает")
+        print("   «флаг не передавать»: Haiku 4.5 усилия не принимает)")
         return 0
     for (task, it), g in sorted(pairs):
         print(f"  {task} итерация {it}:")
