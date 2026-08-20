@@ -2,7 +2,7 @@
 title: "ZeusLogic — Рой агентов: петля «исполнитель ↔ ревьюер»"
 type: design
 status: draft
-version: 0.47
+version: 0.48
 created: 2026-07-30
 updated: 2026-08-20
 related:
@@ -206,6 +206,35 @@ SQLite+JSONL на Dolt именно из-за этого) — при единс�
 задачи требование ревьюера не отклоняется, а **выносится отдельной задачей
 подходящего типа** (замечание про тесты → `test-task`), после чего исходная
 задача снова становится исполнимой.
+
+#### 3.1.1. Boundary lint: satellites of a task, named before the run
+
+Seven executor disputes out of seven were granted on PILOT-1: each time
+the task boundary (`paths`) was set wrong, and each dispute cost a round
+plus the wait for a human answer (median 24 minutes, worst 21 hours).
+All seven are the same shape — a **satellite** file outside the boundary
+that the work provably touches: a rule registry, a pinned golden or
+fixture, a document that fixes a format or a measurement, a producer
+upstream of the feature.
+
+`swarm plan` now prints those satellites under each task as advice, not
+a prohibition (`⚠ граница: <file> (<token>) — <why>`). Four kinds of
+mechanical evidence, ranked by strength: a **forward** reference (a file
+inside the boundary names a path outside it — the strongest, because it
+is explicit), a **registry** (an outside file references several
+neighbours of the task's files at once), a plain **referrer**, and a
+collapsed **pinned directory** when the task names half a fixture by
+file name. Word rarity is part of the evidence: a stem that half the
+repository mentions is a common word, not an identity.
+
+Measured against the seven grants with boundaries rolled back to their
+pre-dispute state (`experiments/goldset/boundaries/`): the first version
+of the linter, which searched a single kind of evidence, scored 1/7 at
+7.1 warnings per task — synthetic tests praised a design the repository
+refuted. The shipped version scores 4/7 at a cap of 6 advisory lines
+(5/7 at 8). Two of the seven — "the feature is born in the importer" —
+have no textual trace at all and are not reachable by any mechanical
+signal; silence from the linter is therefore not a guarantee either.
 
 ### 3.2. Почему Kimi — исполнитель, Claude — ревьюер (а не наоборот)
 
@@ -563,6 +592,21 @@ Heartbeat на двух сигналах: (а) процесс жив, (б) из 
   переводом в `blocked` оркестратор один раз предлагает планировщику
   расщепить задачу (§3.1) — буксовка чаще означает слишком крупную задачу,
   а не нерешаемую;
+  **Only a round that reached a mechanical judgement spends this limit**
+  (measured on PILOT-1: the "task is probably too large" diagnosis was
+  wrong 6 times out of 6). A round in which the gate ruled or the
+  reviewer returned a verdict was a real attempt and counts. A round
+  that collapsed earlier — the executor died on quota or a timeout, the
+  scope guard reverted the work, the frozen contract signatures drifted
+  — judged nothing, and charging the fix budget for it made the loop
+  announce "rounds exhausted" about work no one had ever looked at
+  (`s2ky`: timeout, scope revert, kimi crash; `k3ad`: three reverts, zero
+  reviews). Futile rounds have their own ceiling `max_futile_rounds`
+  (default follows `max_iterations`: patience is one knob) and their own
+  escalation, which names what the rounds burned on instead of guessing
+  about size. Journal: `round_futile` per round, `futile_exhausted` at
+  the ceiling; the blocked reason is `futile_rounds`, not
+  `max_iterations`;
 - **жёсткий wall-clock cap** на вызов агента (по умолчанию 30 мин, конфиг) —
   дополнение к таймауту тишины: агент, стабильно генерирующий события по
   кругу, иначе может крутиться часами;
@@ -721,6 +765,28 @@ FuguNano (открытая переработка идеи Sakana Fugu) и по�
 прогоняется по всему проекту, корпус даёт 6398 компонентов, и скорость
 поиска становится узким местом на реальных шкафах. Правка по этой находке
 вскрыла настоящий дефект — см. §5.7.1.
+
+#### 5.7.0. The diagnosis names only what the diagnoser can know
+
+Escalation carries a hypothesis about the cause, not a bare fact — but a
+hypothesis nobody checks decays into a slogan. `Loop._diagnose` walks a
+closed list of mechanical evidence, most precise first: frozen-signature
+violations (≥2 rounds) → scope violations (≥2) → executor failures (≥2,
+added 2026-08-20) → two reviewers disagreeing on the same diff. When
+none of them fired, the loop used to fall back to "rounds exhausted:
+the task is probably too large — split it". The frozen gold set says
+that fallback was wrong six times out of six, and each time it sent the
+owner to split a task whose actual trouble was elsewhere.
+
+The fallback now reports the **trajectory** — the last four rounds with
+arm, verdict and finding counts — and says plainly that no mechanical
+cause was found. Size is named as a hypothesis in exactly one case, and
+only because the numbers point at it: a wide front of findings that does
+not shrink (≥3 categories, minimum 3 findings per round). Regression is
+held by a replay bench frozen from the pilot's six escalations
+(`experiments/goldset/diagnosis/`, run inside the gate by
+`test_diagnosis_bench.py`): 6/6 today, 2/6 for the pre-2026-08-20
+diagnoser.
 
 #### 5.7.1. Обратная связь, замкнутая на настоящем дефекте
 
@@ -1862,6 +1928,32 @@ verdict = retry (§4.2).
 ---
 
 ## Журнал изменений
+
+### v0.48 (2026-08-20)
+
+- §5.3, §5.7.0: round-budget honesty. `max_iterations` is now spent only
+  by rounds that reached a mechanical judgement (gate ruling or
+  reviewer verdict); rounds that collapsed earlier get their own ceiling
+  `max_futile_rounds` and their own escalation naming the cause
+  (`round_futile`, `futile_exhausted`, blocked reason `futile_rounds`).
+  The rounds-exhausted diagnosis lost its "the task is probably too
+  large" fallback — wrong 6/6 on the frozen gold set — and now reports
+  the trajectory plus an explicit "no mechanical cause found"; size is
+  claimed only on a wide, non-shrinking front of findings. New evidence
+  branch: executor failures (quota, timeout, no report) are the
+  environment, not the task. Replay bench:
+  `experiments/goldset/diagnosis/`, in the gate, 6/6 (old diagnoser 2/6).
+- §3.1.1: boundary lint at plan time — `swarm plan` names the satellites
+  of each task (forward reference, registry, referrer, pinned
+  directory), ranked by evidence strength and capped at 6 lines.
+  Measured on the seven granted boundary disputes with pre-dispute
+  boundaries restored (`experiments/goldset/boundaries/`): 1/7 for the
+  first design, 4/7 shipped; two classes are mechanically unreachable
+  and the doc says so.
+- E9 planner arm: memory now reaches `replan` as well as `plan` — the
+  path a boundary dispute actually takes. `[experiments] memory` is
+  validated as a role name (`off | executor | reviewer | planner |
+  all`); a typo used to disable the subsystem in silence.
 
 ### v0.47 (2026-08-20)
 

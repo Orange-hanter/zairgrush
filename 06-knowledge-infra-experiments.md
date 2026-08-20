@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.7
+version: 0.8
 created: 2026-08-06
 updated: 2026-08-20
 related:
@@ -247,6 +247,24 @@ summary: >
   unaffected: injection stays the single measured factor, index
   freshness is now identical in both arms.
 
+- **Planner arm switched on** (2026-08-20, stand PILOT-1 commit
+  a8808ed): `[experiments] memory = "planner"` — one role, one factor.
+  It goes first because its ground truth is already paid for: all seven
+  contested task boundaries of the pilot were granted by the owner, and
+  every decision sits in `.swarm/memory` as a `corrected` lesson with
+  anchors. Memory now also reaches `replan` — the path a boundary
+  dispute actually takes; before this it fed `plan` only, i.e. never
+  the call that answers a dispute. Executor and reviewer stay dry: their
+  arms are measured separately. Flag values are validated as role names
+  (`off | executor | reviewer | planner | all`) — a typo used to
+  disable the subsystem in silence, the same failure mode as the
+  zero-embedder-calls measurement.
+- **Measurement to come**: with the queue closed, the planner arm is
+  exercised by the next `plan`/`replan` on the stand (three idea-tasks
+  await plan-diffs). What to compare: whether the plan-diff sets
+  boundaries that include the satellites the owner had to add by hand,
+  and whether disputes per planned task drop.
+
 ### E10. Contract-first skeleton + model routing (in English per owner's rule)
 
 - **A (current)**: every task is implemented whole by the expensive
@@ -297,6 +315,25 @@ summary: >
   frozen bench; USD per task delta.
 - **Status: queued** (one factor per run; after E10's first
   measurement).
+
+### E12. Frozen replay benches for the loop's own judgements
+
+- **A (текущее)**: качество суждений петли (диагноз несходимости,
+  граница задачи) проверяется чтением примеров руками.
+- **B**: замороженные реплей-стенды поверх золотого набора PILOT-1 —
+  `experiments/goldset/diagnosis/` (шесть эскалаций, где владелец назвал
+  истинную причину; гоняется в гейте `test_diagnosis_bench.py`) и
+  `experiments/goldset/boundaries/` (семь признанных споров о границах;
+  требует стенда на диске, поэтому вне гейта).
+- **Гипотеза**: суждение, у которого нет стенда, деградирует незаметно.
+  Проверено на месте: линтер границ проходил синтетические тесты и давал
+  1 спор из 7 на настоящем репозитории — стенд поймал то, чего тесты по
+  замыслу поймать не могли.
+- **Решение по**: счёт стенда до/после каждой правки судящего кода;
+  дрейф места спорного файла в ранжировании (`replay.py` печатает «было»).
+- **Статус**: оба стенда заморожены 2026-08-20. Диагноз 6/6 (прежний
+  диагност — 2/6). Границы 4/7 при потолке 6 строк, 5/7 при 8; два
+  класса споров текстового следа не имеют и механически недостижимы.
 
 ## 5. Порядок и зависимости
 
@@ -363,11 +400,23 @@ E8 закрыт (K3 остаётся дефолтом); **ADR-003 → ADR-004** 
 задачах, требующих ориентации). Открытые: E3 вариант C (blast radius
 ревьюеру — код готов, замер не проведён), E4 (есть эталонные данные:
 канарейки c5/c6), E2/E5/E7 — в очереди; E6 ожил в составе E9;
-**E9 — этап 1 реализован за флагом, замер впереди** (findings E9:
+**E9 — плечо планировщика включено на стенде PILOT-1** (2026-08-20),
+исполнитель и ревьюер ждут своих прогонов; **E12 — оба реплей-стенда
+заморожены** (диагноз 6/6 в гейте, границы 4/7 вне гейта). Прежнее
+состояние E9 (findings E9:
 решения архитектуры, сюрприз PG 18 с `\.` в CSV-COPY, утечка тестов
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.8 (2026-08-20)
+
+- E9: planner arm switched on for the stand (`memory = "planner"`),
+  memory wired into `replan`, flag values validated as role names.
+- E12 added: frozen replay benches for the loop's own judgements
+  (`goldset/diagnosis` in the gate, `goldset/boundaries` outside it) —
+  born from a linter that passed synthetic tests and scored 1/7 on the
+  real corpus.
 
 ### v0.7 (2026-08-20)
 
