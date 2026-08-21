@@ -36,3 +36,6 @@ experiments/verify/
 # --- Claude Code локальные настройки (не для всех участников) ---
 .claude/settings.local.json
 .claude/worktrees/
+
+# --- English coach: личный журнал слов (не для репозитория) ---
+tools/english-coach/words.jsonl
