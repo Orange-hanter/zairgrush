@@ -39,3 +39,4 @@ experiments/verify/
 
 # --- English coach: личный журнал слов (не для репозитория) ---
 tools/english-coach/words.jsonl
+experiments/e4/
