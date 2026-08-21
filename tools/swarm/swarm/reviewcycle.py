@@ -49,8 +49,10 @@ def _review_with_quota_wait(loop: LoopLike, task: dict[str, Any], tail: str,
             verdict: dict[str, Any] | None = loop.agents.review(
                 task, tail, iteration, confirming=confirming)
         except Exception as e:
-                # По имени, не по классу: у Agents своя копия модуля loop,
-                # и её QuotaExceededError — другой объект (см. quota_exception).
+            # По имени, не по классу: исключение может быть поднято другой
+            # копией модуля или вообще отдельным классом с тем же именем.
+            # Детектор quota_exception сверяет имя класса — это стабильный
+            # контракт вне зависимости от identity (см. quota_exception).
             if not quota_exception(e):
                 raise
             if not delays:

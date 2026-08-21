@@ -425,9 +425,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"состояние: {e}", file=sys.stderr)
         return 2
     except Exception as e:
-        # По имени, не по классу: квоту поднимают Agents и планировщик из
-        # СВОИХ копий модуля loop, и `except loop_mod.QuotaExceededError`
-        # ловил только исключение собственной копии (см. quota_exception).
+        # По имени, не по классу: класс QuotaExceededError теперь единый
+        # в verdicts.py, но модули петли всё ещё грузятся по путям
+        # (importlib), а исключение может прийти откуда угодно. Детектор
+        # quota_exception сверяет имя класса — это стабильный контракт
+        # независимо от копии модуля (см. quota_exception).
         if loop_mod.quota_exception(e):
             print(f"пауза по квоте провайдера: {e}", file=sys.stderr)
             return 4

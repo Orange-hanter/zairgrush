@@ -33,8 +33,9 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 # loop — нормальным import'ом, а не _load: если петля уже загрузила его,
-# берётся ТА ЖЕ копия модуля — а с ней и тот же детектор квоты. Свежая
-# копия не нужна; см. loop.quota_exception о цене лишних копий.
+# берётся ТА ЖЕ копия модуля — а с ней и тот же детектор квоты. Класс
+# QuotaExceededError теперь единый в verdicts.py, но лишние копии loop
+# всё равно не нужны; см. verdicts.quota_exception.
 import loop  # noqa: E402 — каталог добавлен строкой выше
 import obs  # noqa: E402 — каталог добавлен строкой выше
 import pyindex  # noqa: E402 — каталог добавлен строкой выше

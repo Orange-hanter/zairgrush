@@ -193,22 +193,27 @@ class TestQuotaPause(RepoCase):
         self.assertIn("quota_wait_s", self.state.metrics_path.read_text())
 
     def test_foreign_module_copy_is_still_a_pause(self):
-        """Регрессия межкопийной сцепки: Agents грузит СВОЮ копию loop.
+        """Регрессия межкопийной сцепки: отказ по квоте из чужого класса.
 
-        Её QuotaExceededError — другой объект класса, и ловля по identity
-        превращала квоту в «аварию» с blocked при полностью зелёных
-        тестах: тесты поднимают исключение из той же копии, из которой
-        построен Loop, а прод — нет. Здесь чужая копия создаётся явно.
+        Детекция идёт по ИМЕНИ класса через quota_exception, а не по
+        identity. Раньше QuotaExceededError дублировался в loop.py, и
+        у разных копий модуля были разные объекты класса: исключение,
+        поднятое чужой копией, пролетало мимо `except QuotaExceededError`
+        и превращалось в «аварию» с blocked. Теперь единое определение
+        живёт в verdicts.py, но контракт по имени остаётся — и этот тест
+        проверяет его напрямую: класс с тем же именем, но другим
+        объектом, всё равно распознаётся как пауза по квоте.
         """
-        s = importlib.util.spec_from_file_location(
-            "loop_copy", ROOT_DIR / "loop.py")
-        foreign = importlib.util.module_from_spec(s)
-        s.loader.exec_module(foreign)
-        self.assertIsNot(foreign.QuotaExceededError, lp.QuotaExceededError,
+        class QuotaExceededError(Exception):
+            """Чужой объект класса с тем же именем — имитирует другую копию."""
+
+        self.assertIsNot(QuotaExceededError, lp.QuotaExceededError,
                          "копии не разошлись — тест проверяет сам себя")
+        self.assertTrue(lp.quota_exception(QuotaExceededError("probe")),
+                        "детектор не признал чужое исключение по имени")
 
         def review(*_a, **_k):
-            raise foreign.QuotaExceededError("session limit reached")
+            raise QuotaExceededError("session limit reached")
 
         agents = type("A", (), {
             "implement": staticmethod(
@@ -218,7 +223,7 @@ class TestQuotaPause(RepoCase):
         loop = lp.Loop(self.state, {"quota_backoff_s": []}, agents,
                        ui=lambda *a: None)
         loop.gate = lambda task: (True, "OK")
-        with self.assertRaises(foreign.QuotaExceededError):
+        with self.assertRaises(QuotaExceededError):
             loop.run()
         self.assertEqual(self.status_of(), "pending",
                          "чужая копия класса превратила паузу в аварию")

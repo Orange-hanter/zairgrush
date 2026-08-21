@@ -61,6 +61,9 @@ from verdicts import (  # noqa: E402,F401
     MIN_ANALYSIS,
     MIN_SUMMARY,
     SEVERITIES,
+    EscalationError,
+    ExecutorUnavailableError,
+    QuotaExceededError,
     apply_policies,
     classify_findings,
     decide,
@@ -72,8 +75,14 @@ from verdicts import (  # noqa: E402,F401
 
 log = obs.get_logger("loop")
 
-# Явный re-export: planner обращается к quota_error через `loop.quota_error`.
-__all__ = ["quota_error"]
+# Явный re-export: planner и тесты обращаются к исключениям и quota_error
+# через `loop.X`; __all__ нужен для mypy --strict (explicit reexport).
+__all__ = [
+    "EscalationError",
+    "ExecutorUnavailableError",
+    "QuotaExceededError",
+    "quota_error",
+]
 
 # Ревью может не состояться по разным причинам, и лечение у них разное.
 # Оператору отдаётся диагноз, а не голое «invalid_verdict»: на пилоте
@@ -107,25 +116,6 @@ REVIEW_DIAGNOSIS = {
         "поток ревьюера кончился без финального result-события — вердикт "
         "снять не с чего. Смотри .swarm/log/*-review-stream.jsonl"),
 }
-
-
-class ExecutorUnavailableError(Exception):
-    """Исполнитель не запускается: мгновенная авария процесса.
-
-    Это окружение, а не работа: квота провайдера, битый бинарь, отозванный
-    токен. Жечь об это раунды и блокировать задачи с диагнозом «слишком
-    крупная» — вдвойне ложь; на пилоте каскад мгновенных аварий за минуты
-    прошёлся по трём задачам очереди. Прогон останавливается целиком,
-    задача возвращается в pending: она ни в чём не виновата.
-    """
-
-
-class QuotaExceededError(Exception):
-    """Провайдер отказал по квоте: петля ждёт, а не блокирует задачу (§5.3)."""
-
-
-class EscalationError(Exception):
-    """Ситуация, которую обязан разобрать человек (§1.1)."""
 
 
 class Loop:
