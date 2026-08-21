@@ -25,9 +25,9 @@ if TYPE_CHECKING:
     from loop_types import LoopLike
 
 
-def _sh(loop: LoopLike, cmd: list[str],
+def sh(loop: LoopLike, cmd: list[str],
         timeout: float = 900) -> subprocess.CompletedProcess[str]:
-        # check=False намеренно: `_sh` — общий раннер, и КАЖДЫЙ вызывающий
+        # check=False намеренно: `sh` — общий раннер, и КАЖДЫЙ вызывающий
         # смотрит returncode сам (ветвление по коду — суть половины
         # проверок петли). Исключение здесь лишило бы их этой ветки.
     return subprocess.run(cmd, capture_output=True, text=True,
@@ -39,7 +39,7 @@ def gate(loop: LoopLike, task: dict[str, Any]) -> tuple[bool, str]:
         "python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]
         # Холодная сборка Rust не влезает в 900 с, а таймаут здесь —
         # исключение, топившее задачу в in_progress (до §5.3-починки).
-    r = loop._sh(cmd, timeout=int(loop.config.get("gate_timeout", 900)))
+    r = loop.sh(cmd, timeout=int(loop.config.get("gate_timeout", 900)))
     tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-3:])
     ok = r.returncode == 0
     loop.state.metric(task=task["id"], phase="gate", ok=ok, tail=tail[:300])
@@ -55,8 +55,8 @@ def integrity_check(loop: LoopLike) -> list[str]:
     Возвращает список нарушений.
     """
     bad = []
-    head = loop._sh(["git", "rev-parse", "HEAD"]).stdout.strip()
-    if loop._head_before and head != loop._head_before:
+    head = loop.sh(["git", "rev-parse", "HEAD"]).stdout.strip()
+    if loop.head_before and head != loop.head_before:
             # Кто сдвинул HEAD, проверка знать не может: у неё есть только
             # «до» и «после». На PILOT-1 его сдвинул ОПЕРАТОР — закоммитил
             # правку конфига, пока задача шла в фоне, — а формулировка
@@ -64,16 +64,16 @@ def integrity_check(loop: LoopLike) -> list[str]:
             # стоила круга разбирательства. Поэтому текст нейтрален, а
             # рядом показан сам коммит: автор и заголовок отвечают на
             # вопрос «моё это или нет» с одного взгляда.
-        who = loop._sh(["git", "log", "-1", "--format=%an: %s",
+        who = loop.sh(["git", "log", "-1", "--format=%an: %s",
                         head]).stdout.strip()
         bad.append(f"история изменилась во время задачи: HEAD "
-                   f"{loop._head_before[:8]} -> {head[:8]}"
+                   f"{loop.head_before[:8]} -> {head[:8]}"
                    + (f" ({who})" if who else "")
                    + ". Коммитит только оркестратор; если коммит ваш —"
                      " задачу можно вернуть в очередь как есть")
-    state_now = loop._state_fingerprint()
-    if (loop._state_before and state_now is not None
-            and state_now != loop._state_before):
+    state_now = loop.state_fingerprint()
+    if (loop.state_before and state_now is not None
+            and state_now != loop.state_before):
             # Изменение состояния само по себе НЕ нарушение: через тот же
             # `.swarm/` работают и петля (set_status), и оператор
             # (`swarm answer` из соседнего процесса). Раньше проверка
@@ -91,14 +91,14 @@ def integrity_check(loop: LoopLike) -> list[str]:
             # Граница честности: агент, дописавший в журнал поддельную
             # строку, обойдёт проверку. Она ловит небрежность и жадность,
             # а не подделку, — и это по-прежнему больше, чем ловилось до.
-        declared = loop._declared_state_sha()
-        if declared is None or declared != loop._state_sha(state_now):
+        declared = loop.declared_state_sha()
+        if declared is None or declared != loop.state_sha(state_now):
             bad.append("состояние петли (.swarm/) изменено в обход API: "
                        "правка файла не объявлена в журнале")
         else:
                 # Объяснено — сдвигаем базу, иначе следующая проверка той же
                 # задачи сработает на том же самом изменении повторно.
-            loop._state_before = state_now
+            loop.state_before = state_now
     for marker, what in (("rebase-merge", "rebase"), ("rebase-apply", "rebase"),
                          ("MERGE_HEAD", "merge"),
                          ("CHERRY_PICK_HEAD", "cherry-pick")):
@@ -106,7 +106,7 @@ def integrity_check(loop: LoopLike) -> list[str]:
             bad.append(f"репозиторий оставлен в состоянии {what}")
     return bad
 
-def _state_sha(blob: str) -> str:
+def state_sha(blob: str) -> str:
     """Отпечаток очереди тем же способом, каким его объявляет запись."""
     state_mod = sys.modules.get("state")
     if state_mod is not None:
@@ -114,7 +114,7 @@ def _state_sha(blob: str) -> str:
         return sha
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
-def _declared_state_sha(loop: LoopLike) -> str | None:
+def declared_state_sha(loop: LoopLike) -> str | None:
     """Последний отпечаток, объявленный законной записью состояния."""
     path = getattr(loop.state, "journal_path", None)
     if path is None:
@@ -125,7 +125,7 @@ def _declared_state_sha(loop: LoopLike) -> str | None:
     declared: str | None = state_mod.last_declared_sha(path)
     return declared
 
-def _state_fingerprint(loop: LoopLike) -> str | None:
+def state_fingerprint(loop: LoopLike) -> str | None:
     path = getattr(loop.state, "tasks_path", None)
     if path is None:
         return None
@@ -178,7 +178,7 @@ def scope_check(loop: LoopLike, task: dict[str, Any],
                 # стеша, был прочитан как работа агента, и исполнитель
                 # откатил два решения владельца (см. state.py).
             continue
-        if path in loop._pre_existing or path in loop._run_dirt:
+        if path in loop.pre_existing or path in loop.run_dirt:
                 # Лежало в дереве ДО старта задачи (`run --force`) — не
                 # работа агента. revert такие файлы щадит, а страж без
                 # этого исключения читал их как нарушение каждый раунд:
@@ -186,8 +186,8 @@ def scope_check(loop: LoopLike, task: dict[str, Any],
                 # которую никто не мог ни убрать, ни легализовать.
                 # Цена решения: правку агента ПОВЕРХ такого файла страж
                 # тоже не видит — этот риск оператор принял флагом --force.
-                # _run_dirt — то же множество на уровне ПРОГОНА: перезапуск
-                # процесса и цикл stash/restore обнуляют _pre_existing, а
+                # run_dirt — то же множество на уровне ПРОГОНА: перезапуск
+                # процесса и цикл stash/restore обнуляют pre_existing, а
                 # операторская грязь от этого работой агента не становится.
             continue
         if not any(fnmatch.fnmatch(path, p) for p in allowed):
@@ -210,8 +210,8 @@ def revert(loop: LoopLike) -> list[str]:
     поимённо то, что реально изменено, — по всему дереву не метём,
     чтобы не задеть чужое.
     """
-    untouchable: set[str] = (getattr(loop, "_pre_existing", set())
-                             | getattr(loop, "_run_dirt", set()))
+    untouchable: set[str] = (getattr(loop, "pre_existing", set())
+                             | getattr(loop, "run_dirt", set()))
     changed = [p for p in loop.state.changed_files()
                if p not in untouchable and not state_mod.owned_by_loop(p)]
     if not changed:
@@ -219,13 +219,13 @@ def revert(loop: LoopLike) -> list[str]:
     tracked: list[str] = []
     untracked: list[str] = []
     for path in changed:
-        probe = loop._sh(["git", "ls-files", "--error-unmatch", path])
+        probe = loop.sh(["git", "ls-files", "--error-unmatch", path])
         (tracked if probe.returncode == 0 else untracked).append(path)
     if tracked:
-        loop._sh(["git", "checkout", "--", *tracked])
+        loop.sh(["git", "checkout", "--", *tracked])
     for path in untracked:
             # intent-to-add уже мог зарегистрировать файл в индексе
-        loop._sh(["git", "rm", "-f", "--quiet", "--ignore-unmatch", path])
+        loop.sh(["git", "rm", "-f", "--quiet", "--ignore-unmatch", path])
         target = loop.state.root / path
         if target.exists():
             target.unlink()
@@ -252,14 +252,14 @@ def commit(loop: LoopLike, task: dict[str, Any]) -> str | None:
                             cwd=loop.state.root, check=False)
     if staged.returncode == 0:
         return None
-    message = loop.agents.commit_message(task, loop._sh(["git", "diff",
+    message = loop.agents.commit_message(task, loop.sh(["git", "diff",
                                                          "--cached"]).stdout)
     subprocess.run(["git", "commit", "-qm", message], cwd=loop.state.root,
                    check=True, env={**os.environ, **env})
         # Коммит оркестратора легален: сдвигаем базу, иначе следующая
         # проверка целостности обвинит агента в нашей же работе.
-    loop._head_before = loop._sh(["git", "rev-parse", "HEAD"]).stdout.strip()
-    return loop._sh(["git", "rev-parse", "--short", "HEAD"]).stdout.strip()
+    loop.head_before = loop.sh(["git", "rev-parse", "HEAD"]).stdout.strip()
+    return loop.sh(["git", "rev-parse", "--short", "HEAD"]).stdout.strip()
 
 def cleanup(loop: LoopLike, task: dict[str, Any], reason: str) -> str | None:
     """Терминальный исход оставляет worktree чистым (§5.5.1).
@@ -280,7 +280,7 @@ def cleanup(loop: LoopLike, task: dict[str, Any], reason: str) -> str | None:
     3. Конфиг петли в стеш не входит. Именно стеш и был машиной
        отмывания на PILOT-1: quota-пауза унесла незакоммиченный
        swarm.toml вместе с работой, перезапуск застал чистое дерево,
-       _pre_existing оказался пуст — и вернувшийся из стеша конфиг
+       pre_existing оказался пуст — и вернувшийся из стеша конфиг
        страж прочитал как нарушение границ. Операторская правка
        конфига остаётся в дереве на виду; preflight назовёт её.
     """
@@ -288,13 +288,13 @@ def cleanup(loop: LoopLike, task: dict[str, Any], reason: str) -> str | None:
                  if not state_mod.owned_by_loop(p)]
     if not stashable:
         return None
-    loop._sh(["git", "reset", "-q"])
+    loop.sh(["git", "reset", "-q"])
     label = f"swarm:{task['id']}-{reason}"
         # Стеш ПОИМЁННО, а не «всё с исключениями»: явный pathspec с
         # :(exclude) поверх игнорируемого .swarm/ роняет git тем же
         # советом «Use -f», что и add (см. commit). Список и так уже
         # вычислен — им и ограничиваемся.
-    r = loop._sh(["git", "stash", "push", "-u", "-q", "-m", label,
+    r = loop.sh(["git", "stash", "push", "-u", "-q", "-m", label,
                   "--", *stashable])
     if r.returncode != 0:
         loop.state.log("stash_failed", task=task["id"], reason=reason,

@@ -20,22 +20,22 @@ class LoopLike(Protocol):
     agents: Any
     ui: Callable[..., None]
 
-    _pre_existing: set[str]
-    _run_dirt: set[str]
-    _head_before: str | None
-    _state_before: str | None
+    pre_existing: set[str]
+    run_dirt: set[str]
+    head_before: str | None
+    state_before: str | None
 
-    def _sh(self, cmd: list[str],
+    def sh(self, cmd: list[str],
             timeout: float = 900) -> subprocess.CompletedProcess[str]:
         ...
 
-    def _state_fingerprint(self) -> str | None:
+    def state_fingerprint(self) -> str | None:
         ...
 
-    def _declared_state_sha(self) -> str | None:
+    def declared_state_sha(self) -> str | None:
         ...
 
-    def _state_sha(self, blob: str) -> str:
+    def state_sha(self, blob: str) -> str:
         ...
 
     def cleanup(self, task: dict[str, Any], reason: str) -> str | None:

@@ -75,7 +75,7 @@ log = _load("obs").get_logger("agents")
 
 # Парсинг ответов вынесен в parsing.py; здесь shim для потребителей.
 condense_diff = parsing_mod.condense_diff
-_extract_fenced_code = parsing_mod._extract_fenced_code
+_extract_fenced_code = parsing_mod.extract_fenced_code
 
 
 class Agents:
@@ -254,7 +254,7 @@ RUSSIAN.
     def _skeleton_on(self) -> bool:
         """E10 за флагом (§1, 06-док): опечатка в имени эксперимента не
         обязана включать умолчание — незнакомый ключ гейт уже подсвечивает
-        в cli._config, здесь просто явный дефолт "выключено"."""
+        в cli.load_config, здесь просто явный дефолт "выключено"."""
         return bool((self.config.get("experiments") or {}).get("skeleton", False))
 
     def implement(self, task: dict[str, Any], feedback: str | None,
@@ -411,7 +411,7 @@ fence.
             self._fill_failure(task_id, iteration, wall_s, model,
                                "fill_no_reply", "модель не ответила")
             return None
-        code = parsing_mod._extract_fenced_code(reply)
+        code = parsing_mod.extract_fenced_code(reply)
         if code is None:
             self._fill_failure(task_id, iteration, wall_s, model, "fill_no_fence",
                                "ответ не прошёл контракт: не один чистый fence")
@@ -440,13 +440,13 @@ fence.
 
     @staticmethod
     def _report_in(text: str) -> dict[str, Any] | None:
-        """Делегат к `parsing._report_in`."""
-        return parsing_mod._report_in(text)
+        """Делегат к `parsing.report_in`."""
+        return parsing_mod.report_in(text)
 
     @classmethod
     def _extract_report(cls, stream: str) -> dict[str, Any] | None:
-        """Делегат к `parsing._extract_report`."""
-        return parsing_mod._extract_report(stream)
+        """Делегат к `parsing.extract_report`."""
+        return parsing_mod.extract_report(stream)
 
     # --- ревьюер ----------------------------------------------------------
 

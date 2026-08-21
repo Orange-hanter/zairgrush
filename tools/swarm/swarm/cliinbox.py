@@ -16,7 +16,7 @@ import cli  # noqa: E402
 
 def cmd_inbox(args: argparse.Namespace) -> int:
     """Накопившиеся вопросы к человеку — разбираются пачкой."""
-    vocab = cli._load("vocab")
+    vocab = cli.load_mod("vocab")
     st = cli.state_mod.SwarmState(args.root)
     questions = st.questions(only_open=not args.all)
     if not questions:

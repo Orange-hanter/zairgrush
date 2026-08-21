@@ -286,7 +286,7 @@ class TestCleanupStash(RepoCase):
         """Метка несуществующего стеша отправляет оператора искать пустоту."""
         loop = self._loop()
         (self.root / "new_file.txt").write_text("x\n")
-        real_sh = loop._sh
+        real_sh = loop.sh
 
         def broken(cmd, timeout=900):
             if cmd[:2] == ["git", "stash"]:
@@ -294,14 +294,14 @@ class TestCleanupStash(RepoCase):
                                       "stderr": "Cannot merge."})()
             return real_sh(cmd, timeout)
 
-        loop._sh = broken
+        loop.sh = broken
         self.assertIsNone(loop.cleanup({"id": "g1nt"}, "invalid-verdict"),
                           "стеш не создан, а метка выдана")
 
     def test_failed_stash_is_journalled(self):
         loop = self._loop()
         (self.root / "new_file.txt").write_text("x\n")
-        real_sh = loop._sh
+        real_sh = loop.sh
 
         def broken(cmd, timeout=900):
             if cmd[:2] == ["git", "stash"]:
@@ -309,7 +309,7 @@ class TestCleanupStash(RepoCase):
                                       "stderr": "Cannot merge."})()
             return real_sh(cmd, timeout)
 
-        loop._sh = broken
+        loop.sh = broken
         loop.cleanup({"id": "g1nt"}, "invalid-verdict")
         kinds = [json.loads(line)["kind"]
                  for line in self.state.journal_path.read_text().splitlines()]

@@ -195,7 +195,7 @@ class TestSecurityLens(PromptCase):
 
     def test_unknown_lens_value_is_ignored(self):
         """Только "security" — незнакомое значение не должно молча что-то
-        подмешивать; закрытый список сверяет cli._config, здесь — что
+        подмешивать; закрытый список сверяет cli.load_config, здесь — что
         промпт остаётся ПРЕЖНИМ на любом другом значении."""
         self.assertEqual(self.prompt(), self.prompt(lens="paranoid"))
 

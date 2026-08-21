@@ -1,8 +1,3 @@
-# ruff: noqa: SLF001
-# SLF001 — долг декомпозиции memory.py: тесты патчат `memory.<имя>`,
-# поэтому подмодули обращаются к shim'у по имени (`memory.pg` и т.п.).
-# Снятие долга = публичные имена в memstore с синхронной правкой тестов.
-"""Поиск уроков и инъекция блока памяти в промпты."""
 
 from __future__ import annotations
 
@@ -36,11 +31,11 @@ def retrieve(state: Any, config: dict[str, Any], query: str,
         hits: list[dict[str, Any]] | None = memory.search_fts(config, repo, query, k)
         backend = "fts"
         if hits is None:
-            if not memory._state["unavailable_logged"]:
-                memory._state["unavailable_logged"] = True
+            if not memory.breaker_state["unavailable_logged"]:
+                memory.breaker_state["unavailable_logged"] = True
                 state.log("memory_unavailable", detail="PG недоступен, "
                           "поиск по локальным файлам")
-            hits = memory._local_scan(store.records(), query, k)
+            hits = memory.local_scan(store.records(), query, k)
             backend = "local"
         else:
             # Вектор — сеть дополнительного охвата ПОСЛЕ FTS, без слияния
@@ -62,7 +57,7 @@ def retrieve(state: Any, config: dict[str, Any], query: str,
             if not hits:
                 # FTS промахнулся — редкие токены могли не пройти стеммер;
                 # локальный скан как последняя сеть охвата.
-                local = memory._local_scan(store.records(), query, k)
+                local = memory.local_scan(store.records(), query, k)
                 if local:
                     hits, backend = local, "local-fallback"
         store.log_query(role=role, task=task_id, query=query[:200], k=k,

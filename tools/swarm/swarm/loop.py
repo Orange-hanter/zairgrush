@@ -33,10 +33,10 @@ import obs  # noqa: E402
 import pyindex  # noqa: E402
 from gitops import (  # noqa: E402
     _apply_patch as _git_apply_patch,
-    _declared_state_sha as _git_declared_state_sha,
-    _sh as _git_sh,
-    _state_fingerprint as _git_state_fingerprint,
-    _state_sha as _git_state_sha,
+    declared_state_sha as _git_declared_state_sha,
+    sh as _git_sh,
+    state_fingerprint as _git_state_fingerprint,
+    state_sha as _git_state_sha,
 )
 from reviewcycle import (  # noqa: E402
     _arm as _rc_arm,
@@ -125,10 +125,10 @@ class Loop:
         self.config = config
         self.agents = agents          # объект с .implement() и .review()
         self.ui = ui or (lambda *_a, **_k: None)
-        self._pre_existing: set[str] = set()   # дерево до старта задачи
-        self._run_dirt: set[str] = set()       # дерево до старта ПРОГОНА
-        self._head_before: str | None = None   # история до старта задачи
-        self._state_before: str | None = None  # состояние петли до старта
+        self.pre_existing: set[str] = set()   # дерево до старта задачи
+        self.run_dirt: set[str] = set()       # дерево до старта ПРОГОНА
+        self.head_before: str | None = None   # история до старта задачи
+        self.state_before: str | None = None  # состояние петли до старта
         self.live_board = bool(config.get("live_board", True))
 
     # --- механические шаги ------------------------------------------------
@@ -176,7 +176,7 @@ class Loop:
         except Exception:
             log.exception("память: рефлексия не состоялась")
 
-    def _sh(self, cmd: list[str],
+    def sh(self, cmd: list[str],
             timeout: float = 900) -> subprocess.CompletedProcess[str]:
         return _git_sh(self, cmd, timeout)
 
@@ -194,13 +194,13 @@ class Loop:
     def integrity_check(self) -> list[str]:
         return gitops.integrity_check(self)
 
-    def _state_sha(self, blob: str) -> str:
+    def state_sha(self, blob: str) -> str:
         return _git_state_sha(blob)
 
-    def _declared_state_sha(self) -> str | None:
+    def declared_state_sha(self) -> str | None:
         return _git_declared_state_sha(self)
 
-    def _state_fingerprint(self) -> str | None:
+    def state_fingerprint(self) -> str | None:
         return _git_state_fingerprint(self)
 
     def scope_check(self, task: dict[str, Any],
@@ -285,14 +285,14 @@ class Loop:
         # Всё, что уже лежало в дереве, работой агента не является и
         # откату не подлежит: иначе незакоммиченная работа человека
         # уничтожается безвозвратно при первом же нарушении границ.
-        self._pre_existing = set(self.state.changed_files())
-        if self._pre_existing:
+        self.pre_existing = set(self.state.changed_files())
+        if self.pre_existing:
             # Факт в журнал: страж границ эти файлы дальше не видит, и
             # оператор обязан знать, что задача пошла поверх его правок.
             self.state.log("pre_existing_dirt", task=tid,
-                           files=sorted(self._pre_existing))
-        self._head_before = self._sh(["git", "rev-parse", "HEAD"]).stdout.strip()
-        self._state_before = self._state_fingerprint()
+                           files=sorted(self.pre_existing))
+        self.head_before = self.sh(["git", "rev-parse", "HEAD"]).stdout.strip()
+        self.state_before = self.state_fingerprint()
 
         ok, tail = self.gate(task)
         if not ok:
@@ -679,7 +679,7 @@ class Loop:
                 # resume сравнит её с текущим HEAD и решит, состоялся ли
                 # коммит, вместо того чтобы посылать человека смотреть.
                 with self.state.step(tid, "commit",
-                                     head=self._head_before) as step:
+                                     head=self.head_before) as step:
                     sha = self.commit(task)
                     step.result(commit=sha)
                 self.state.set_status(tid, "done", iterations=iteration,
@@ -772,14 +772,14 @@ class Loop:
     def run(self, limit: int | None = None) -> dict[str, str]:
         results: dict[str, str] = {}
         # Операторская грязь фиксируется на уровне ПРОГОНА, не только
-        # задачи: _pre_existing пересобирается каждым run_task и обнуляется
+        # задачи: pre_existing пересобирается каждым run_task и обнуляется
         # перезапуском процесса, а цикл stash/restore успевает показать
         # стражу чистое дерево. Снимок здесь — тот же список, что печатает
         # preflight, — переживает всё это и вычитается из суждений стража
-        # и revert наравне с _pre_existing (PILOT-1, scope-guard).
-        self._run_dirt = set(self.state.changed_files())
-        if self._run_dirt:
-            self.state.log("run_dirt", files=sorted(self._run_dirt))
+        # и revert наравне с pre_existing (PILOT-1, scope-guard).
+        self.run_dirt = set(self.state.changed_files())
+        if self.run_dirt:
+            self.state.log("run_dirt", files=sorted(self.run_dirt))
         # Счётчик автовозобновлений — на ПРОГОН, не на задачу: квота
         # общая, и каждая пауза тратит одну попытку из quota_resume_max.
         resumes = 0

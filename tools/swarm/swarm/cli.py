@@ -34,7 +34,7 @@ from typing import Any
 HERE = pathlib.Path(__file__).resolve().parent
 
 
-def _load(name: str) -> ModuleType:
+def load_mod(name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
     if spec is None or spec.loader is None:
         raise ImportError(f"не удалось загрузить модуль {name}")
@@ -44,9 +44,9 @@ def _load(name: str) -> ModuleType:
     return mod
 
 
-state_mod = _load("state")
-loop_mod = _load("loop")
-log = _load("obs").get_logger("cli")
+state_mod = load_mod("state")
+loop_mod = load_mod("loop")
+log = load_mod("obs").get_logger("cli")
 
 
 # Все ключи, которые петля где-либо читает. Список закрытый намеренно:
@@ -82,7 +82,7 @@ KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
 MEMORY_MODES = frozenset({"off", "executor", "reviewer", "planner", "all"})
 
 
-def _config(root: str | pathlib.Path) -> dict[str, Any]:
+def load_config(root: str | pathlib.Path) -> dict[str, Any]:
     path = pathlib.Path(root) / "swarm.toml"
     cfg = {"gate_command": None, "protected_paths": ["tests/*", "tests/**"]}
     if path.exists():
@@ -126,7 +126,7 @@ def _config(root: str | pathlib.Path) -> dict[str, Any]:
 
 # --- команды -------------------------------------------------------------
 
-def _ui(*args: object) -> None:
+def ui(*args: object) -> None:
     """Печать хода петли с немедленным сбросом буфера.
 
     Голый `print` буферизуется поблочно, когда stdout не терминал. Прогон
@@ -139,7 +139,7 @@ def _ui(*args: object) -> None:
 
 # Тесты перезагружают cli.py через importlib.util; без принудительной
 # перезагрузки плоских модулей они остались бы привязаны к предыдущей
-# копии cli, и патчи `cli._load` / `cli.loop_mod` новой копии не брались бы.
+# копии cli, и патчи `cli.load_mod` / `cli.loop_mod` новой копии не брались бы.
 for _cli_mod in ("cliexplain", "cliinbox", "climemory", "climisc",
                  "clireport", "clirun"):
     sys.modules.pop(_cli_mod, None)
@@ -161,10 +161,10 @@ from cliexplain import (  # noqa: E402,F401
 from cliinbox import _paths_mentioned, cmd_answer, cmd_inbox  # noqa: E402,F401
 from climemory import _memory_anchor, cmd_memory  # noqa: E402,F401
 from climisc import (  # noqa: E402
-    _tree_sitter_clib,
     cmd_doctor,
     cmd_plan,
     cmd_policy,
+    tree_sitter_clib,
 )
 from clireport import (  # noqa: E402
     cmd_ab,
@@ -193,7 +193,6 @@ from clirun import (  # noqa: E402,F401
 
 # Явный re-export: подмодули cli обращаются к этим именам через `cli.X`.
 __all__ = [
-    "_tree_sitter_clib",
     "cmd_ab",
     "cmd_answer",
     "cmd_board",
@@ -209,6 +208,7 @@ __all__ = [
     "cmd_resume",
     "cmd_run",
     "importlib",
+    "tree_sitter_clib",
 ]
 
 EPILOG = """
@@ -418,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
     # Диагностика включается ЗДЕСЬ, в единственной точке входа: модули
     # грузятся по путям и не знают, где состояние прогона, а знать
     # каталог обязан тот, кто разобрал --root.
-    _load("obs").setup(pathlib.Path(args.root) / ".swarm")
+    load_mod("obs").setup(pathlib.Path(args.root) / ".swarm")
     try:
         code: int = args.func(args)
     except state_mod.StateError as e:

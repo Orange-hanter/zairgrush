@@ -18,7 +18,7 @@ from cliexplain import _prefix  # noqa: E402
 
 
 def cmd_map(args: argparse.Namespace) -> int:
-    codemap = cli._load("codemap")
+    codemap = cli.load_mod("codemap")
     idx = codemap.HybridIndex(args.root, use_tree_sitter=args.tree_sitter)
     print(idx.project_map(budget=args.budget))
     if args.verbose:
@@ -28,7 +28,7 @@ def cmd_map(args: argparse.Namespace) -> int:
 
 
 def cmd_impact(args: argparse.Namespace) -> int:
-    codemap = cli._load("codemap")
+    codemap = cli.load_mod("codemap")
     idx = codemap.HybridIndex(args.root, use_tree_sitter=args.tree_sitter)
     print(idx.impact(args.symbol))
     return 0
@@ -137,7 +137,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     ничьи и идут отдельным блоком: приклеенные к задаче, они объясняли бы
     остановку очереди не тем.
     """
-    vocab = cli._load("vocab")
+    vocab = cli.load_mod("vocab")
     st = cli.state_mod.SwarmState(args.root)
     if not st.journal_path.exists():
         print("журнал пуст")
@@ -205,16 +205,16 @@ def cmd_board(args: argparse.Namespace) -> int:
     остановиться по Ctrl+C, а не повиснуть в фоне процессом, о котором
     забыли.
     """
-    board_mod = cli._load("board")
+    board_mod = cli.load_mod("board")
     out, board = board_mod.build(args.root, args.out)
     open_q = [q for q in board["questions"] if q["status"] == "open"]
     print(f"доска: {out}")
     print(f"  задач {len(board['tasks'])}, потрачено ${board['total']}, "
           f"ждут вас {len(open_q)}")
     if args.serve:
-        cfg = cli._config(args.root)
+        cfg = cli.load_config(args.root)
         port = args.port if args.port is not None else cfg.get("board_port", 7433)
-        server = cli._load("boardserve").BoardServer(
+        server = cli.load_mod("boardserve").BoardServer(
             args.root, port=port)
         server.start()
         print(f"живая доска: {server.url}")

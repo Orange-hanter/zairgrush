@@ -291,7 +291,7 @@ class TestConfigValidation(CliCase):
         (self.root / "swarm.toml").write_text(text)
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):
-            cfg = cli._config(self.root)
+            cfg = cli.load_config(self.root)
         return cfg, buf.getvalue()
 
     def test_unknown_key_warns(self):
@@ -339,8 +339,8 @@ class TestDoctor(CliCase):
         cli.importlib.util.find_spec = (
             lambda name: object() if name in present else None)
         self.addCleanup(setattr, cli.importlib.util, "find_spec", original)
-        original_clib = cli._tree_sitter_clib
-        cli._tree_sitter_clib = lambda: clib
+        original_clib = cli.tree_sitter_clib
+        cli.tree_sitter_clib = lambda: clib
         self.addCleanup(setattr, cli, "_tree_sitter_clib", original_clib)
 
     def test_missing_tree_sitter_is_reported_honestly(self):
@@ -621,8 +621,8 @@ class TestLoopOutputIsVisible(unittest.TestCase):
 
         builtins.print = spy
         try:
-            cli._ui("=== задача")
-            cli._ui("    раунд 1")
+            cli.ui("=== задача")
+            cli.ui("    раунд 1")
         finally:
             builtins.print = real
         self.assertEqual(seen, [True, True],

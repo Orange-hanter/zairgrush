@@ -37,8 +37,8 @@ class MemCase(unittest.TestCase):
         # (поймано на первом же smoke — уроки «задача»/«упёртая» из
         # юнит-тестов лежали в swarm_memory). Тесту, которому нужен psql,
         # придётся закрыть предохранитель явно.
-        mem._state["failures"] = mem.BREAKER
-        mem._state["unavailable_logged"] = False
+        mem.breaker_state["failures"] = mem.BREAKER
+        mem.breaker_state["unavailable_logged"] = False
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -354,7 +354,7 @@ class TestPgChokePoint(MemCase):
 
     def test_search_passes_data_via_vars(self):
         calls = self._capture()
-        mem._state["failures"] = 0          # psql подменён — путь безопасен
+        mem.breaker_state["failures"] = 0          # psql подменён — путь безопасен
         mem.search_fts({}, "репо'; DROP TABLE lessons; --", "запрос", 5)
         cmd, kw = calls[0]
         sql = kw.get("input", "")
@@ -366,7 +366,7 @@ class TestPgChokePoint(MemCase):
         self.assertIn("--no-psqlrc", cmd)
 
     def test_breaker_opens_after_failures(self):
-        mem._state["failures"] = 0          # psql подменён — путь безопасен
+        mem.breaker_state["failures"] = 0          # psql подменён — путь безопасен
         self.addCleanup(setattr, mem.subprocess, "run", mem.subprocess.run)
 
         def dead_run(cmd, **kw):
@@ -662,12 +662,12 @@ class TestLocalScan(MemCase):
     def test_rare_token_overlap(self):
         records = [lesson("про валидацию номера листа"),
                    lesson("про сериализацию дампа")]
-        hits = mem._local_scan(records, "валидацию листа", 5)
+        hits = mem.local_scan(records, "валидацию листа", 5)
         self.assertEqual(len(hits), 1)
         self.assertIn("валидацию", hits[0]["body"])
 
     def test_short_tokens_ignored(self):
-        self.assertEqual(mem._local_scan([lesson("а и б")], "а и", 5), [])
+        self.assertEqual(mem.local_scan([lesson("а и б")], "а и", 5), [])
 
 
 class TestIndexEnabled(MemCase):

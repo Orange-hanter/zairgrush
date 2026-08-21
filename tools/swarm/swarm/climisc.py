@@ -15,7 +15,7 @@ if _HERE not in sys.path:
 import cli  # noqa: E402
 
 
-def _tree_sitter_clib() -> bool:
+def tree_sitter_clib() -> bool:
     """Есть ли на машине C-библиотека tree-sitter (brew/системная).
 
     Сама по себе она петле бесполезна — нужна, чтобы доктор отличил
@@ -104,7 +104,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ts_hint = "pip install " + " ".join(ts_missing)
         if len(ts_missing) < 3:
             checks.append((None, "tree-sitter", f"биндинги неполные: {ts_hint}"))
-        elif cli._tree_sitter_clib():
+        elif cli.tree_sitter_clib():
             checks.append((None, "tree-sitter",
                            ("стоит только C-библиотека (brew), петле нужны "
                             f"python-биндинги: {ts_hint}")))
@@ -116,8 +116,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # а не петлю. Доктор называет точные команды настройки, но не
     # выполняет их сам: базу и роль создаёт владелец.
     if shutil.which("psql"):
-        mem_mod = cli._load("memory")
-        cfg_doc = cli._config(args.root)
+        mem_mod = cli.load_mod("memory")
+        cfg_doc = cli.load_config(args.root)
         ok_pg, out_pg = mem_mod.pg(cfg_doc, "SELECT version();")
         if ok_pg:
             checks.append((True, "memory-pg",
@@ -144,7 +144,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"[{'  ok ' if not files else 'ПРОБЛ'}] worktree: "
               f"{'чист' if not files else f'{len(files)} изменённых файлов'}")
 
-    cfg = cli._config(root)
+    cfg = cli.load_config(root)
     print(f"[ опц ] gate: {cfg.get('gate_command') or 'по умолчанию (unittest)'}")
     st = cli.state_mod.SwarmState(root)
     print(f"[  ok ] состояние: {st.dir}")
@@ -218,12 +218,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
     Модуль был написан и покрыт тестами, но не имел входа в CLI — роль
     существовала как библиотека, а не как участник петли.
     """
-    planner = cli._load("planner")
+    planner = cli.load_mod("planner")
     st = cli.state_mod.SwarmState(args.root)
     data = st.load_tasks()
     tasks = data.get("tasks", [])
     files, suite = planner.repo_map(pathlib.Path(args.root))
-    cfg = cli._config(args.root)
+    cfg = cli.load_config(args.root)
 
     if args.cmd == "plan":
         if not args.goal:
@@ -231,7 +231,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
             return 2
         # Память (E9): уроки прошлых прогонов по этой цели — тупики
         # прошлых декомпозиций дороже всего именно планировщику.
-        mem_block = cli._load("memory").inject_block(
+        mem_block = cli.load_mod("memory").inject_block(
             "planner", {"id": "*", "title": args.goal, "paths": []}, st, cfg)
         prompt = planner.plan_prompt(args.goal, tasks, files, suite,
                                      memory=mem_block)
@@ -245,7 +245,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
             dispute = json.loads(pathlib.Path(args.dispute).read_text())
         # Та же память, что и у plan: спор о границах решается знанием
         # прошлых таких решений, а не заново с чистого листа.
-        mem_block = cli._load("memory").inject_block(
+        mem_block = cli.load_mod("memory").inject_block(
             "planner", task, st, cfg)
         prompt = planner.replan_prompt(task, dispute, tasks, files, suite,
                                        memory=mem_block)

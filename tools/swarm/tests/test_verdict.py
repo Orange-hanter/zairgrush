@@ -413,7 +413,7 @@ class _LoopHarness:
         loop.scope_check = lambda task: (scope or (True, [], []))
         loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: f"stash:{reason}"
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         return loop, agents
 

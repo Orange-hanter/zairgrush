@@ -37,7 +37,7 @@ DIFF_EXCERPT = 40
 FENCE_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)\n?```", re.DOTALL)
 
 
-def _extract_fenced_code(text: str) -> str | None:
+def extract_fenced_code(text: str) -> str | None:
     """Единственный код-блок ответа chat-fill, либо None при нарушении формы.
 
     Несколько fence или текст вне них — отказ, а не «берём что есть»:
@@ -104,7 +104,7 @@ def condense_diff(diff: str, limit: int = DIFF_FILE_LIMIT,
     return "\n".join(out)
 
 
-def _report_in(text: str) -> dict[str, Any] | None:
+def report_in(text: str) -> dict[str, Any] | None:
     """Последний JSON-объект с полем `status` внутри текста.
 
     Контракт требует голый JSON, но исполнитель регулярно предваряет его
@@ -129,7 +129,7 @@ def _report_in(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _extract_report(stream: str) -> dict[str, Any] | None:
+def extract_report(stream: str) -> dict[str, Any] | None:
     """Финальный JSON лежит в последнем assistant-событии, а не в
     последней строке потока (урок SMOKE-1)."""
     report: dict[str, Any] | None = None
@@ -139,7 +139,7 @@ def _extract_report(stream: str) -> dict[str, Any] | None:
         except ValueError:
             continue
         if ev.get("role") == "assistant" and isinstance(ev.get("content"), str):
-            cand = _report_in(ev["content"])
+            cand = report_in(ev["content"])
             if cand is not None:
                 report = cand
     return report

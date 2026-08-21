@@ -35,9 +35,9 @@ def _memory_anchor(root: pathlib.Path, ref: str) -> dict[str, str]:
 
 def cmd_memory(args: argparse.Namespace) -> int:
     """Память между прогонами (E9): уроки, поиск, дайджест, индекс."""
-    mem = cli._load("memory")
+    mem = cli.load_mod("memory")
     st = cli.state_mod.SwarmState(args.root)
-    cfg = cli._config(args.root)
+    cfg = cli.load_config(args.root)
     store = mem.MemoryStore(args.root)
     root = pathlib.Path(args.root)
     repo, stand = mem.repo_identity(args.root)

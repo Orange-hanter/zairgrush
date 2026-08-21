@@ -120,7 +120,7 @@ class TestNewFileIsVisible(GitCase):
         щадит (она не работа агента), убрать её некому — и лимит раундов
         выгорал об файл, который никто не трогал."""
         self.create("notes.md", "черновик оператора\n")
-        self.loop._pre_existing = set(self.state.changed_files())
+        self.loop.pre_existing = set(self.state.changed_files())
         self.create("src/new_module.py")
         ok, bad, _ = self.loop.scope_check(dict(self.TASK))
         self.assertTrue(ok, f"чужая грязь прочитана как нарушение: {bad}")
@@ -202,7 +202,7 @@ class TestRevertRemovesNewFiles(GitCase):
         """
         (self.root / "src" / "existing.py").write_text("работа человека\n")
         self.create("human_notes.md", "черновик человека\n")
-        self.loop._pre_existing = set(self.state.changed_files())
+        self.loop.pre_existing = set(self.state.changed_files())
         self.create("src/sneaky.py")            # это уже агент
         self.loop.revert()
         self.assertEqual((self.root / "src" / "existing.py").read_text(),
@@ -219,7 +219,7 @@ class TestRevertRemovesNewFiles(GitCase):
         для агента, но разница фатальна для человека.
         """
         (self.root / "tests" / "test_existing.py").write_text("работа человека\n")
-        self.loop._pre_existing = set(self.state.changed_files())
+        self.loop.pre_existing = set(self.state.changed_files())
         (self.root / "src" / "existing.py").write_text("правка агента\n")
         self.loop.revert()
         self.assertEqual((self.root / "tests" / "test_existing.py").read_text(),
@@ -275,8 +275,8 @@ class TestIntegrityCheck(GitCase):
 
     def _armed(self):
         loop = lp.Loop(self.state, {}, None)
-        loop._head_before = git(self.root, "rev-parse", "HEAD").stdout.strip()
-        loop._state_before = loop._state_fingerprint()
+        loop.head_before = git(self.root, "rev-parse", "HEAD").stdout.strip()
+        loop.state_before = loop.state_fingerprint()
         return loop
 
     def test_clean_work_passes(self):
@@ -395,8 +395,8 @@ class TestIntegrityCheck(GitCase):
         """Коммит оркестратора легален и не должен обвинять агента."""
         loop = lp.Loop(self.state, {}, type("A", (), {
             "commit_message": staticmethod(lambda task, diff: "msg")})())
-        loop._head_before = git(self.root, "rev-parse", "HEAD").stdout.strip()
-        loop._state_before = loop._state_fingerprint()
+        loop.head_before = git(self.root, "rev-parse", "HEAD").stdout.strip()
+        loop.state_before = loop.state_fingerprint()
         self.create("src/new_module.py")
         loop.commit(dict(self.TASK))
         self.assertEqual(loop.integrity_check(), [],
@@ -505,16 +505,16 @@ class TestRunLevelDirt(GitCase):
 
     def test_run_dirt_spares_operator_file_after_reset(self):
         self.create("notes.md", "черновик оператора\n")
-        self.loop._run_dirt = {"notes.md"}
-        self.loop._pre_existing = set()   # перезапуск / stash-restore
+        self.loop.run_dirt = {"notes.md"}
+        self.loop.pre_existing = set()   # перезапуск / stash-restore
         self.create("src/new_module.py")
         ok, bad, _ = self.loop.scope_check(dict(self.TASK))
         self.assertTrue(ok, f"грязь прогона прочитана как нарушение: {bad}")
 
     def test_run_dirt_spared_by_revert(self):
         self.create("notes.md", "черновик оператора\n")
-        self.loop._run_dirt = {"notes.md"}
-        self.loop._pre_existing = set()
+        self.loop.run_dirt = {"notes.md"}
+        self.loop.pre_existing = set()
         self.create("src/new_module.py")
         reverted = self.loop.revert()
         self.assertNotIn("notes.md", reverted)
@@ -523,7 +523,7 @@ class TestRunLevelDirt(GitCase):
     def test_run_captures_dirt_snapshot_and_logs_it(self):
         self.create("notes.md", "черновик оператора\n")
         self.loop.run()   # очередь пуста — run() только делает снимок
-        self.assertIn("notes.md", self.loop._run_dirt)
+        self.assertIn("notes.md", self.loop.run_dirt)
         journal = (self.root / ".swarm" / "log" / "run.jsonl").read_text()
         self.assertIn('"run_dirt"', journal)
 

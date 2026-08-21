@@ -280,7 +280,7 @@ class TestAnswerPersists(unittest.TestCase):
         loop.scope_check = lambda task: (True, [], [])
         loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: None
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         return loop
 
@@ -476,7 +476,7 @@ class TestNoSilentBlocking(unittest.TestCase):
         loop = self.lp.Loop(FakeState(), {}, FakeAgents())
         loop.gate = lambda task: (True, "OK")
         loop.cleanup = lambda task, reason: f"swarm:{task['id']}-{reason}"
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         return loop
 

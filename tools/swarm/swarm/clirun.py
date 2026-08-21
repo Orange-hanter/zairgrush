@@ -56,7 +56,7 @@ def _print_results(results: dict[str, str]) -> None:
     прогона, вставшего по бюджету: причина остановки — не служебный шум,
     а главное в последней строке. `run` и `go` печатают одинаково.
     """
-    cli._ui("\nитог: " + json.dumps(results, ensure_ascii=False))
+    cli.ui("\nитог: " + json.dumps(results, ensure_ascii=False))
 
 
 
@@ -70,7 +70,7 @@ def cmd_go(args: argparse.Namespace) -> int:
     Останавливается только на том, что действительно требует человека:
     вопрос о замысле, исчерпанный бюджет, авария.
     """
-    cfg = cli._config(args.root)
+    cfg = cli.load_config(args.root)
     st = cli.state_mod.SwarmState(args.root)
     if not _preflight(st, getattr(args, "force", False)):
         return 2
@@ -108,15 +108,15 @@ def cmd_go(args: argparse.Namespace) -> int:
         print(f"бюджет прогона: ${budget}, потрачено ${st.total_spend()}\n")
 
     out, board_url = _board_open(args.root, cfg)
-    cli._ui(f"доска: {board_url}" if board_url else f"доска: file://{out.resolve()}")
+    cli.ui(f"доска: {board_url}" if board_url else f"доска: file://{out.resolve()}")
 
     with cli.state_mod.SwarmState(args.root) as locked:
-        agents = cli._load("agents").Agents(locked, cfg)
+        agents = cli.load_mod("agents").Agents(locked, cfg)
         loop = cli.loop_mod.Loop(locked, cfg, agents,
-                                                  ui=cli._ui)
+                                                  ui=cli.ui)
         results = loop.run(limit=args.limit)
 
-    board_mod = cli._load("board")
+    board_mod = cli.load_mod("board")
     out, board = board_mod.build(args.root)
     open_q = [q for q in board["questions"] if q["status"] == "open"]
     _print_results(results)
@@ -203,7 +203,7 @@ def _board_open(root: str | pathlib.Path,
     url: str | None = None
     try:
         if _BOARD_SERVER is None:
-            _BOARD_SERVER = cli._load("boardserve").BoardServer(
+            _BOARD_SERVER = cli.load_mod("boardserve").BoardServer(
                 root, port=cfg.get("board_port", 7433))
             _BOARD_SERVER.start()
         url = _BOARD_SERVER.url
@@ -211,7 +211,7 @@ def _board_open(root: str | pathlib.Path,
         cli.log.warning(
             "живая доска не поднялась — открою статический файл", exc_info=True)
     try:
-        board_mod = cli._load("board")
+        board_mod = cli.load_mod("board")
         out, _board = board_mod.build(root)
         if sys.platform == "darwin":
             subprocess.run(["open", url or str(out)], check=False)
@@ -241,7 +241,7 @@ def _board_close() -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    cfg = cli._config(args.root)
+    cfg = cli.load_config(args.root)
     with cli.state_mod.SwarmState(args.root) as st:
         if not _preflight(st, getattr(args, "force", False)):
             return 2
@@ -258,10 +258,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"  baseline gate: {'зелёный' if ok else 'КРАСНЫЙ'}")
             return 0
         out, board_url = _board_open(args.root, cfg)
-        cli._ui(f"доска: {board_url}" if board_url else f"доска: file://{out.resolve()}")
-        agents = cli._load("agents").Agents(st, cfg)
+        cli.ui(f"доска: {board_url}" if board_url else f"доска: file://{out.resolve()}")
+        agents = cli.load_mod("agents").Agents(st, cfg)
         loop = cli.loop_mod.Loop(st, cfg, agents,
-                                                  ui=cli._ui)
+                                                  ui=cli.ui)
         results = loop.run(limit=args.limit)
         _print_results(results)
     _board_close()

@@ -208,7 +208,7 @@ class TestRoundBudgetIsOneNumber(unittest.TestCase):
         loop.scope_check = lambda task: (True, [], [])
         loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: None
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         result = loop.run_task({"id": "e7in", "title": "t", "paths": ["a.py"],
                                 "type": "feature"})
@@ -264,7 +264,7 @@ class TestExecutorUnavailable(unittest.TestCase):
         loop.gate = lambda task: (True, "OK")
         loop.scope_check = lambda task: (True, [], [])
         loop.cleanup = lambda task, reason: None
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         return loop, statuses
 
@@ -483,7 +483,7 @@ class TestScopeCheck(unittest.TestCase):
     def _loop(self, changed):
         state = self.FakeState(changed)
         loop = lp.Loop(state, {}, None)
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "\n".join(f" M {p}" for p in changed),
                       "returncode": 0})()
         return loop
@@ -604,7 +604,7 @@ class TestConfirmDoesNotConsumeBudget(unittest.TestCase):
         loop.scope_check = lambda task: (True, [], [])
         loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: None
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         result = loop.run_task({"id": "t1", "title": "t", "paths": ["a.py"],
                                 "type": "feature"})
@@ -754,7 +754,7 @@ class TestKeepBestRollback(unittest.TestCase):
         loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: None
         loop._apply_patch = lambda diff: bool(restores.append(diff)) or True
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         result = loop.run_task({"id": "kb", "title": "t", "paths": ["a.py"],
                                 "type": "feature"})
@@ -858,7 +858,7 @@ class TestSignatureGuard(unittest.TestCase):
         loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: None
         loop.revert = lambda: reverted.append(1) or []
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         task = {"id": "f1x1", "title": "t", "type": "feature",
                "paths": ["mod.py"], "frozen_signatures": True}
@@ -915,7 +915,7 @@ class TestSignatureGuard(unittest.TestCase):
             loop.gate = lambda task: (True, "OK")
             loop.scope_check = lambda task: (True, [], [])
             loop.cleanup = lambda task, reason: None
-            loop._sh = lambda cmd, timeout=900: type(
+            loop.sh = lambda cmd, timeout=900: type(
                 "R", (), {"stdout": "", "returncode": 0})()
             result = loop.run_task({"id": "f1x1", "title": "t",
                                     "type": "feature", "paths": ["mod.py"],
@@ -952,7 +952,7 @@ class TestSignatureGuard(unittest.TestCase):
             loop.scope_check = lambda task: (True, [], [])
             loop.commit = lambda task: "abc123"
             loop.cleanup = lambda task, reason: None
-            loop._sh = lambda cmd, timeout=900: type(
+            loop.sh = lambda cmd, timeout=900: type(
                 "R", (), {"stdout": "", "returncode": 0})()
             result = loop.run_task({"id": "t1", "title": "t",
                                     "type": "feature", "paths": ["mod.py"]})
@@ -1017,7 +1017,7 @@ class TestFillTaskDisputeHint(unittest.TestCase):
         loop = lp.Loop(state, {}, FakeAgents())
         loop.gate = lambda task: (True, "OK")
         loop.cleanup = lambda task, reason: None
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         loop.run_task(task)
         return questions
@@ -1067,7 +1067,7 @@ class TestDeviationsJournaling(unittest.TestCase):
         loop.scope_check = lambda task: (True, [], [])
         loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: None
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         loop.run_task({"id": "t1", "title": "t", "type": "feature",
                        "paths": ["a.py"]})
@@ -1128,7 +1128,7 @@ class TestDeviationsJournaling(unittest.TestCase):
         loop.scope_check = lambda task: (True, [], [])
         loop.commit = lambda task: "abc123"
         loop.cleanup = lambda task, reason: None
-        loop._sh = lambda cmd, timeout=900: type(
+        loop.sh = lambda cmd, timeout=900: type(
             "R", (), {"stdout": "", "returncode": 0})()
         loop.run_task({"id": "t1", "title": "t", "type": "feature",
                        "paths": ["a.py"]})

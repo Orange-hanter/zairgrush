@@ -138,11 +138,12 @@ class TestPlannerIsReachable(RepoCase):
             self.calls.append((tag, attempt, prompt)),
             (json.loads(json.dumps(DIFF)), None))[1]
         planner.metric = lambda **k: None
-        self._orig_load = cli._load
-        cli._load = lambda name: planner if name == "planner" else self._orig_load(name)
+        self._orig_load = cli.load_mod
+        cli.load_mod = (lambda name: planner if name == "planner"
+                        else self._orig_load(name))
 
     def tearDown(self):
-        cli._load = self._orig_load
+        cli.load_mod = self._orig_load
         super().tearDown()
 
     def test_plan_command_exists(self):
@@ -470,15 +471,16 @@ class TestGoIsSelfSufficient(RepoCase):
                 budget=None, model=None, effort=None, timeout=None: (
             self.planned.append(tag), (json.loads(json.dumps(DIFF)), None))[1]
         planner.metric = lambda **k: None
-        self._orig_load = cli._load
-        cli._load = lambda name: planner if name == "planner" else self._orig_load(name)
+        self._orig_load = cli.load_mod
+        cli.load_mod = (lambda name: planner if name == "planner"
+                        else self._orig_load(name))
         self.ran = []
         self._orig_run = cli.loop_mod.Loop.run
         cli.loop_mod.Loop.run = lambda s, limit=None: (
             self.ran.append(limit) or {})
 
     def tearDown(self):
-        cli._load = self._orig_load
+        cli.load_mod = self._orig_load
         cli.loop_mod.Loop.run = self._orig_run
         super().tearDown()
 

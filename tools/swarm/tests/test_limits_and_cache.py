@@ -128,7 +128,7 @@ class TestConfigurableLimits(RepoCase):
             return type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
 
         loop = lp.Loop(self.state, config, None)
-        loop._sh = fake_sh
+        loop.sh = fake_sh
         loop.gate({"id": "t"})
         return seen["timeout"]
 

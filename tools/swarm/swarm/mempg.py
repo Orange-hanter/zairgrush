@@ -1,8 +1,3 @@
-# ruff: noqa: SLF001
-# SLF001 — долг декомпозиции memory.py: тесты патчат `memory.<имя>`,
-# поэтому подмодули обращаются к shim'у по имени (`memory.pg` и т.п.).
-# Снятие долга = публичные имена в memstore с синхронной правкой тестов.
-"""PG-производный индекс памяти (FTS, вектор, sync/reindex)."""
 
 from __future__ import annotations
 
@@ -35,7 +30,7 @@ def pg(config: dict[str, Any], sql: str,
     склеенное в текст SQL, — это инъекция, и мутационный аудит обязан
     ловить такую правку.
     """
-    if memory._state["failures"] >= memory.BREAKER:
+    if memory.breaker_state["failures"] >= memory.BREAKER:
         return False, "предохранитель открыт: PG недоступен"
     cmd = ["psql", _cfg_db(config), "--no-psqlrc", "-X", "-q",
            "-v", "ON_ERROR_STOP=1", "-At"]
@@ -47,12 +42,12 @@ def pg(config: dict[str, Any], sql: str,
         r = memory.subprocess.run(cmd, input=payload, capture_output=True,
                            text=True, timeout=memory.PG_TIMEOUT, check=False)
     except (OSError, memory.subprocess.SubprocessError) as e:
-        memory._state["failures"] += 1
+        memory.breaker_state["failures"] += 1
         return False, f"{type(e).__name__}: {e}"
     if r.returncode != 0:
-        memory._state["failures"] += 1
+        memory.breaker_state["failures"] += 1
         return False, (r.stderr or "").strip()[:300]
-    memory._state["failures"] = 0
+    memory.breaker_state["failures"] = 0
     return True, r.stdout.strip()
 
 
@@ -155,11 +150,11 @@ def reindex(config: dict[str, Any], store: memory.MemoryStore,
     records = [dict(r, repo=repo, stand=stand) for r in store.records()]
     if records and not memory.upsert(config, records):
         return (0, 0)
-    memory._backfill_embeddings(config, records)
+    memory.backfill_embeddings(config, records)
     return (1, len(records))
 
 
-def _backfill_embeddings(config: dict[str, Any],
+def backfill_embeddings(config: dict[str, Any],
                          records: list[dict[str, Any]]) -> int:
     """Досыпать вектора после пересборки. Сбой эмбеддера не событие:
     строка остаётся искомой через FTS, вектор догонит следующий
@@ -235,7 +230,7 @@ def sync(config: dict[str, Any], store: memory.MemoryStore, repo: str,
         missing = [ln.strip() for ln in out.splitlines() if ln.strip()]
         by_id = {str(r.get("id")): r for r in records}
         batch = [by_id[i] for i in missing[:embed_cap] if i in by_id]
-        added = memory._backfill_embeddings(config, batch)
+        added = memory.backfill_embeddings(config, batch)
     return (len(records), added, max(len(missing) - added, 0))
 
 
@@ -342,7 +337,7 @@ def search_vec(config: dict[str, Any], repo: str, vec: list[float],
 _TOKEN = re.compile(r"[\wа-яё]{4,}", re.IGNORECASE)
 
 
-def _local_scan(records: list[dict[str, Any]], query: str,
+def local_scan(records: list[dict[str, Any]], query: str,
                 k: int) -> list[dict[str, Any]]:
     """Фолбэк без PG: пересечение редких токенов. Не ранжирование мечты,
     но честный поиск, который работает на выключенной базе."""

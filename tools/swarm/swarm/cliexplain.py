@@ -16,7 +16,7 @@ import cli  # noqa: E402
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    vocab = cli._load("vocab")
+    vocab = cli.load_mod("vocab")
     st = cli.state_mod.SwarmState(args.root)
     data = st.load_tasks()
     tasks = data.get("tasks", [])
@@ -189,7 +189,7 @@ def _round_label(stem: Any) -> str:
 
 def _explain(task: dict[str, Any], root: str) -> None:
     """Разбор одной задачи: почему она в этом состоянии и что дальше."""
-    vocab = cli._load("vocab")
+    vocab = cli.load_mod("vocab")
     print(f"=== {task['id']}: {task.get('title', '')}")
     status = vocab.ru(vocab.STATUS_RU, task.get("status"))
     reason = task.get("reason")
@@ -303,7 +303,7 @@ def cmd_why(args: argparse.Namespace) -> int:
     Данные берутся тем же сборщиком, что и доска: два представления
     одного знания расходиться не должны.
     """
-    board_mod = cli._load("board")
+    board_mod = cli.load_mod("board")
     board = board_mod.collect(args.root)
     tasks = board["tasks"]
     if not tasks:

@@ -32,7 +32,7 @@ SCHEMA_VERSION = 1
 # Изменяемое состояние модуля (словарь — присваивание через global
 # запрещено гейтом): предохранитель PG и флаг «о недоступности уже
 # сказали» — журнал не должен получать memory_unavailable на каждый вызов.
-_state: dict[str, Any] = {"failures": 0, "unavailable_logged": False}
+breaker_state: dict[str, Any] = {"failures": 0, "unavailable_logged": False}
 
 OUTCOME_RU = {"useful": "урок", "dead_end": "тупик", "corrected": "решение"}
 
