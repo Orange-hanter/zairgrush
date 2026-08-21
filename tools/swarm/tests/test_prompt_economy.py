@@ -470,7 +470,7 @@ class TestTuningPools(unittest.TestCase):
     def _agents(self, config, seed=0):
         a = ag.Agents.__new__(ag.Agents)
         a.config = config
-        a._rng = __import__("random").Random(seed)
+        a.rng = __import__("random").Random(seed)
         a.last_tuning = {}
         return a
 
@@ -503,7 +503,7 @@ class TestTuningPools(unittest.TestCase):
         seqs = []
         for inst in first:
             inst.config = cfg
-            inst._rng = __import__("random").Random(cfg["tuning_seed"])
+            inst.rng = __import__("random").Random(cfg["tuning_seed"])
             inst.last_tuning = {}
             seqs.append([inst._draw("review_model", False) for _ in range(10)])
         self.assertEqual(seqs[0], seqs[1])

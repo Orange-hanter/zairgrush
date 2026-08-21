@@ -100,7 +100,7 @@ class TestHandoff(AgentsCase):
     def test_memory_block_is_cached_per_task(self):
         """Блок обязан быть байт-стабилен между раундами одной задачи:
         плавающий префикс переписывает промпт-кэш на каждом раунде (§8)."""
-        self.agents._memory_cache = (TASK["id"], "СТАБИЛЬНЫЙ БЛОК")
+        self.agents.memory_cache = (TASK["id"], "СТАБИЛЬНЫЙ БЛОК")
         self.assertEqual(self.agents.memory_block(TASK), "СТАБИЛЬНЫЙ БЛОК")
         self.assertEqual(self.agents.memory_block(dict(TASK, id="t2")), "",
                          "смена задачи обязана пересчитать блок")

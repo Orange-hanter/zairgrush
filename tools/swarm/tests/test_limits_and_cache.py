@@ -157,7 +157,7 @@ class TestMapCache(RepoCase):
                 files = sorted(p.name for p in pathlib.Path(inner.root).glob("*.py"))
                 return "карта: " + ", ".join(files)
 
-        self.agents._codemap = type("M", (), {"HybridIndex": Counting})
+        self.agents.codemap = type("M", (), {"HybridIndex": Counting})
 
     def test_second_call_uses_cache(self):
         first = self.agents.repo_map(dict(self.TASK))
@@ -202,7 +202,7 @@ class TestMapCache(RepoCase):
                 self.builds["n"] += 1
                 raise RuntimeError("индекс упал")
 
-        self.agents._codemap = type("M", (), {"HybridIndex": Boom})
+        self.agents.codemap = type("M", (), {"HybridIndex": Boom})
         self.assertIsNone(self.agents.repo_map(dict(self.TASK)))
         self.assertIsNone(self.agents.repo_map(dict(self.TASK)))
         self.assertEqual(self.builds["n"], 2, "неудачу закэшировали")
