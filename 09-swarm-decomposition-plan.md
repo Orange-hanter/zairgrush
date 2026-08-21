@@ -2,7 +2,7 @@
 title: "ZAIrgRush — План декомпозиции монолитов tools/swarm"
 type: plan
 status: done
-version: 0.4
+version: 0.5
 created: 2026-08-20
 updated: 2026-08-21
 related:
@@ -117,6 +117,11 @@ summary: >
 Дальнейшую резку `implement` / `_implement_fill` / `review` отложить до
 появления боли — это самый переплетённый код.
 
+**Исполнено (v0.5):** резка состоялась — `executor.py` (implement +
+chat-fill) и `reviewer.py` (review + wants_verification) вынесены,
+`agents.py` стал фасадом из делегатов (198 строк), общий интерфейс
+`AgentsLike` живёт в `agents_types.py` по образцу `loop_types.py`.
+
 ## §6. Очередность и критерии приёмки
 
 1. `loop.py` → `verdicts.py` (чистые функции, самый дешёвый шаг).
@@ -131,6 +136,17 @@ summary: >
 `swarm/loop.py`, …) и состав экспортируемых имён неизменны.
 
 ## Журнал изменений
+
+### v0.5 (2026-08-21)
+
+- Исполнена отложенная резка §5 (коммит `389fe3f`): `executor.py`
+  (implement + chat-fill E10, 230 строк) и `reviewer.py` (review +
+  wants_verification, 223 строки) вынесены из `agents.py`, который стал
+  фасадом из `__init__` и делегатов (541→198 строк). `AgentsLike`
+  переехал из promptbuilder в `agents_types.py` и расширен (driver,
+  loop_mod, helpers, failure-поля, work_diff); `_helpers` стал
+  публичным `helpers`. Долгов декомпозиции не осталось: все модули
+  `swarm/` укладываются в ~830 строк, большинство — в 600.
 
 ### v0.4 (2026-08-21)
 
