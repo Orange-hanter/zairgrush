@@ -42,16 +42,15 @@ def load_planner():
     return mod
 
 
-def main() -> int:
+def measure(stand: pathlib.Path) -> dict[str, int | None] | None:
+    """Прогон линтера по семи спорам. None — стенд недоступен (scratch)."""
+    tasks_file = stand / ".swarm" / "tasks.json"
+    if not tasks_file.exists():
+        return None
+    pl = load_planner()
     cases = [json.loads(ln) for ln in
              (HERE / "cases.jsonl").read_text(encoding="utf-8").splitlines()
              if ln.strip()]
-    tasks_file = STAND / ".swarm" / "tasks.json"
-    if not tasks_file.exists():
-        print(f"стенд {STAND} недоступен — замер пропущен "
-              f"(стенды в git не входят; путь можно передать аргументом)")
-        return 0
-    pl = load_planner()
     raw = json.loads(tasks_file.read_text(encoding="utf-8"))
     paths_by_id = {t["id"]: list(t.get("paths") or [])
                    for t in raw.get("tasks", [])}
@@ -61,18 +60,33 @@ def main() -> int:
     for case in cases:
         before = [p for p in paths_by_id.get(case["task"], [])
                   if p not in case["added"]]
-        warns = pl.boundary_warnings(STAND, {"paths": before}, protected,
+        warns = pl.boundary_warnings(stand, {"paths": before}, protected,
                                      limit=25)
         wanted = set(case["wanted"])
         folders = {str(pathlib.PurePosixPath(w).parent) + "/" for w in wanted}
-        pos = next((i + 1 for i, w in enumerate(warns)
-                    if w["file"] in wanted or w["file"] in folders), None)
-        ranks[case["qid"]] = pos
+        ranks[case["qid"]] = next(
+            (i + 1 for i, w in enumerate(warns)
+             if w["file"] in wanted or w["file"] in folders), None)
+    return ranks
+
+
+def main() -> int:
+    ranks = measure(STAND)
+    if ranks is None:
+        print(f"стенд {STAND} недоступен — замер пропущен "
+              f"(стенды в git не входят; путь можно передать аргументом)")
+        return 0
+    pl = load_planner()
+    cases = [json.loads(ln) for ln in
+             (HERE / "cases.jsonl").read_text(encoding="utf-8").splitlines()
+             if ln.strip()]
+    for case in cases:
+        pos = ranks[case["qid"]]
         was = case.get("rank_2026_08_20")
         drift = "" if pos == was else f"  (было {was})"
         print(f"{case['qid']} ({case['task']}): "
               f"{'место ' + str(pos) if pos else 'не назван'}"
-              f" из {len(warns)} улик{drift}   {case['klass']}")
+              f"  {case['klass']}{drift}")
 
     cap = pl._LIMIT
     caught = sum(1 for p in ranks.values() if p and p <= cap)
