@@ -21,6 +21,11 @@ cli = importlib.util.module_from_spec(spec)
 sys.modules["cli"] = cli
 spec.loader.exec_module(cli)
 
+# `cli` импортирует функции из clirun через `from clirun import ...`, то есть
+# копирует ссылки в свой namespace. Патчить `cli._board_open` бесполезно:
+# реальная команда `run`/`go` берёт `_board_open` из модуля clirun.
+clirun = sys.modules["clirun"]
+
 TASKS = {"goal": "тестовая цель", "tasks": [
     {"id": "aaaa", "title": "первая", "type": "feature", "status": "pending",
      "deps": [], "paths": ["src/a.py"], "acceptance": ["тесты проходят"]},
@@ -60,10 +65,13 @@ class CliCase(unittest.TestCase):
         # на машине разработчика это буквально распахнуло бы окно на
         # каждый вызов run/go в этом файле. Тесты про само поведение
         # (TestBoardAutoOpen) возвращают настоящий помощник явно.
-        self._real_board_open = cli._board_open
-        cli._board_open = (lambda root, cfg:
-                           (pathlib.Path(root) / ".swarm" / "board.html", None))
-        self.addCleanup(setattr, cli, "_board_open", self._real_board_open)
+        # Патчим реальный `_board_open` в clirun, а не re-export в cli:
+        # иначе почти каждый тест тихо поднимал HTTP-сервер доски и
+        # вызывал macOS `open`, что приводило к гонке с tearDown.
+        self._real_board_open = clirun._board_open
+        clirun._board_open = (lambda root, cfg:
+                              (pathlib.Path(root) / ".swarm" / "board.html", None))
+        self.addCleanup(setattr, clirun, "_board_open", self._real_board_open)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -723,7 +731,9 @@ class TestBoardAutoOpen(CliCase):
         super().setUp()
         # Базовый CliCase глушит автооткрытие для всех прочих тестов —
         # здесь проверяется само поведение, поэтому возвращаем помощника.
-        cli._board_open = self._real_board_open
+        # Работать надо с модулем clirun, потому что именно там cmd_run
+        # разрешает имя `_board_open`.
+        clirun._board_open = self._real_board_open
         self._orig_platform = cli.sys.platform
         self.addCleanup(setattr, cli.sys, "platform", self._orig_platform)
         # Живой сервер — модульный синглтон (см. докстринг _BOARD_SERVER):
@@ -732,9 +742,9 @@ class TestBoardAutoOpen(CliCase):
         self.addCleanup(self._stop_board_server)
 
     def _stop_board_server(self):
-        if cli._BOARD_SERVER is not None:
-            cli._BOARD_SERVER.stop()
-        cli._BOARD_SERVER = None
+        if clirun._BOARD_SERVER is not None:
+            clirun._BOARD_SERVER.stop()
+        clirun._BOARD_SERVER = None
 
     def _capture_open_calls(self):
         calls = []

@@ -139,6 +139,7 @@ def cmd_go(args: argparse.Namespace) -> int:
                 print(f"  {t['id']}  {str(t.get('title', ''))[:60]}")
             print(f"  разобрать: {_prefix(str(args.root))} "
                   f"why {stuck[0]['id']}")
+    _board_close()
     return _run_verdict(results)
 
 
@@ -221,6 +222,24 @@ def _board_open(root: str | pathlib.Path,
 
 
 
+def _board_close() -> None:
+    """Остановить живой сервер доски по окончании команды.
+
+    Поток сервера — daemon, и в продакшене он умрёт вместе с процессом.
+    Но в тестах процесс живёт дольше одной команды: неостановленный
+    сервер мог дотянуться до временного каталога уже после tearDown
+    (обработчик HTTP вызывает `board.collect`, а тот создаёт `SwarmState`
+    и, следовательно, каталог `.swarm/log`). Явная остановка убирает эту
+    гонку, не меняя поведения для пользователя: доска всё так же
+    поднимается в начале прогона и обновляется, пока идёт петля.
+    """
+    global _BOARD_SERVER  # noqa: PLW0603 — сброс синглтона, см. докстринг переменной
+    if _BOARD_SERVER is not None:
+        _BOARD_SERVER.stop()
+        _BOARD_SERVER = None
+
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = cli._config(args.root)
     with cli.state_mod.SwarmState(args.root) as st:
@@ -245,6 +264,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                                                   ui=cli._ui)
         results = loop.run(limit=args.limit)
         _print_results(results)
+    _board_close()
     return _run_verdict(results)
 
 
