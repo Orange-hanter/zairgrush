@@ -7,10 +7,9 @@ import hashlib
 import importlib.util
 import json
 import pathlib
-import random
 import sys
 from types import ModuleType
-from typing import Any, Protocol
+from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -29,22 +28,10 @@ def load_module(name: str) -> ModuleType:
     return mod
 
 
+from agents_types import AgentsLike  # noqa: E402
+
 log = load_module("obs").get_logger("promptbuilder")
 
-class AgentsLike(Protocol):
-    """Минимальный интерфейс `Agents` для сборщиков промптов.
-
-    Тот же приём, что LoopLike для gitops: promptbuilder не импортирует
-    agents (иначе цикл), поэтому нужные поля объявлены структурно.
-    """
-    state: Any
-    config: dict[str, Any]
-    codemap: ModuleType | None
-    map_cache: tuple[tuple[str, int], str] | None
-    memory_cache: tuple[str, str] | None
-    norms_cache: tuple[str, str] | None
-    rng: random.Random
-    last_tuning: dict[str, Any]
 
 
 # Ревьюер получает дифф целиком, а размер сгенерированных артефактов ничем

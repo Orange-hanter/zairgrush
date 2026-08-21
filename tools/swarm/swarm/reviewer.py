@@ -1,0 +1,223 @@
+"""Вызов ревьюера: промпт, раунды, разбор вердикта, проверка исполнением.
+Вынесено из agents.py: функции получают объект Agents первым аргументом
+(AgentsLike), класс держит делегаты — точки вызова не изменились.
+"""
+import hashlib
+import importlib.util
+import json
+import pathlib
+import sys
+from types import ModuleType
+from typing import Any
+
+HERE = pathlib.Path(__file__).resolve().parent
+SCHEMAS = HERE.parent / "schemas"
+
+_HERE = str(HERE)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import parsing as parsing_mod  # noqa: E402
+import promptbuilder  # noqa: E402
+from agents_types import AgentsLike  # noqa: E402
+
+
+def load_module(name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
+    if spec is None or spec.loader is None:
+        raise ImportError(f"не удалось загрузить модуль {name}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Имя логера оставлено "agents": журнал наблюдаемости — контракт,
+# переименование модуля не должно менять имена потоков.
+log = load_module("obs").get_logger("agents")
+
+
+def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: int,
+           attempt: int = 1,
+           verify_results: list[dict[str, Any]] | None = None,
+           confirming: bool = False) -> dict[str, Any] | None:
+    # Голый `git diff` не показывает созданные файлы: ревьюер получал
+    # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
+    # в историю. Единый источник — state.work_diff (intent-to-add).
+    diff = parsing_mod.condense_diff(agents.work_diff())
+    schema = (SCHEMAS / "verdict-v1.schema.json").read_text()
+    # Самый дорогой вызов системы шёл в обход слоя живости: голый
+    # subprocess.run с жёстким таймаутом, который не отличал «думает»
+    # от «завис», а по истечении ронял исключением всю очередь.
+    # Теперь ревьюер идёт через тот же драйвер, что и исполнитель:
+    # stream-json как признак жизни, heartbeat по тишине, жёсткий
+    # потолок стены времени — и любой исход возвращается результатом,
+    # а не исключением. Конверт (`--output-format json` целиком) лежит
+    # в финальном result-событии потока.
+    # Линза — свойство ПОДТВЕРЖДАЮЩЕГО раунда (E10, confirm_lens), тем же
+    # правилом, что confirm_model/confirm_effort в _tuning: обычный
+    # проход о ней не знает, иначе A/B по флагу меряет не то.
+    lens = str(agents.config.get("confirm_lens", "")) if confirming else ""
+    rules_part, task_part, tail_part = promptbuilder.review_prompt_parts(
+        task, gate_tail, diff,
+        want_verification=(verify_results is None
+                           and wants_verification(agents, task)),
+        verify_results=verify_results,
+        memory=promptbuilder.norms_for(agents, task), lens=lens)
+    # sha1[:12] стабильных частей — не для секретности, а как отпечаток
+    # (Feature 4): мутация «неизменного» блока меняет rules_sha ровно
+    # так же, как мутация кода меняет sha256 в condense_diff — метрика
+    # ловит расхождение между тем, что промпт ОБЯЗАН быть, и тем, чем
+    # он стал, без повторного чтения текста промпта глазами.
+    rules_sha = hashlib.sha1(rules_part.encode(),
+                             usedforsecurity=False).hexdigest()[:12]
+    task_sha = hashlib.sha1(task_part.encode(),
+                            usedforsecurity=False).hexdigest()[:12]
+    cmd = ["claude", "-p", rules_part + task_part + tail_part,
+           "--output-format", "stream-json", "--verbose",
+           "--include-partial-messages",
+           "--json-schema", schema,
+           "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
+           "--max-budget-usd", str(agents.config.get("review_budget_usd", 1.0)),
+           *promptbuilder.tuning(agents, "review", confirming)]
+    drv = agents.driver.AgentDriver(
+        cwd=str(agents.state.root),
+        silence_timeout=agents.config.get("silence_timeout", 600),
+        wall_clock_cap=agents.config.get("wall_clock_cap", 1800))
+    run = drv.start(cmd, parser=agents.driver.parse_claude)
+    result = run.collect(agents.driver.extract_result_envelope)
+    env: dict[str, Any] | None = result.report
+    # Фаза входит в имя: второй проход (после верификации) писал в тот
+    # же файл и затирал первый вердикт — на пилоте так потерялся
+    # валидный approve за $1.22, и разбираться было не по чему.
+    phase = "v" if verify_results is not None else "a"
+    stem = f"{task['id']}-i{iteration}-{phase}{attempt}"
+    # Конверт — под прежним именем (его читают доска и `swarm why`);
+    # полный поток — рядом, под именем, которое их глобы не ловят.
+    (agents.state.dir / "log" / f"{stem}-review-stream.jsonl").write_text(
+        run.raw_stream())
+    (agents.state.dir / "log" / f"{stem}-review.json").write_text(
+        json.dumps(env, ensure_ascii=False) if env is not None
+        else run.raw_stream())
+    verdict: dict[str, Any] | None = None
+    cost: float | None = None
+    terminal: str | None = None
+    if env is not None:
+        quota = agents.loop_mod.quota_error(env)
+        if quota:
+            agents.state.metric(task=task["id"], phase="review",
+                              quota_wait=True, provider_message=quota)
+            raise agents.loop_mod.QuotaExceededError(quota)
+        verdict = env.get("structured_output")
+        cost = env.get("total_cost_usd")
+        terminal = env.get("terminal_reason")
+    valid = agents.loop_mod.validate_verdict(verdict)
+    # usage — конверт Claude как есть: поле отсутствует на любом исходе
+    # без успешного result-события, и это НЕ то же самое, что нулевые
+    # токены — журнал читается как данные (§9.3), отсюда None, не 0.
+    usage: dict[str, Any] = (env or {}).get("usage") or {}
+    # Выбор руки — часть замера, а не деталь запуска: жребий, не
+    # попавший в журнал, делает прогон невоспроизводимым шумом.
+    agents.state.metric(task=task["id"], iter=iteration, phase="review",
+                      attempt=attempt, dur_s=round(result.wall_s, 1),
+                      run_reason=result.reason,
+                      cost_usd=cost, verdict=(verdict or {}).get("verdict"),
+                      findings=len((verdict or {}).get("findings", [])),
+                      valid=valid, terminal_reason=terminal,
+                      confirming=confirming, rules_sha=rules_sha,
+                      task_sha=task_sha,
+                      cache_read=usage.get("cache_read_input_tokens"),
+                      cache_write=usage.get("cache_creation_input_tokens"),
+                      tokens_in=usage.get("input_tokens"),
+                      tokens_out=usage.get("output_tokens"),
+                      **agents.last_tuning)
+    if not valid and terminal == "budget_exhausted":
+        # Повтор обречён: тот же промпт кончится на том же месте.
+        # На пилоте вторая попытка стоила ещё $3.23 и дала то же
+        # самое. Детерминированный отказ ретраить нельзя — эскалируем.
+        agents.last_review_failure = "budget_exhausted"
+        agents.state.log("review_budget_exhausted", task=task["id"],
+                       round=iteration, attempt=attempt, cost_usd=cost,
+                       limit=agents.config.get("review_budget_usd", 1.0))
+        return None
+    if not valid and attempt == 1:
+        return review(agents, task, gate_tail, iteration, attempt=2,
+                           verify_results=verify_results,
+                           confirming=confirming)
+    if not valid or verdict is None:
+        # Диагноз — причина, а не факт: «убит по тишине» и «ответ не
+        # прошёл схему» лечатся по-разному, и оператору отдаётся то,
+        # что драйвер знает о прогоне (silence, wall_clock, crash,
+        # no_report), а не общий ярлык.
+        agents.last_review_failure = (result.reason
+                                    if result.reason != "done" else "invalid")
+        return None
+    agents.last_review_failure = None
+    # Второй вызов с результатами — ровно один раунд на итерацию
+    # (анти-петля): иначе ревьюер может запрашивать проверки бесконечно.
+    requests = verdict.get("verification_requests")
+    # Исполняем ТОЛЬКО когда механизм включён для этой задачи: ревьюер
+    # может прислать запросы и без спроса, а каждый такой раунд удваивает
+    # стоимость ревью (ADR-005: +51 %). На пилоте это случилось на первой
+    # же задаче — верификация запустилась при verification="milestone" и
+    # задаче без milestone_close.
+    if (requests and verify_results is None
+            and wants_verification(agents, task)):
+        vf = load_module("verify")
+        try:
+            before: set[str] | None = set(
+                vf.worktree_dirty(agents.state.root))
+        except OSError:
+            log.exception("состояние дерева до проверок не определено")
+            before = None
+        results = vf.run_requests(requests, agents.state.root)
+        # Сравниваем ДО и ПОСЛЕ: список изменённых файлов сам по себе
+        # всегда содержит работу исполнителя и ничего не говорит о том,
+        # напортили ли проверки.
+        # `None` здесь означает «не смогли посмотреть», и это НЕ то же
+        # самое, что «ничего не тронуто»: пустой список сказал бы
+        # ревьюеру и журналу неправду о свойстве §5.1.
+        touched: list[str] | None = None
+        if before is not None:
+            try:
+                touched = sorted(
+                    set(vf.worktree_dirty(agents.state.root)) - before)
+            except OSError:
+                log.exception("состояние дерева после проверок "
+                              "не определено")
+        agents.state.log("verification", task=task["id"], round=iteration,
+                       requested=len(requests), executed=len(results),
+                       touched_by_checks=touched)
+        agents.state.metric(task=task["id"], iter=iteration,
+                          phase="verification", requested=len(requests),
+                          rejected=sum(1 for r in results
+                                       if r.get("status") == "rejected"))
+        confirmed = review(agents, task, gate_tail, iteration,
+                                verify_results=vf.format_results(results),
+                                confirming=confirming)
+        # Верификация — УЛУЧШЕНИЕ вердикта, а не условие его силы. Если
+        # второй проход не удался (бюджет, квота, невалидный ответ),
+        # возвращаем первый — он был полноценным и за него уплачено.
+        # Иначе задача с валидным approve уходит в blocked из-за сбоя
+        # необязательного шага (поймано на первой задаче пилота).
+        if confirmed is None:
+            agents.state.log("verification_inconclusive", task=task["id"],
+                           round=iteration,
+                           kept="первый вердикт: повторный проход не удался")
+            return verdict
+        return confirmed
+    return verdict
+
+
+def wants_verification(agents: AgentsLike, task: dict[str, Any]) -> bool:
+    """ADR-005: механизм выборочный, а не постоянный.
+
+    Платить +51 % за подтверждение того, что и так подтверждается,
+    смысла нет. Включаем там, где цена ошибки выше цены проверки.
+    """
+    mode = agents.config.get("verification", "milestone")
+    if mode in (True, "always"):
+        return True
+    if mode in (False, "never", None):
+        return False
+    return bool(task.get("milestone_close") or task.get("verify"))

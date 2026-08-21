@@ -393,7 +393,7 @@ class ChatFillCase(AgentsCase):
                              "max_tokens": max_tokens, "model": model})
                 return reply
 
-        self.agents._helpers = Fake()
+        self.agents.helpers = Fake()
         return calls
 
 
@@ -522,7 +522,7 @@ class TestChatFillFailures(ChatFillCase):
             def ollama_chat(self, *a, **k):
                 raise RuntimeError("сеть моргнула")
 
-        self.agents._helpers = Boom()
+        self.agents.helpers = Boom()
         self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
         self.assertEqual(self.agents.last_implement_failure["reason"],
                          "fill_no_reply")
