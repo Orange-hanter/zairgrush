@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.12
+version: 0.13
 created: 2026-08-06
 updated: 2026-08-22
 related:
@@ -341,11 +341,41 @@ summary: >
   the executor's own price is only half the comparison — and on arm B it
   is visible at all for the first time (the kimi stream carries no usage
   and no cost).
-- **Status: not started.** The prerequisite landed 2026-08-22 (engine
-  choice; live smoke of arm B: one task, two rounds, $0.49 total, of
-  which the executor is $0.149 — a number the loop could not previously
-  know). Arm A is replayable from E8's frozen records; a fresh arm A
-  needs kimi.com quota, which ADR-010 is separately trying to stretch.
+- **Round 1 measured 2026-08-22, both arms the same day.** E8's stand
+  survives on disk, so both arms ran the frozen BENCH-1 set from its
+  red-state commit (`eed16f7`), configs byte-identical except two lines,
+  reviewer held constant (sonnet/medium, no pool), `confirmations = 1`,
+  memory off. E8's own numbers are used as a PRIOR, not as arm A: they
+  were produced by a different loop version and a different reviewer.
+- **Result: the two arms are indistinguishable on this bench.** 6/6
+  closed on both, every task on the first iteration, zero scope
+  violations, zero red gates, **zero findings on either arm**.
+  Implementation 148 s (A) vs 142 s (B) — noise. Review of the resulting
+  diffs $0.535 (A) vs $0.591 (B): claude's diffs cost 10 % more to
+  review, the same *author moves the reviewer's bill* effect E8 saw in
+  the other direction. Executor price $0.676 on B and **unknown** on A —
+  not zero, unmeasurable, paid in quota — so total cost is not
+  comparable here at all.
+- **Conclusion, and it is the one ADR-002 predicted:** trivial
+  greenfield tasks cannot discriminate executors, because both converge
+  in one round and the reviewer finds nothing to say. **E13 stays open
+  and needs a brownfield set** (BENCH-2-class: existing code, larger
+  diffs, 2–3 plausible rounds). What round 1 did settle: switching the
+  engine is operationally neutral — same outcomes, same speed, no new
+  failure mode attributable to the engine.
+- **The bench found a bigger lever than the one it measured.** 5 of 17
+  reviewer calls (29 %) failed to return a valid verdict, burning $0.67
+  — 37 % of all review spend and more than the entire distance between
+  the arms. Two modes, both on sonnet/medium: a *placeholder approve*
+  (`{"analysis": "Test", "verdict": "approve", …}`, caught by the
+  substance guard `MIN_ANALYSIS`/`MIN_SUMMARY` — its first live catch),
+  and *structured-output retry exhausted* (the model packs the whole
+  verdict into `analysis` as pseudo-XML and then rewrites the prose
+  instead of the shape). Not deterministic: the same reviewer approved
+  the same diff on a third call. The loop behaved correctly — one silent
+  retry rescued four of five, the fifth was blocked with an inbox
+  question rather than guessed at. This is live in the pilot's own
+  confirming pool, and it is the next thing worth fixing.
 
 ### E11. Independent Tester role
 
@@ -462,6 +492,14 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.13 (2026-08-22)
+
+- E13 round 1 measured: both arms on the frozen BENCH-1 set the same day.
+  Engines indistinguishable on greenfield (6/6, one round, zero findings
+  each); experiment stays open pending a brownfield set. Side result,
+  larger than the one sought: 29 % of reviewer calls returned no valid
+  verdict and burned 37 % of review spend.
 
 ### v0.12 (2026-08-22)
 
