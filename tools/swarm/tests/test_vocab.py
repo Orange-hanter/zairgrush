@@ -165,8 +165,8 @@ class TestEveryEmittedKindIsNamed(unittest.TestCase):
         "step_intent", "task_crashed", "verification",
         "verification_inconclusive", "memory_written", "memory_injected",
         "memory_reflect", "memory_unavailable", "memory_forgotten",
-        "memory_synced", "quota_resume", "round_futile", "executor_denied",
-        "futile_exhausted",
+        "memory_synced", "quota_resume", "round_futile",
+        "executor_denied", "verdict_salvaged", "futile_exhausted",
     ]
 
     def test_every_emitted_kind_has_a_russian_name(self):

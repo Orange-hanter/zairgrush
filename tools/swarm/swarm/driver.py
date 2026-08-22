@@ -147,6 +147,32 @@ def extract_result_envelope(stream: str) -> dict[str, Any] | None:
     return None
 
 
+def last_structured_output(stream: str) -> dict[str, Any] | None:
+    """Аргумент ПОСЛЕДНЕГО вызова инструмента StructuredOutput в потоке.
+
+    Нужен там, где конверт пуст, а работа сделана: провайдер отклонил
+    форму вызова и исчерпал свои ретраи, но САМ вызов в потоке остался —
+    вместе с суждением, за которое уже заплачено. Берём последний:
+    предыдущие — отвергнутые попытки той же мысли.
+    """
+    found: dict[str, Any] | None = None
+    for line in stream.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("type") != "assistant":
+            continue
+        message = ev.get("message")
+        blocks = message.get("content") if isinstance(message, dict) else None
+        for blk in blocks or ():
+            if (isinstance(blk, dict) and blk.get("type") == "tool_use"
+                    and blk.get("name") == "StructuredOutput"
+                    and isinstance(blk.get("input"), dict)):
+                found = blk["input"]
+    return found
+
+
 class Run:
     """Один запуск агента. Поток-читатель складывает события в очередь,
     основной поток ждёт их с таймаутом — так тишина отличима от активности."""

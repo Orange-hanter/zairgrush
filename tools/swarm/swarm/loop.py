@@ -72,6 +72,7 @@ from verdicts import (  # noqa: E402,F401
     quota_error,
     quota_exception,
     validate_verdict,
+    verdict_problem,
 )
 
 log = obs.get_logger("loop")

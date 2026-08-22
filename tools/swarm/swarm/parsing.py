@@ -54,6 +54,59 @@ def extract_fenced_code(text: str) -> str | None:
     return fences[-1]
 
 
+# Замеренный на E13 отказ формы: модель кладёт ВЕСЬ вердикт в одно поле
+# `analysis`, размечая остальные поля тегами. Провайдер такой вызов
+# отклоняет, модель на каждом ретрае переписывает ПРОЗУ (`width<1` ->
+# `width&lt;1` -> «width меньше 1»), а не форму, и ретраи кончаются.
+# Тегов в промпте ревьюера нет — форму модель придумывает сама.
+TAGGED_FIELD_RE = re.compile(
+    r"<(verdict|summary|findings|out_of_scope_notes|verification_requests)>"
+    r"(.*?)</\1>", re.DOTALL)
+_JSON_FIELDS = ("findings", "out_of_scope_notes", "verification_requests")
+
+
+def repair_verdict(payload: Any) -> dict[str, Any] | None:
+    """Вердикт, сложенный моделью в одно поле, — обратно по полям.
+
+    Это тот же принцип, по которому `report_in` терпит преамбулу перед
+    отчётом исполнителя: суждение состоялось и оплачено, потеряна только
+    ФОРМА, и терять из-за неё готовую работу дороже, чем разобрать.
+    Строгость на выходе не ослаблена — восстановленный вердикт проходит
+    ту же `validate_verdict`, что и любой другой, и «почти разобралось»
+    здесь означает отказ: половина вердикта хуже, чем его отсутствие.
+
+    Возвращает None, если чинить нечего или разбор неполон.
+    """
+    if not isinstance(payload, dict):
+        return None
+    analysis = payload.get("analysis")
+    if not isinstance(analysis, str) or "</analysis>" not in analysis:
+        return None
+    head, _, tail = analysis.partition("</analysis>")
+    out: dict[str, Any] = dict(payload)
+    out["analysis"] = head.strip()
+    for name, raw in TAGGED_FIELD_RE.findall(tail):
+        text = raw.strip()
+        if name in _JSON_FIELDS:
+            try:
+                value = json.loads(text)
+            except ValueError:
+                # Список, который не разобрался, — не пустой список.
+                # Подставить [] значило бы СОЧИНИТЬ отсутствие находок,
+                # то есть превратить request_changes в approve.
+                return None
+            if not isinstance(value, list):
+                return None
+            out[name] = value
+        else:
+            out[name] = text
+    # Вердикт и резюме — минимум, ради которого стоило чинить: без них
+    # у нас нет ни решения, ни строки для человека.
+    if not out.get("verdict") or not out.get("summary"):
+        return None
+    return out
+
+
 def condense_diff(diff: str, limit: int = DIFF_FILE_LIMIT,
                   excerpt: int = DIFF_EXCERPT) -> str:
     """Свернуть файлы диффа длиннее `limit` строк до сводки.

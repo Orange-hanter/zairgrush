@@ -154,22 +154,44 @@ def quota_error(envelope: Any) -> str | None:
 
 
 def validate_verdict(v: Any) -> bool:
-    """Форма И смысл (§4.2): схема не ловит заглушку вроде analysis='test'."""
+    """Форма И смысл (§4.2): схема не ловит заглушку вроде analysis='test'.
+
+    Один список правил на двоих с `verdict_problem`: пока проверка и её
+    объяснение были разными кусками кода, они могли разойтись — и тогда
+    повтору называлась бы причина, по которой его никто не отвергал.
+    """
+    return verdict_problem(v) is None
+
+
+def verdict_problem(v: Any) -> str | None:
+    """Чем именно вердикт не прошёл — словами, для ПОВТОРНОГО запроса.
+
+    `validate_verdict` отвечает «нет», и повтор уходил с тем же самым
+    промптом: модель второй раз угадывала, что от неё хотели. На E13
+    два вызова из пяти были отвергнуты за заглушку (`analysis: "Test"`),
+    и назвать причину дешевле, чем оплатить ещё одну догадку.
+    """
     if not isinstance(v, dict):
-        return False
+        return "ответ не разобран как объект вердикта"
     if v.get("verdict") not in ("approve", "request_changes", "blocked"):
-        return False
+        return (f"поле verdict={v.get('verdict')!r} — не одно из "
+                f"approve|request_changes|blocked")
     for f in v.get("findings", []):
-        if f.get("severity") not in SEVERITIES or f.get("category") not in CATEGORIES:
-            return False
+        if f.get("severity") not in SEVERITIES:
+            return f"severity={f.get('severity')!r} вне закрытого списка"
+        if f.get("category") not in CATEGORIES:
+            return f"category={f.get('category')!r} вне закрытого списка"
     if v["verdict"] == "approve" and any(
             f["severity"] in ("blocker", "major") for f in v.get("findings", [])):
-        return False
+        return "approve при находке severity=blocker/major"
     if v["verdict"] in ("request_changes", "blocked") and not v.get("findings"):
-        return False
+        return f"{v['verdict']} без единой находки"
     if len((v.get("analysis") or "").strip()) < MIN_ANALYSIS:
-        return False
-    return len((v.get("summary") or "").strip()) >= MIN_SUMMARY
+        return (f"analysis короче {MIN_ANALYSIS} символов — это заглушка, "
+                f"а не разбор")
+    if len((v.get("summary") or "").strip()) < MIN_SUMMARY:
+        return f"summary короче {MIN_SUMMARY} символов"
+    return None
 
 
 def apply_policies(findings: list[dict[str, Any]],

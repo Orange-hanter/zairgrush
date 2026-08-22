@@ -215,7 +215,7 @@ def review_prompt_parts(task: dict[str, Any], gate_tail: str, diff: str,
                          want_verification: bool = False,
                          verify_results: list[dict[str, Any]] | None = None,
                          memory: str = "", lens: str = "",
-                         ) -> tuple[str, str, str]:
+                         retry_note: str = "") -> tuple[str, str, str]:
     """Промпт ревьюера, разрезанный по границам кэша (§8).
 
     Три части — тот же порядок «неизменное → постоянное в задаче →
@@ -302,6 +302,19 @@ retelling of the diff; `issue` is what is wrong and why, with no preamble.
 Acceptance:
 {acc}
 {decisions}{norms}"""
+    # Повтор после отказа — В САМОМ КОНЦЕ, за диффом: он свойство ОДНОГО
+    # вызова, и в стабильном префиксе обнулял бы кэш всей задачи. Пустая
+    # строка (первый вызов) не меняет ни байта — это закреплено тестом,
+    # иначе замеры на кэше поехали бы от одной необязательной строки.
+    retry_block = ""
+    if retry_note:
+        retry_block = (
+            "\n## Повтор: предыдущий ответ не принят\n"
+            f"Причина: {retry_note}\n"
+            "Заполни поля структурного вывода ПО ОТДЕЛЬНОСТИ (analysis, "
+            "verdict, summary, findings) — не вкладывай их друг в друга "
+            "и не размечай текст тегами. Суди тот же дифф заново, а не "
+            "переписывай прошлый ответ.\n")
     tail = f"""
 ## Diff
 ```diff
@@ -310,7 +323,7 @@ Acceptance:
 
 ## Вывод тестов (запускал оркестратор)
 {gate_tail}
-{verify_block}"""
+{verify_block}{retry_block}"""
     return rules, task_mid, tail
 
 

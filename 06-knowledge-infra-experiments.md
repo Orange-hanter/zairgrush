@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.14
+version: 0.15
 created: 2026-08-06
 updated: 2026-08-22
 related:
@@ -382,7 +382,17 @@ summary: >
   the same diff on a third call. The loop behaved correctly — one silent
   retry rescued four of five, the fifth was blocked with an inbox
   question rather than guessed at. This is live in the pilot's own
-  confirming pool, and it is the next thing worth fixing.
+  confirming pool.
+- **Fixed the same day** (05-doc §4.2.1): the verdict is now salvaged
+  from the stream when the envelope is empty, the retry carries the
+  reason the first answer was refused, and the stream of a failed review
+  is no longer overwritten when the task is requeued. Measured on the
+  real streams: 2 of the 4 surviving failures come back, the one task
+  block disappears; the two placeholder cases stay refused, because
+  there is nothing there to rescue. Frozen at
+  `experiments/goldset/verdicts/`, in the gate. A live smoke the same
+  evening reproduced the placeholder a third time — it is routine
+  behaviour of this model at this effort, not a fluke.
 
 ### E11. Independent Tester role
 
@@ -499,6 +509,11 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.15 (2026-08-22)
+
+- E13's side result acted on: the reviewer contract failure is fixed and
+  frozen as a third derived bench (`goldset/verdicts/`, in the gate).
 
 ### v0.14 (2026-08-22)
 

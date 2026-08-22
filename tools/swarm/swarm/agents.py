@@ -132,11 +132,11 @@ class Agents:
                              want_verification: bool = False,
                              verify_results: list[dict[str, Any]] | None = None,
                              memory: str = "", lens: str = "",
-                             ) -> tuple[str, str, str]:
+                             retry_note: str = "") -> tuple[str, str, str]:
         """Делегат к `promptbuilder.review_prompt_parts`."""
         return promptbuilder.review_prompt_parts(
             task, gate_tail, diff, want_verification, verify_results,
-            memory, lens)
+            memory, lens, retry_note)
 
     def review_prompt(self, task: dict[str, Any], gate_tail: str, diff: str,
                       want_verification: bool = False,

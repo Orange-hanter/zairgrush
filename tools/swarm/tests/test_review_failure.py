@@ -41,6 +41,7 @@ def _load(name):
 st = _load("state")
 lp = _load("loop")
 ag = _load("agents")
+pb = _load("promptbuilder")
 
 
 class FakeClaudeProc:
@@ -433,6 +434,160 @@ class TestReviewRunFailures(RepoCase):
             "поток ревьюера не сохранён")
         self.assertEqual(len(list(log_dir.glob("*review.json"))), 1,
                          "конверт под прежним именем не сохранён")
+
+
+class StreamProc:
+    """Двойник ревьюера, отдающий ПОЛНЫЙ поток, а не только конверт.
+
+    Спасение вердикта живёт именно в потоке: конверт в этом отказе пуст,
+    а вызов инструмента со всем суждением в нём остался.
+    """
+
+    def __init__(self, lines):
+        self.stdout = io.StringIO("".join(
+            json.dumps(x, ensure_ascii=False) + "\n" for x in lines))
+        self.stderr = io.StringIO("")
+        self.returncode = 0
+
+    def poll(self):
+        return 0
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        pass
+
+
+def _tool_call(payload):
+    return {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "StructuredOutput", "input": payload}]}}
+
+
+# Настоящая форма отказа, снятая на E13: весь вердикт в одном поле,
+# остальные поля размечены тегами внутри него.
+CRAMMED = {"analysis": (
+    "Разобрал дифф целиком: реализация соответствует спецификации, "
+    "замечаний по существу не нашлось.</analysis>\n"
+    "<verdict>approve</verdict>\n"
+    "<summary>Работа соответствует спецификации, замечаний нет.</summary>\n"
+    "<findings>[]</findings>\n")}
+PLACEHOLDER = {"analysis": "Test", "verdict": "approve", "summary": "Test",
+               "findings": []}
+
+
+class TestVerdictSalvagedFromStream(RepoCase):
+    """E13: 3 вызова ревьюера из 17 отдали пустой конверт при готовом
+    суждении в потоке. Выбросить его — заплатить дважды и заблокировать
+    задачу за чужую ошибку формы."""
+
+    TASK = {"id": "g1nt", "title": "t", "spec": "s", "acceptance": ["ок"],
+            "paths": ["mod.py"], "type": "feature"}
+
+    def _patch(self, streams):
+        self.prompts = []
+        orig = subprocess.Popen
+
+        def fake(argv, **kw):
+            if not (argv and argv[0] == "claude"):
+                return orig(argv, **kw)
+            self.prompts.append(argv[argv.index("-p") + 1])
+            lines = streams[min(len(self.prompts), len(streams)) - 1]
+            return StreamProc(lines)
+
+        subprocess.Popen = fake
+        self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
+        return ag.Agents(self.state, {})
+
+    def test_crammed_verdict_is_recovered(self):
+        agents = self._patch([[_tool_call(CRAMMED),
+                               {"type": "result", "structured_output": None,
+                                "total_cost_usd": 0.12,
+                                "terminal_reason":
+                                    "structured_output_retry_exhausted"}]])
+        verdict = agents.review(dict(self.TASK), "OK", 1)
+        self.assertIsNotNone(verdict, "готовое суждение выброшено")
+        self.assertEqual(verdict["verdict"], "approve")
+        self.assertEqual(len(self.prompts), 1,
+                         "спасённый вердикт не нуждается в повторе")
+
+    def test_salvage_is_visible_in_the_journal(self):
+        """Вердикт, добытый в обход штатного канала, обязан быть отличим
+        от пришедшего конвертом — иначе поверхности покажут обычное ревью
+        там, где сработало спасение."""
+        agents = self._patch([[_tool_call(CRAMMED),
+                               {"type": "result", "structured_output": None}]])
+        agents.review(dict(self.TASK), "OK", 1)
+        kinds = [json.loads(line)["kind"]
+                 for line in self.state.journal_path.read_text().splitlines()]
+        self.assertIn("verdict_salvaged", kinds)
+        self.assertIn('"salvaged": true',
+                      self.state.metrics_path.read_text())
+
+    def test_nothing_to_salvage_stays_a_failure(self):
+        agents = self._patch([[{"type": "result", "structured_output": None}]])
+        self.assertIsNone(agents.review(dict(self.TASK), "OK", 1))
+
+    def test_placeholder_is_not_rescued_by_salvage(self):
+        """`analysis: "Test"` — не форма, а отсутствие разбора: спасение
+        не имеет права выдать заглушку за суждение."""
+        agents = self._patch([
+            [_tool_call(PLACEHOLDER),
+             {"type": "result", "structured_output": PLACEHOLDER}],
+            [{"type": "result", "structured_output": VALID}],
+        ])
+        verdict = agents.review(dict(self.TASK), "OK", 1)
+        self.assertEqual(verdict["analysis"], VALID["analysis"],
+                         "заглушка обязана уйти в повтор, а не в вердикт")
+
+    def test_retry_is_told_why_the_first_answer_was_refused(self):
+        """Прежде повтор уходил с байт-в-байт прежним промптом, и модель
+        второй раз угадывала, чего от неё хотят."""
+        agents = self._patch([
+            [{"type": "result", "structured_output": PLACEHOLDER}],
+            [{"type": "result", "structured_output": VALID}],
+        ])
+        agents.review(dict(self.TASK), "OK", 1)
+        self.assertEqual(len(self.prompts), 2)
+        self.assertNotIn("Повтор", self.prompts[0],
+                         "первый вызов обязан остаться прежним побайтово")
+        self.assertIn("Повтор", self.prompts[1])
+        self.assertIn("analysis короче", self.prompts[1],
+                      "повтор обязан назвать ту же причину, что и отказ")
+
+    def test_evidence_of_the_first_run_is_not_overwritten(self):
+        """На E13 повтор задачи стёр поток единственного отказа, который
+        и надо было разбирать: `swarm retry` начинает нумерацию раундов
+        заново и берёт то же имя файла."""
+        agents = self._patch([[{"type": "result",
+                                "structured_output": VALID}]])
+        agents.review(dict(self.TASK), "OK", 1)
+        agents.review(dict(self.TASK), "OK", 1)
+        streams = sorted(p.name for p in
+                         (self.state.dir / "log").glob("*review-stream*.jsonl"))
+        self.assertEqual(len(streams), 2, f"улика затёрта: {streams}")
+
+
+class TestRetryNoteStaysOutOfTheCachedPrefix(unittest.TestCase):
+    """Причина отказа — свойство ОДНОГО вызова. В стабильном префиксе она
+    обнуляла бы кэш промпта на всю задачу (§8: кэш совпадает по префиксу).
+    """
+
+    TASK = {"id": "t1", "title": "t", "spec": "s", "acceptance": ["ок"]}
+
+    def test_empty_note_changes_nothing(self):
+        base = pb.review_prompt_parts(self.TASK, "OK", "diff")
+        same = pb.review_prompt_parts(self.TASK, "OK", "diff", retry_note="")
+        self.assertEqual(base, same)
+
+    def test_note_lands_only_in_the_tail(self):
+        rules, task_mid, tail = pb.review_prompt_parts(
+            self.TASK, "OK", "diff", retry_note="analysis короче 40 символов")
+        base_rules, base_task, _ = pb.review_prompt_parts(
+            self.TASK, "OK", "diff")
+        self.assertEqual(rules, base_rules)
+        self.assertEqual(task_mid, base_task)
+        self.assertIn("analysis короче 40 символов", tail)
 
 
 class TestReviewFailureEscalates(RepoCase):

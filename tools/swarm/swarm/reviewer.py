@@ -40,7 +40,8 @@ log = load_module("obs").get_logger("agents")
 def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: int,
            attempt: int = 1,
            verify_results: list[dict[str, Any]] | None = None,
-           confirming: bool = False) -> dict[str, Any] | None:
+           confirming: bool = False,
+           retry_note: str = "") -> dict[str, Any] | None:
     # Голый `git diff` не показывает созданные файлы: ревьюер получал
     # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
     # в историю. Единый источник — state.work_diff (intent-to-add).
@@ -63,7 +64,8 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
         want_verification=(verify_results is None
                            and wants_verification(agents, task)),
         verify_results=verify_results,
-        memory=promptbuilder.norms_for(agents, task), lens=lens)
+        memory=promptbuilder.norms_for(agents, task), lens=lens,
+        retry_note=retry_note)
     # sha1[:12] стабильных частей — не для секретности, а как отпечаток
     # (Feature 4): мутация «неизменного» блока меняет rules_sha ровно
     # так же, как мутация кода меняет sha256 в condense_diff — метрика
@@ -94,8 +96,14 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     stem = f"{task['id']}-i{iteration}-{phase}{attempt}"
     # Конверт — под прежним именем (его читают доска и `swarm why`);
     # полный поток — рядом, под именем, которое их глобы не ловят.
-    (agents.state.dir / "log" / f"{stem}-review-stream.jsonl").write_text(
-        run.raw_stream())
+    # Поток — УЛИКА, и она не имеет права затираться. Задача, возвращённая
+    # в очередь (`swarm retry`), начинает нумерацию раундов заново и берёт
+    # тот же stem: на E13 повтор стёр поток единственного отказа, который
+    # и надо было разбирать. Конверт остаётся под прежним именем (его
+    # читают доска и `swarm why`), а поток уходит в свободное имя рядом —
+    # глоб `*-review-stream.jsonl` ловит их все.
+    free_path(agents.state.dir / "log",
+              f"{stem}-review-stream", ".jsonl").write_text(run.raw_stream())
     (agents.state.dir / "log" / f"{stem}-review.json").write_text(
         json.dumps(env, ensure_ascii=False) if env is not None
         else run.raw_stream())
@@ -111,6 +119,10 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
         verdict = env.get("structured_output")
         cost = env.get("total_cost_usd")
         terminal = env.get("terminal_reason")
+    salvaged = False
+    if not isinstance(verdict, dict):
+        verdict = salvage(agents, task, iteration, run.raw_stream())
+        salvaged = verdict is not None
     valid = agents.loop_mod.validate_verdict(verdict)
     # usage — конверт Claude как есть: поле отсутствует на любом исходе
     # без успешного result-события, и это НЕ то же самое, что нулевые
@@ -124,6 +136,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                       cost_usd=cost, verdict=(verdict or {}).get("verdict"),
                       findings=len((verdict or {}).get("findings", [])),
                       valid=valid, terminal_reason=terminal,
+                      salvaged=salvaged or None,
                       confirming=confirming, rules_sha=rules_sha,
                       task_sha=task_sha,
                       cache_read=usage.get("cache_read_input_tokens"),
@@ -141,9 +154,16 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                        limit=agents.config.get("review_budget_usd", 1.0))
         return None
     if not valid and attempt == 1:
+        # Повтор с ТОЙ ЖЕ причиной, что назвал отказ: прежде он уходил
+        # с байт-в-байт прежним промптом, и модель второй раз угадывала,
+        # чего от неё хотят. На E13 два отказа из пяти были заглушкой
+        # (`analysis: "Test"`), а три — вердиктом, сложенным в одно поле.
+        problem = agents.loop_mod.verdict_problem(verdict) if verdict is not None \
+            else "структурный вывод не заполнен: полей вердикта нет вовсе"
         return review(agents, task, gate_tail, iteration, attempt=2,
                            verify_results=verify_results,
-                           confirming=confirming)
+                           confirming=confirming,
+                           retry_note=str(problem))
     if not valid or verdict is None:
         # Диагноз — причина, а не факт: «убит по тишине» и «ответ не
         # прошёл схему» лечатся по-разному, и оператору отдаётся то,
@@ -206,6 +226,50 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                            kept="первый вердикт: повторный проход не удался")
             return verdict
         return confirmed
+    return verdict
+
+
+def free_path(directory: pathlib.Path, stem: str, suffix: str) -> pathlib.Path:
+    """Свободное имя рядом: `stem.suffix`, затем `stem-2.suffix` и далее.
+
+    Улику не затирают. Второй прогон той же задачи после `swarm retry`
+    берёт тот же stem, и без этого поток первого — единственная запись
+    того, что там произошло, — исчезает вместе с разбором.
+    """
+    candidate = directory / f"{stem}{suffix}"
+    n = 1
+    while candidate.exists():
+        n += 1
+        candidate = directory / f"{stem}-{n}{suffix}"
+    return candidate
+
+
+def salvage(agents: AgentsLike, task: dict[str, Any], iteration: int,
+            stream: str) -> dict[str, Any] | None:
+    """Вердикт из потока, когда конверт пуст: работа сделана и оплачена.
+
+    Замеренный на E13 отказ (3 вызова из 17): модель кладёт весь вердикт
+    в поле `analysis`, размечая остальные поля тегами; провайдер такой
+    вызов отклоняет и исчерпывает свои ретраи, конверт приходит пустым —
+    а суждение лежит в потоке целиком. Выбрасывать его значит платить
+    дважды и блокировать задачу за чужую ошибку формы.
+
+    Восстановленное НЕ получает поблажек: `validate_verdict` дальше по
+    коду проверяет его наравне со всеми, и негодное будет отвергнуто
+    ровно так же. Спасение видно в журнале и в метрике — вердикт,
+    добытый из потока, обязан быть отличим от пришедшего конвертом.
+    """
+    payload = agents.driver.last_structured_output(stream)
+    if payload is None:
+        return None
+    fixed = parsing_mod.repair_verdict(payload)
+    verdict = fixed if fixed is not None else payload
+    if not isinstance(verdict, dict) or not verdict.get("verdict"):
+        return None
+    agents.state.log("verdict_salvaged", task=task["id"], round=iteration,
+                   repaired=fixed is not None,
+                   verdict=verdict.get("verdict"),
+                   findings=len(verdict.get("findings") or []))
     return verdict
 
 

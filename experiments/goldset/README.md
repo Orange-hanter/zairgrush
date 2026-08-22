@@ -52,7 +52,7 @@ orchestrator's rounds-exhausted diagnosis), `integrity_alarm`,
 
 ## Derived benches
 
-Two sub-corpora turn labels into regressions. Both are frozen the same
+Three sub-corpora turn labels into regressions. Both are frozen the same
 way the labels are, and both exist because a claim nobody re-runs is a
 memory, not a measurement.
 
@@ -64,6 +64,18 @@ test_diagnosis_bench.py` runs the same cases inside the gate and fails
 loudly if the case file disappears. Current score 6/6
 (`executor_environment=4, reviewer_disagreement=1, scope_guard=1`);
 the pre-2026-08-20 diagnoser scores 2/6 on it.
+
+`verdicts/` — eight frozen payloads of reviewer answers that failed
+their own contract, four of them **real** (E13, 2026-08-22, where 5 of
+17 reviewer calls returned no valid verdict and burned 37 % of review
+spend) and four synthetic negatives. Two failure shapes: a placeholder
+(`analysis: "Test"` with `verdict: approve`), which must stay refused,
+and a verdict crammed into the `analysis` field with pseudo-XML tags,
+which must be recovered. The bench is deliberately two-sided — a
+one-sided one ("N rescued") would push the code toward inventing
+verdicts. Needs no stand, so it runs in the gate
+(`tools/swarm/tests/test_verdict_salvage.py`); current score 8/8, and on
+the real streams the repair returns 2 of the 4 losses.
 
 `boundaries/` — the seven boundary grants (six executor disputes plus
 one intent question, q005 q011 q012 q014 q016 q017 q020) replayed
