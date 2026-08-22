@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.13
+version: 0.14
 created: 2026-08-06
 updated: 2026-08-22
 related:
@@ -349,13 +349,20 @@ summary: >
   were produced by a different loop version and a different reviewer.
 - **Result: the two arms are indistinguishable on this bench.** 6/6
   closed on both, every task on the first iteration, zero scope
-  violations, zero red gates, **zero findings on either arm**.
-  Implementation 148 s (A) vs 142 s (B) — noise. Review of the resulting
-  diffs $0.535 (A) vs $0.591 (B): claude's diffs cost 10 % more to
-  review, the same *author moves the reviewer's bill* effect E8 saw in
-  the other direction. Executor price $0.676 on B and **unknown** on A —
-  not zero, unmeasurable, paid in quota — so total cost is not
-  comparable here at all.
+  violations, zero red gates, **zero findings on either arm**; both
+  stands pass their full suite independently of the loop (47 tests, no
+  skips left). Effective executor work 148 s (A) vs 146 s (B) — noise.
+  Review that produced a verdict: $0.535 (A) vs $0.591 (B), i.e.
+  claude's diffs cost ~10 % more to review — the same *author moves the
+  reviewer's bill* effect E8 saw in the other direction. Executor price
+  $0.686 on B and **unknown** on A: not zero, unmeasurable, paid in
+  quota — so total cost is not comparable here at all. Overhead of the
+  reviewer defect below is kept out of both figures and reported
+  separately ($0.359 on A, $0.414 on B, including 21 s of executor work
+  replayed after the one block); full stand spend $0.894 (A) and $1.691
+  (B). Accounting rule used: rounds are keyed by *(task, iter)*, and two
+  rows sharing an iter are one round played twice — a replay after a
+  block is not a fix round and must not be charged to the engine.
 - **Conclusion, and it is the one ADR-002 predicted:** trivial
   greenfield tasks cannot discriminate executors, because both converge
   in one round and the reviewer finds nothing to say. **E13 stays open
@@ -492,6 +499,13 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.14 (2026-08-22)
+
+- E13 round 1 closed: the one task blocked by the reviewer defect was
+  requeued and closed, both arms stand at 6/6, and the accounting now
+  separates executor work from the overhead of that defect. Conclusion
+  unchanged — greenfield cannot discriminate engines.
 
 ### v0.13 (2026-08-22)
 
