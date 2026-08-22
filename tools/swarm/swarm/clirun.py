@@ -60,6 +60,33 @@ def _print_results(results: dict[str, str]) -> None:
 
 
 
+def _engine_preflight(cfg: dict[str, Any]) -> bool:
+    """Кем исполнять — сказать ДО первого потраченного доллара.
+
+    Опечатка в имени движка не имеет права стать умолчанием: молча
+    выбранный дефолт — тот же отказ, что дал «ноль вызовов эмбеддера за
+    весь пилот». Здесь он стоит дороже: работа ушла бы не тому агенту,
+    которого выбрал оператор, и плечо замера оказалось бы чужим.
+
+    Заодно называется вторая цена выбора. Разделение ролей в §3.2
+    опиралось и на НЕЗАВИСИМОСТЬ судьи: дифф пишет одна модель, судит
+    другая. Исполнитель и ревьюер на одной и той же модели эту опору
+    убирают — предупреждаем прямо, а не оставляем это знанием автора.
+    """
+    engines = cli.load_mod("engines")
+    try:
+        engine, model = engines.resolve(cfg)
+    except ValueError as e:
+        print(f"движок исполнителя не выбран: {e}", file=sys.stderr)
+        return False
+    cli.ui(f"исполнитель: {engine}" + (f" ({model})" if model else ""))
+    if engine == "claude" and str(model) == str(cfg.get("review_model") or ""):
+        cli.ui("    ВНИМАНИЕ: исполнитель и ревьюер — одна и та же модель; "
+               "независимость судьи (§3.2) держится только на "
+               "confirm_model/confirm_effort/confirm_lens")
+    return True
+
+
 def cmd_go(args: argparse.Namespace) -> int:
     """От А до Я: рой сам декомпозирует цель и сам её исполняет.
 
@@ -71,6 +98,8 @@ def cmd_go(args: argparse.Namespace) -> int:
     вопрос о замысле, исчерпанный бюджет, авария.
     """
     cfg = cli.load_config(args.root)
+    if not _engine_preflight(cfg):
+        return 2
     st = cli.state_mod.SwarmState(args.root)
     if not _preflight(st, getattr(args, "force", False)):
         return 2
@@ -242,6 +271,8 @@ def _board_close() -> None:
 
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = cli.load_config(args.root)
+    if not _engine_preflight(cfg):
+        return 2
     with cli.state_mod.SwarmState(args.root) as st:
         if not _preflight(st, getattr(args, "force", False)):
             return 2

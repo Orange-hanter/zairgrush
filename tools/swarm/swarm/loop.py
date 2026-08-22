@@ -41,6 +41,7 @@ from gitops import (  # noqa: E402
 from reviewcycle import (  # noqa: E402
     _arm as _rc_arm,
     _diagnose as _rc_diagnose,
+    _implement_with_quota_wait as _rc_implement_with_quota_wait,
     _review_with_quota_wait as _rc_review_with_quota_wait,
     _reviewers_disagreed as _rc_reviewers_disagreed,
 )
@@ -224,6 +225,13 @@ class Loop:
                                 ) -> dict[str, Any] | None:
         return _rc_review_with_quota_wait(self, task, tail, iteration, confirming)
 
+    def _implement_with_quota_wait(self, task: dict[str, Any],
+                                   feedback: Any, iteration: int) -> Any:
+        # Тип отчёта — контракт агентов, а не петли: `agents` здесь Any,
+        # и сужать его тут значило бы объявить сузившееся знание, которого
+        # у делегата нет (feedback на деле словарь находок, не строка).
+        return _rc_implement_with_quota_wait(self, task, feedback, iteration)
+
     @staticmethod
     def _reviewers_disagreed(history: list[dict[str, Any]]
                              ) -> tuple[dict[str, Any], dict[str, Any]] | None:
@@ -399,7 +407,8 @@ class Loop:
             if confirming:
                 confirming = False
             else:
-                report = self.agents.implement(task, feedback, iteration)
+                report = self._implement_with_quota_wait(task, feedback,
+                                                         iteration)
                 if report is None:
                     fail = getattr(self.agents, "last_implement_failure",
                                    None) or {}

@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.11
+version: 0.12
 created: 2026-08-06
 updated: 2026-08-22
 related:
@@ -303,6 +303,11 @@ summary: >
 - **Provider-cache note** (knowledge, no code): Kimi auto-caches
   prefixes — stable fill prompts ride it for free; rate-based executor
   routing beyond that only via an E8-class bench.
+- **Blocker on arm A removed 2026-08-22**: it no longer waits on the
+  kimi.com quota. The executor engine is a config choice now (05-doc
+  §3.2.0), so arm A can run on `executor_engine = "claude"` — at the
+  price of naming the engine as a factor of the comparison instead of
+  hiding it. Both arms must then run on the same engine.
 - **Status: implemented behind the flag; live smoke PASSED 2026-08-18** —
   full loop on a scratch stand: ollama fill → green gate (contract tests,
   zero skips) → sonnet/low approve → security-lens confirming round →
@@ -312,6 +317,35 @@ summary: >
   NotImplementedError, or the fill baseline is red. The comparative
   bench (arm A vs arm B) still pending — needs the kimi.com quota for
   arm A.
+
+### E13. Executor engine: Kimi K3 vs Claude Sonnet
+
+- **A (current default)**: the executor is `kimi -p` with model K3
+  (ADR-002, measured on E8: 6/6 tasks from the first iteration, 193 s of
+  implementation, $2.31 of review cost).
+- **B**: the executor is `claude -p` with an explicit permission
+  allowlist and a git deny list (05-doc §3.2.0), model `sonnet`.
+- **Hypothesis**: on brownfield tasks the difference shows up as rounds
+  to convergence, not as first-round success — the very thing E8's
+  greenfield bench could not measure. ADR-002 says so itself and demands
+  a revisit after BENCH-2.
+- **Carried as a caveat by design, not discovered in the results**: on
+  arm B the diff's author and its judge come from one model family, and
+  §3.2 leant on their independence. The loop warns when the two models
+  coincide; the experiment must either separate them (different tier,
+  effort or `confirm_lens`) or report the coincidence as a condition of
+  the measurement.
+- **Decision by**: USD per task including review, rounds to convergence,
+  post-review defects, scope violations, disputes per task. Note from E8
+  that carries over: the review bill depends on WHO wrote the diff, so
+  the executor's own price is only half the comparison — and on arm B it
+  is visible at all for the first time (the kimi stream carries no usage
+  and no cost).
+- **Status: not started.** The prerequisite landed 2026-08-22 (engine
+  choice; live smoke of arm B: one task, two rounds, $0.49 total, of
+  which the executor is $0.149 — a number the loop could not previously
+  know). Arm A is replayable from E8's frozen records; a fresh arm A
+  needs kimi.com quota, which ADR-010 is separately trying to stretch.
 
 ### E11. Independent Tester role
 
@@ -428,6 +462,14 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.12 (2026-08-22)
+
+- E13 added: executor engine A/B (Kimi K3 vs Claude Sonnet). The
+  same-family independence caveat is written into the design of the
+  experiment rather than left to be found in its results.
+- E10: the blocker on arm A is gone — the engine is a config choice now,
+  so arm A can run on claude if the engine is named as a factor.
 
 ### v0.11 (2026-08-22)
 

@@ -318,8 +318,95 @@ class TestConfigValidation(CliCase):
             '[experiments]\nmemory = "planner"\n')
         self.assertEqual(err, "")
 
+    def test_engine_that_is_not_an_engine_warns(self):
+        """Опечатка в имени движка дороже прочих: работа ушла бы не тому
+        агенту, которого выбрал оператор, и плечо замера оказалось бы
+        чужим. Отказ — на старте прогона, предупреждение — уже здесь."""
+        _cfg, err = self._config_stderr('executor_engine = "claudee"\n')
+        self.assertIn("не движок", err)
+        self.assertIn("claude", err, "подсказка обязана назвать движки")
+
+    def test_gate_command_as_a_string_warns(self):
+        """Строкой этот ключ пишут чаще, чем списком, а падает он посреди
+        первой задачи: петля передаёт его в exec без шелла, строка
+        становится ИМЕНЕМ файла, и задача уходит в blocked как «авария».
+        Замерено живым прогоном 2026-08-22."""
+        _cfg, err = self._config_stderr(
+            'gate_command = "python3 -m unittest discover -q"\n')
+        self.assertIn("gate_command", err)
+        self.assertIn("списком", err)
+
+    def test_gate_command_as_a_list_stays_silent(self):
+        cfg, err = self._config_stderr(
+            'gate_command = ["python3", "-m", "pytest"]\n')
+        self.assertEqual(err, "")
+        self.assertEqual(cfg["gate_command"], ["python3", "-m", "pytest"])
+
+    def test_engine_keys_are_known(self):
+        cfg, err = self._config_stderr(
+            'executor_engine = "claude"\nexecutor_effort = "low"\n'
+            "executor_budget_usd = 2.5\n")
+        self.assertEqual(err, "")
+        self.assertEqual(cfg["executor_engine"], "claude")
+
+
+class TestEnginePreflight(CliCase):
+    """Кем исполнять — говорится ДО первого потраченного доллара."""
+
+    def test_run_refuses_an_unknown_engine(self):
+        (self.root / "swarm.toml").write_text('executor_engine = "sonnet"\n')
+        code, out = run_cli("--root", str(self.root), "run")
+        self.assertEqual(code, 2)
+        self.assertIn("движок исполнителя не выбран", out)
+
+    def test_run_names_the_engine_it_will_use(self):
+        """Строка вывода — не украшение: прогон на чужом движке выглядит
+        точно так же, как прогон на своём, пока никто не назвал движок."""
+        (self.root / "swarm.toml").write_text(
+            'executor_engine = "claude"\nexecutor_model = "sonnet"\n')
+        _code, out = run_cli("--root", str(self.root), "run")
+        self.assertIn("исполнитель: claude (sonnet)", out)
+
+    def test_same_model_for_writer_and_judge_is_named(self):
+        """§3.2 опирался и на независимость судьи: дифф пишет одна
+        модель, судит другая. Одинаковая модель эту опору убирает, и
+        молчать об этом нельзя."""
+        (self.root / "swarm.toml").write_text(
+            'executor_engine = "claude"\nexecutor_model = "sonnet"\n'
+            'review_model = "sonnet"\n')
+        _code, out = run_cli("--root", str(self.root), "run")
+        self.assertIn("независимость судьи", out)
+
+    def test_default_engine_says_kimi_and_stays_quiet(self):
+        _code, out = run_cli("--root", str(self.root), "run")
+        self.assertIn("исполнитель: kimi", out)
+        self.assertNotIn("независимость судьи", out)
+
 
 class TestDoctor(CliCase):
+    def test_names_the_engine_it_checked(self):
+        """Доктор обязан проверять ВЫБРАННОЕ. Пока движок был один,
+        машина без `kimi` получала красную строку за роль, которой на
+        ней нет: диагноз говорил о чужой конфигурации."""
+        (self.root / "swarm.toml").write_text(
+            'executor_engine = "claude"\nexecutor_model = "sonnet"\n')
+        _code, out = run_cli("--root", str(self.root), "doctor")
+        self.assertIn("движок исполнителя", out)
+        self.assertIn("claude, модель sonnet", out)
+
+    def test_gate_command_shape_is_checked(self):
+        (self.root / "swarm.toml").write_text(
+            'gate_command = "python3 -m pytest"\n')
+        _code, out = run_cli("--root", str(self.root), "doctor")
+        self.assertIn("ПРОБЛ", out)
+        self.assertIn("СПИСОК", out)
+
+    def test_broken_engine_is_a_problem_line(self):
+        (self.root / "swarm.toml").write_text('executor_engine = "nope"\n')
+        _code, out = run_cli("--root", str(self.root), "doctor")
+        self.assertIn("executor_engine", out)
+        self.assertIn("не движок", out)
+
     def test_reports_environment(self):
         _code, out = run_cli("--root", str(self.root), "doctor")
         self.assertIn("окружение", out)

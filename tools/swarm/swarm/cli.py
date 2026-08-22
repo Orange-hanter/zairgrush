@@ -55,6 +55,7 @@ log = load_mod("obs").get_logger("cli")
 KNOWN_CONFIG_KEYS = frozenset({
     "gate_command", "protected_paths", "max_iterations", "confirmations",
     "gate_timeout", "silence_timeout", "wall_clock_cap", "executor_model",
+    "executor_engine", "executor_effort", "executor_budget_usd",
     "review_budget_usd", "verification", "total_budget_usd", "live_board",
     "board_open", "board_port", "map_budget", "tuning_seed", "quota_backoff_s",
     "quota_resume", "quota_resume_max", "quota_resume_max_wait_s",
@@ -80,6 +81,14 @@ KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
 # одному фактору за прогон, и "all" существует только для полного
 # включения после того, как роли замерены поодиночке.
 MEMORY_MODES = frozenset({"off", "executor", "reviewer", "planner", "all"})
+
+# Значение `executor_engine` — имя движка (см. engines.ENGINES). Тот же
+# довод, что у режимов памяти, но цена ошибки выше: опечатка здесь молча
+# отправляла бы работу не тому агенту, которого выбрал оператор, — и
+# «плечо A» замера оказалось бы плечом B. Список продублирован строкой,
+# а не импортом: cli грузится раньше плоских модулей петли, а расхождение
+# двух списков ловится тестом.
+EXECUTOR_ENGINES = frozenset({"kimi", "claude", "ollama"})
 
 
 def load_config(root: str | pathlib.Path) -> dict[str, Any]:
@@ -120,6 +129,29 @@ def load_config(root: str | pathlib.Path) -> dict[str, Any]:
                           f"{mem_mode!r} — не роль; память ВЫКЛЮЧЕНА. "
                           f"Допустимо: {', '.join(sorted(MEMORY_MODES))}",
                           file=sys.stderr)
+            gate_cmd = parsed.get("gate_command")
+            if gate_cmd is not None and not (
+                    isinstance(gate_cmd, list)
+                    and all(isinstance(x, str) for x in gate_cmd)):
+                # Строкой этот ключ выглядит естественнее всего, и именно
+                # так его пишут. Петля же передаёт его в exec без шелла:
+                # строка становится ИМЕНЕМ файла, и прогон падает
+                # FileNotFoundError посреди первой задачи, объявив её
+                # аварийной. Ошибка конфига обязана называться до старта.
+                print(f"ВНИМАНИЕ: {path}: gate_command обязан быть списком "
+                      f"аргументов, а не строкой — иначе петля ищет файл с "
+                      f'таким именем. Пример: ["python3", "-m", "pytest"]',
+                      file=sys.stderr)
+            engine = parsed.get("executor_engine")
+            if engine is not None and engine not in EXECUTOR_ENGINES:
+                # Предупреждение здесь, отказ — на старте прогона
+                # (`clirun._engine_preflight`): читателем конфига
+                # пользуются и команды, которым исполнитель не нужен
+                # (`status`, `report`), и ронять их незачем.
+                print(f"ВНИМАНИЕ: {path}: executor_engine = {engine!r} — "
+                      f"не движок. Допустимо: "
+                      f"{', '.join(sorted(EXECUTOR_ENGINES))}",
+                      file=sys.stderr)
             cfg.update(parsed)
     return cfg
 

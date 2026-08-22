@@ -22,6 +22,8 @@ from verdicts import (  # noqa: E402
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from loop_types import LoopLike
 
 
@@ -43,11 +45,39 @@ def _review_with_quota_wait(loop: LoopLike, task: dict[str, Any], tail: str,
     исключение уходит наверх: прогон ставится на паузу целиком, и
     «когда продолжить» решает человек.
     """
+    def call() -> Any:
+        return loop.agents.review(task, tail, iteration, confirming=confirming)
+
+    out: dict[str, Any] | None = _with_quota_wait(loop, task, iteration,
+                                                  "review", call)
+    return out
+
+
+def _implement_with_quota_wait(loop: LoopLike, task: dict[str, Any],
+                               feedback: Any, iteration: int) -> Any:
+    """То же ожидание квоты, но для исполнителя.
+
+    Пока исполнитель жил только на kimi, квота приходила к нему
+    мгновенной аварией процесса — её ловил ExecutorUnavailableError и
+    останавливал прогон целиком. На движке claude отказ по квоте
+    приходит КОНВЕРТОМ, ровно как у ревьюера, и лечится тем же
+    ожиданием. Без этой обёртки исключение долетало бы до общего
+    `except Exception` в run(): задача осталась бы in_progress, а
+    ready_tasks() берёт только pending — очередь потеряла бы её молча.
+    """
+    def call() -> Any:
+        return loop.agents.implement(task, feedback, iteration)
+
+    return _with_quota_wait(loop, task, iteration, "implement", call)
+
+
+def _with_quota_wait(loop: LoopLike, task: dict[str, Any], iteration: int,
+                     phase: str, call: Callable[[], Any]) -> Any:
+    """Общая механика ожидания квоты для дорогой роли (§5.3)."""
     delays = list(loop.config.get("quota_backoff_s", (60, 120, 240)))
     while True:
         try:
-            verdict: dict[str, Any] | None = loop.agents.review(
-                task, tail, iteration, confirming=confirming)
+            result = call()
         except Exception as e:
             # По имени, не по классу: исключение может быть поднято другой
             # копией модуля или вообще отдельным классом с тем же именем.
@@ -67,11 +97,12 @@ def _review_with_quota_wait(loop: LoopLike, task: dict[str, Any], tail: str,
             loop.state.log("quota_wait", task=task["id"], round=iteration,
                            wait_s=delay, message=str(e)[:200])
             loop.state.metric(task=task["id"], iter=iteration,
-                              phase="review", quota_wait_s=delay)
+                              phase=phase, quota_wait_s=delay)
             loop.ui(f"    квота провайдера: ждём {delay} с")
             time.sleep(delay)
         else:
-            return verdict
+            return result
+
 
 def _reviewers_disagreed(history: list[dict[str, Any]]
                          ) -> tuple[dict[str, Any], dict[str, Any]] | None:

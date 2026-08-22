@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Отчёт исполнителя (executor report v1)",
+  "description": "Контракт ответа исполнителя. До появления движка claude жил только прозой в promptbuilder.handoff: модель обещала «ровно один JSON-объект», а проверял обещание разбор текста. Схема даёт тот же контракт вторым, механическим каналом (structured_output) — разбор хвоста остаётся запасным путём, не заменяется.",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "no_change_needed", "dispute"],
+      "description": "Закрытый список: 'сделано', 'менять нечего', 'спор'. Спор — единственный законный ход, когда приёмку нельзя выполнить внутри границ задачи или требования противоречат друг другу."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Одно предложение ПО-РУССКИ: это читает человек."
+    },
+    "evidence": {
+      "type": "object",
+      "description": "Чем подтверждается работа.",
+      "properties": {
+        "tests": {
+          "type": "string",
+          "description": "Последняя строка прогона тестов."
+        }
+      }
+    },
+    "dispute": {
+      "type": "string",
+      "description": "Только при status=dispute: что именно невыполнимо или противоречиво, какие paths понадобились бы, какие требования сталкиваются. ПО-РУССКИ."
+    },
+    "deviations": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Только если сделано что-то сверх буквы задачи — назвать каждое такое изменение."
+    }
+  },
+  "required": ["status", "summary"]
+}

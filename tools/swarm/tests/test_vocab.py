@@ -165,7 +165,7 @@ class TestEveryEmittedKindIsNamed(unittest.TestCase):
         "step_intent", "task_crashed", "verification",
         "verification_inconclusive", "memory_written", "memory_injected",
         "memory_reflect", "memory_unavailable", "memory_forgotten",
-        "memory_synced", "quota_resume", "round_futile",
+        "memory_synced", "quota_resume", "round_futile", "executor_denied",
         "futile_exhausted",
     ]
 

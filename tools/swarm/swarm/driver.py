@@ -163,7 +163,14 @@ class Run:
         self._last_activity = time.time()
         self._started = time.time()
         self._lines: list[str] = []
-        self.proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+        # stdin ЗАКРЫТ, а не унаследован. Два разных дефекта одним
+        # аргументом: агент, у которого stdin — терминал оператора, читает
+        # его нажатия (мы запускаем его молча, отвечать ему некому), а
+        # агент, запущенный из фона без терминала, ЖДЁТ ввода — claude
+        # тратит на это 3 секунды каждого вызова и говорит об этом в
+        # stderr. Оба исхода — про канал, которым петля не пользуется.
+        self.proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True, bufsize=1)
         self._err: list[str] = []
         self._reader = threading.Thread(target=self._pump, daemon=True)

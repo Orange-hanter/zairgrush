@@ -302,6 +302,160 @@ def _fake_process(stdout="", stderr=""):
         "wait": lambda s, timeout=None: 0, "kill": lambda s: None})()
 
 
+CLAUDE_DONE = {"status": "done", "summary": "сделано"}
+
+
+def _claude_stream(**envelope):
+    """Поток claude: пара событий жизни и финальный конверт.
+
+    Конверт — то, ради чего движок claude вообще читается иначе: у kimi
+    в потоке нет ни цены, ни токенов, ни списка отклонённых вызовов.
+    """
+    env = {"type": "result", "subtype": "success", "is_error": False,
+           "terminal_reason": "completed", "total_cost_usd": 0.055,
+           "usage": {"input_tokens": 8, "output_tokens": 492},
+           "structured_output": dict(CLAUDE_DONE)}
+    env.update(envelope)
+    return ("\n".join([json.dumps({"type": "assistant"}),
+                       json.dumps({"type": "user"}),
+                       json.dumps(env)]) + "\n")
+
+
+class TestExecutorEngineWiring(AgentsCase):
+    """Движок исполнителя доехал от конфига до вызова и обратно.
+
+    Пока исполнитель был один, отказ его подписки останавливал рой
+    целиком: у роли не было запасного пути, хотя ревьюер, планировщик и
+    документатор давно ходят через claude.
+    """
+
+    def _spawn(self, config, stdout="", task=None):
+        seen = {}
+        orig = subprocess.Popen
+
+        def fake(argv, **kw):
+            if not (argv and argv[0] in ("kimi", "claude")):
+                return orig(argv, **kw)
+            seen["argv"] = argv
+            return _fake_process(stdout=stdout)
+
+        subprocess.Popen = fake
+        self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
+        agents = ag.Agents(self.state, config)
+        report = agents.implement(task or TASK, None, 1)
+        return seen.get("argv", []), report, agents
+
+    def test_engine_key_sends_work_to_claude(self):
+        argv, report, _ = self._spawn(
+            {"executor_engine": "claude", "executor_model": "sonnet"},
+            _claude_stream())
+        self.assertEqual(argv[0], "claude")
+        self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
+        self.assertEqual(report["status"], "done")
+
+    def test_default_still_goes_to_kimi(self):
+        """Умолчание кода не менялось: ADR-002 остаётся в силе, плечи
+        E8/E10 остаются сравнимыми."""
+        argv, _report, _ = self._spawn({}, "")
+        self.assertEqual(argv[0], "kimi")
+
+    def test_prompt_is_the_same_for_both_engines(self):
+        """Промпт исполнителя — предмет замера (E8/E10) и кэша провайдера.
+        Смена движка не имеет права его тронуть, иначе плечи мерят
+        разное, а не разных исполнителей."""
+        kimi_argv, _r, _a = self._spawn({}, "")
+        claude_argv, _r2, _a2 = self._spawn({"executor_engine": "claude"},
+                                            _claude_stream())
+        self.assertEqual(kimi_argv[kimi_argv.index("-p") + 1],
+                         claude_argv[claude_argv.index("-p") + 1])
+
+    def test_cost_of_the_executor_is_finally_counted(self):
+        """Слепое пятно бюджета было про ДВИЖОК, а не про роль: поток
+        kimi цены не содержит, конверт claude содержит. Не считать её —
+        значит врать `total_budget_usd`."""
+        self._spawn({"executor_engine": "claude"}, _claude_stream())
+        rows = [json.loads(x) for x in
+                self.state.metrics_path.read_text().splitlines()]
+        impl = [r for r in rows if r.get("phase") == "implement"]
+        self.assertEqual(impl[-1]["cost_usd"], 0.055)
+        self.assertEqual(impl[-1]["engine"], "claude")
+        self.assertEqual(impl[-1]["tokens_out"], 492)
+        self.assertEqual(self.state.total_spend(), 0.06)
+
+    def test_kimi_run_claims_no_price_it_does_not_know(self):
+        self._spawn({}, "")
+        rows = [json.loads(x) for x in
+                self.state.metrics_path.read_text().splitlines()]
+        impl = [r for r in rows if r.get("phase") == "implement"][-1]
+        self.assertEqual(impl["engine"], "kimi")
+        self.assertNotIn("cost_usd", impl)
+
+    def test_denied_tool_call_is_journaled(self):
+        """Запрет, который сработал, обязан быть виден: иначе неизвестно,
+        ПЫТАЛСЯ ли исполнитель выйти за правило."""
+        stream = _claude_stream(permission_denials=[
+            {"tool_name": "Bash",
+             "tool_input": {"command": "git commit -am wip"}}])
+        _argv, report, _ = self._spawn({"executor_engine": "claude"}, stream)
+        self.assertEqual(report["status"], "done")
+        journal = self.state.journal_path.read_text()
+        self.assertIn("executor_denied", journal)
+        self.assertIn("git commit -am wip", journal)
+
+    def test_quota_refusal_is_raised_not_swallowed(self):
+        """Квота лечится ожиданием (§5.3), а не блокировкой задачи: у
+        петли для этого есть механика, и исполнитель обязан в неё
+        попадать так же, как ревьюер."""
+        stream = _claude_stream(is_error=True, structured_output=None,
+                                result="You've hit your session limit")
+        with self.assertRaises(Exception) as cm:
+            self._spawn({"executor_engine": "claude"}, stream)
+        self.assertEqual(type(cm.exception).__name__, "QuotaExceededError")
+
+    def test_truncated_by_budget_is_not_bad_work(self):
+        """Обрыв по деньгам — раунд, в котором работу не о чем судить.
+        Назвать его «нет отчёта» значило бы стереть причину (§5.3)."""
+        stream = _claude_stream(structured_output=None, result="…",
+                                terminal_reason="budget_exhausted")
+        _argv, report, agents = self._spawn({"executor_engine": "claude"},
+                                            stream)
+        self.assertIsNone(report)
+        self.assertEqual(agents.last_implement_failure["reason"],
+                         "budget_exhausted")
+
+    def test_empty_envelope_is_no_report(self):
+        _argv, report, agents = self._spawn({"executor_engine": "claude"}, "")
+        self.assertIsNone(report)
+        self.assertEqual(agents.last_implement_failure["reason"], "no_report")
+
+    def test_task_field_engine_is_still_behind_the_flag(self):
+        """E10: поле задачи читается только за флагом `skeleton` — иначе
+        поведение с выключенным флагом перестало бы быть сегодняшним."""
+        task = dict(TASK, executor_model="claude:sonnet")
+        argv, _r, _a = self._spawn({}, "", task=task)
+        self.assertEqual(argv[0], "kimi")
+        argv2, _r2, _a2 = self._spawn({"experiments": {"skeleton": True}},
+                                      _claude_stream(), task=task)
+        self.assertEqual(argv2[0], "claude")
+
+    def test_unknown_engine_never_reaches_a_cli(self):
+        """Отказ до первого потраченного доллара: молча выбранное
+        умолчание отправило бы работу не тому агенту."""
+        called = []
+        orig = subprocess.Popen
+
+        def fake(argv, **kw):
+            called.append(argv)
+            return _fake_process()
+
+        subprocess.Popen = fake
+        self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
+        agents = ag.Agents(self.state, {"executor_engine": "sonnet"})
+        with self.assertRaises(ValueError):
+            agents.implement(TASK, None, 1)
+        self.assertEqual(called, [])
+
+
 class TestExecutorModelRouting(AgentsCase):
     """E10 (flag `skeleton`): per-task executor_model переопределяет
     executor_model прогона, а ollama:-префикс уводит на chat-fill."""

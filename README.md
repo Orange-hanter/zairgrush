@@ -8,7 +8,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3ecbe0.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/status-experimental-ff9d54.svg" alt="status: experimental">
-  <img src="https://img.shields.io/badge/tests-1024%20passed-4a2e78.svg" alt="tests: 1024 passed">
+  <img src="https://img.shields.io/badge/tests-1078%20passed-4a2e78.svg" alt="tests: 1078 passed">
 </p>
 
 ---
@@ -19,7 +19,10 @@
 в которой два независимых CLI-агента передают друг другу задачи по кругу,
 пока код не сойдётся к принятому виду, без постоянного участия человека.
 
-- **Kimi Code** (модель K3) — исполнитель: пишет код по задаче.
+- **Исполнитель** — пишет код по задаче. Движок выбирается конфигом
+  (`executor_engine`): **Kimi Code** (модель K3) по умолчанию, **Claude
+  Code** — когда нужен один провайдер на весь рой или когда цену
+  исполнителя надо видеть в бюджете прогона.
 - **Claude Code** — ревьюер: строго read-only, смотрит только `git diff` и
   выносит структурированный verdict (severity/category по закрытому enum'у).
 - Между ними — тонкий Python-оркестратор (`swarm`, ~300–500 строк): сам
@@ -80,7 +83,7 @@ python3 -m pytest
 
 Проект **экспериментальный** (`draft`), активно меняется — см. `version`/
 `updated` во frontmatter каждого документа и журналы изменений в их конце.
-Автотесты `tools/swarm`: 1024 passed — одна команда
+Автотесты `tools/swarm`: 1078 passed — одна команда
 `cd tools/swarm && ./check.sh` (линт → типы → тесты).
 
 Открытые решения помечены в документах как «на утверждение» / «проект

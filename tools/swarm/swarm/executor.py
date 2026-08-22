@@ -12,11 +12,13 @@ from types import ModuleType
 from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
+SCHEMAS = HERE.parent / "schemas"
 
 _HERE = str(HERE)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import engines  # noqa: E402
 import parsing as parsing_mod  # noqa: E402
 import promptbuilder  # noqa: E402
 from agents_types import AgentsLike  # noqa: E402
@@ -41,49 +43,106 @@ def implement(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
               iteration: int) -> dict[str, Any] | None:
     # Поле задачи читается ТОЛЬКО за флагом: с flag=off implement()
     # обязан остаться байт-в-байт сегодняшним (E10, замер против
-    # исходного поведения).
-    exec_model = task.get("executor_model") if skeleton_on(agents) else None
-    if isinstance(exec_model, str) and exec_model.startswith("ollama:"):
-        return implement_fill(agents, task, feedback, iteration)
+    # исходного поведения). Ключ прогона `executor_engine` флагом не
+    # закрыт — это не эксперимент, а ответ на вопрос «кем исполнять»:
+    # у роли исполнителя до сих пор не было запасного пути, и отказ
+    # одной подписки останавливал петлю целиком.
+    engine, model = engines.resolve(agents.config,
+                                    task if skeleton_on(agents) else None)
+    if engine == "ollama":
+        return implement_fill(agents, task, feedback, iteration, model)
     prompt = promptbuilder.handoff(
         agents, task, feedback, promptbuilder.repo_map(agents, task),
         memory=promptbuilder.memory_block(agents, task) or None)
-    cmd = ["kimi", "-p", prompt, "--output-format", "stream-json"]
-    model = agents.config.get("executor_model")
-    if isinstance(exec_model, str) and exec_model:
-        # Задача переопределяет модель прогона — точечный выбор
-        # исполнителя дороже/дешевле общего умолчания на конкретную
-        # работу (E10), а не смена умолчания для всей очереди.
-        model = exec_model
-    if model:
-        cmd[1:1] = ["-m", model]
+    cmd = engines.executor_argv(engine, model, prompt, agents.config,
+                                report_schema() if engine == "claude" else "")
+    # Разборщик потока и способ достать отчёт — свойства ДВИЖКА, а не
+    # роли: у kimi финальный JSON лежит в assistant-событии, у claude —
+    # в конверте финального result-события (тот же путь, которым живёт
+    # ревьюер).
+    claude = engine == "claude"
     drv = agents.driver.AgentDriver(
         cwd=str(agents.state.root),
         silence_timeout=agents.config.get("silence_timeout", 600),
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800))
-    run = drv.start(cmd)
-    result = run.collect(parsing_mod.extract_report)
+    run = drv.start(cmd, parser=(agents.driver.parse_claude if claude
+                                 else agents.driver.parse_kimi))
+    result = run.collect(agents.driver.extract_result_envelope if claude
+                         else parsing_mod.extract_report)
     raw = agents.state.dir / "log" / f"{task['id']}-i{iteration}-executor.jsonl"
     raw.write_text(run.raw_stream())
-    agents.state.metric(task=task["id"], iter=iteration, phase="implement",
-                      reason=result.reason, wall_s=round(result.wall_s, 1),
-                      report=bool(result.report), events=result.events)
     report: dict[str, Any] | None = result.report
-    if report is None or result.reason != "done":
+    reason = result.reason
+    facts: dict[str, Any] = {}
+    if claude:
+        report, reason, facts = claude_outcome(agents, task, iteration, result)
+    agents.state.metric(task=task["id"], iter=iteration, phase="implement",
+                      reason=reason, wall_s=round(result.wall_s, 1),
+                      report=bool(report), events=result.events,
+                      engine=engine, model=model or None, **facts)
+    if report is None or reason != "done":
         # stderr — единственное место, где провайдер объясняет отказ.
         # Пока он не сохранялся, диагноз «квота Kimi исчерпана» занял
         # шесть запросов вместо чтения одной строки журнала: три
         # мгновенные аварии подряд выглядели как «нет отчёта».
         stderr = run.stderr_tail(400).strip()
         agents.last_implement_failure = {
-            "reason": result.reason, "wall_s": result.wall_s,
+            "reason": reason, "wall_s": result.wall_s,
             "events": result.events, "stderr": stderr}
         agents.state.log("executor_failed", task=task["id"], round=iteration,
-                       reason=result.reason, wall_s=round(result.wall_s, 1),
-                       events=result.events, stderr=stderr)
+                       reason=reason, wall_s=round(result.wall_s, 1),
+                       events=result.events, engine=engine, stderr=stderr)
     else:
         agents.last_implement_failure = None
     return report
+
+
+def report_schema() -> str:
+    """Схема отчёта исполнителя как ТЕКСТ: `--json-schema` принимает саму
+    схему, а не путь к ней (так же читает свою схему ревьюер)."""
+    return (SCHEMAS / "report-v1.schema.json").read_text(encoding="utf-8")
+
+
+def claude_outcome(agents: AgentsLike, task: dict[str, Any], iteration: int,
+                   result: Any) -> tuple[dict[str, Any] | None, str,
+                                         dict[str, Any]]:
+    """Разбор конверта claude: отчёт, причина исхода, числа для метрики.
+
+    Движок claude отдаёт то, чего поток kimi не содержит вовсе, — цену,
+    токены и список отклонённых вызовов. Пока исполнитель был только на
+    kimi, `total_spend()` честно не знал цены целой роли; теперь она
+    известна, и не считать её значило бы врать бюджету прогона.
+
+    Отказ по квоте поднимается исключением, а не превращается в
+    «нет отчёта»: квота лечится ожиданием (§5.3), и у петли для этого
+    есть механика — ровно та же, что у ревьюера.
+    """
+    env = result.report
+    quota = agents.loop_mod.quota_error(env)
+    if quota:
+        agents.state.metric(task=task["id"], iter=iteration, phase="implement",
+                          quota_wait=True, provider_message=quota)
+        raise agents.loop_mod.QuotaExceededError(quota)
+    facts = engines.envelope_facts(env)
+    denied = engines.denied_commands(env)
+    if denied:
+        # Отказ по deny-списку не авария: работа могла быть сделана и без
+        # запрещённой команды. Но это единственное место, где видно, что
+        # исполнитель ПЫТАЛСЯ выйти за правило, и терять такой факт
+        # нельзя — на нём держится ответ на вопрос, работает ли запрет
+        # как правило или как пожелание.
+        agents.state.log("executor_denied", task=task["id"], round=iteration,
+                       count=len(denied), commands=denied[:5])
+    report = engines.report_from_envelope(env)
+    reason = result.reason
+    if report is None and reason == "done":
+        # Обрыв по деньгам — не плохая работа, а раунд, в котором работу
+        # не о чем судить: петля обязана назвать его тем, чем он был
+        # (правило честности бюджета раундов, §5.3).
+        terminal = facts.get("terminal_reason")
+        reason = ("budget_exhausted" if terminal == "budget_exhausted"
+                  else "no_report")
+    return report, reason, facts
 
 
 def skeleton_on(agents: AgentsLike) -> bool:
@@ -125,8 +184,9 @@ def fill_failure(agents: AgentsLike, task_id: str, iteration: int, wall_s: float
     return
 
 
-def implement_fill(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
-                    iteration: int) -> dict[str, Any] | None:
+def implement_fill(agents: AgentsLike, task: dict[str, Any],
+                    feedback: str | None, iteration: int,
+                    model: str = "") -> dict[str, Any] | None:
     """E10: заполнение контракта дешёвой чат-моделью (`ollama:` префикс).
 
     Формат вывода дешёвых чат-моделей на Ollama Cloud снят на пробе
@@ -173,7 +233,8 @@ Return the COMPLETE file in ONE fenced block ```python ...```; do not change
 any signature or docstring of existing defs; no elision; no text outside the
 fence.
 """
-    model = str(task.get("executor_model")).removeprefix("ollama:")
+    if not model:
+        model = str(task.get("executor_model")).removeprefix("ollama:")
     if agents.helpers is None:
         try:
             agents.helpers = load_module("helpers")

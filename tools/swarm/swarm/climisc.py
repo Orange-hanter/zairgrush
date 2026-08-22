@@ -36,17 +36,41 @@ def tree_sitter_clib() -> bool:
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Половина дефектов программы была в окружении, а не в петле."""
     root = pathlib.Path(args.root)
+    cfg = cli.load_config(root)
+    # Кем исполнять — выбор конфига, и доктор обязан проверять ВЫБРАННОЕ.
+    # Пока движок был один, машина без `kimi` получала красную строку за
+    # роль, которой на ней нет: диагноз говорил о чужой конфигурации.
+    try:
+        engine, model = cli.load_mod("engines").resolve(cfg)
+    except ValueError as e:
+        engine, model = "", ""
+        checks_head = str(e)
+    else:
+        checks_head = ""
     print("=== окружение ===")
     checks: list[tuple[bool | None, str, str]] = []
+    if checks_head:
+        checks.append((False, "executor_engine", checks_head))
+    else:
+        checks.append((True, "движок исполнителя",
+                       engine + (f", модель {model}" if model else
+                                 ", модель по умолчанию CLI")))
 
-    for name, probe, hint in (
-        ("kimi", ["kimi", "--version"], "исполнитель"),
-        ("claude", ["claude", "--version"], "ревьюер и планировщик"),
-        ("git", ["git", "--version"], "обязателен"),
+    exec_hint = f"исполнитель (модель: {model})" if model else "исполнитель"
+    for name, probe, hint, needed in (
+        ("kimi", ["kimi", "--version"], exec_hint, engine == "kimi"),
+        ("claude", ["claude", "--version"],
+         ("ревьюер, планировщик и исполнитель" if engine == "claude"
+          else "ревьюер и планировщик"), True),
+        ("git", ["git", "--version"], "обязателен", True),
     ):
         exe = shutil.which(name)
         if not exe:
-            checks.append((False, name, f"НЕ НАЙДЕН ({hint})"))
+            # Ненужный движок отсутствовать ИМЕЕТ ПРАВО: это не поломка
+            # стенда, а другая его конфигурация.
+            checks.append((False if needed else None, name,
+                           f"НЕ НАЙДЕН ({hint})" if needed
+                           else f"не установлен (движок не выбран: {hint})"))
             continue
         try:
             out = subprocess.run(probe, capture_output=True, text=True,
@@ -145,7 +169,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
               f"{'чист' if not files else f'{len(files)} изменённых файлов'}")
 
     cfg = cli.load_config(root)
-    print(f"[ опц ] gate: {cfg.get('gate_command') or 'по умолчанию (unittest)'}")
+    gate_cmd = cfg.get("gate_command")
+    if gate_cmd is None:
+        print("[ опц ] gate: по умолчанию (unittest)")
+    elif isinstance(gate_cmd, list) and all(isinstance(x, str) for x in gate_cmd):
+        print(f"[  ok ] gate: {' '.join(gate_cmd)}")
+    else:
+        # Ровно та ошибка, которую доктор обязан ловить вместо петли:
+        # строкой этот ключ пишут чаще, чем списком, а падает он посреди
+        # первой задачи и выглядит как авария задачи, а не как конфиг.
+        print(f"[ПРОБЛ] gate: {gate_cmd!r} — нужен СПИСОК аргументов "
+              f'(["python3", "-m", "pytest"]), иначе петля ищет файл с '
+              f"таким именем")
     st = cli.state_mod.SwarmState(root)
     print(f"[  ok ] состояние: {st.dir}")
     return 0 if all(c[0] is not False for c in checks) else 1
