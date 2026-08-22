@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.10
+version: 0.11
 created: 2026-08-06
 updated: 2026-08-22
 related:
@@ -267,11 +267,16 @@ summary: >
   (`off | executor | reviewer | planner | all`) — a typo used to
   disable the subsystem in silence, the same failure mode as the
   zero-embedder-calls measurement.
-- **Measurement to come**: with the queue closed, the planner arm is
-  exercised by the next `plan`/`replan` on the stand (three idea-tasks
-  await plan-diffs). What to compare: whether the plan-diff sets
-  boundaries that include the satellites the owner had to add by hand,
-  and whether disputes per planned task drop.
+- **Planner arm measured** (2026-08-22, findings E9/planner-arm):
+  one-factor A/B on the three blocked idea-tasks (replan --dry-run,
+  memory=planner vs off, ~$13.5). With memory ON the v9lb plan folded
+  in all three 2026-08-16 owner decisions as named tasks — including
+  the s2ky escaping lesson born in another task's dispute; with memory
+  OFF that satellite vanished from every replan. Both arms agreed on
+  the verdict; quality call on the new plan-diffs is the owner's.
+  Side finding: raw plan-diffs are overwritten per call
+  (`.swarm/raw/replan-a1.json`) — evidence survived only in console
+  capture.
 
 ### E10. Contract-first skeleton + model routing (in English per owner's rule)
 
@@ -412,8 +417,10 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 семантическое ослабление c5. Открытые: E3 вариант C (blast radius
 ревьюеру — код готов, замер не проведён), E2/E5/E7 — в очереди; E6 ожил
 в составе E9;
-**E9 — плечо планировщика включено на стенде PILOT-1** (2026-08-20),
-исполнитель и ревьюер ждут своих прогонов; **E12 — оба реплей-стенда
+**E9 — плечо планировщика измерено на стенде PILOT-1** (2026-08-22):
+с памятью план сложил все три решения владельца, включая спутник из
+чужого спора (s2ky); без памяти он потерян. Плечи исполнителя и
+ревьюера ждут своих прогонов; **E12 — оба реплей-стенда
 заморожены** (диагноз 6/6 в гейте, границы 4/7 — в гейте с 2026-08-22:
 линия держится на машине со стендом, без стенда — громкий skip). Прежнее
 состояние E9 (findings E9:
@@ -421,6 +428,15 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.11 (2026-08-22)
+
+- E9: planner arm measured — one-factor A/B on the three blocked
+  idea-tasks. Memory ON folded all three owner decisions into the plan
+  (incl. the s2ky satellite from another task's dispute); memory OFF
+  lost it. Executor/reviewer arms still pending; quality call on the
+  new plan-diffs is the owner's.
+
 
 ### v0.10 (2026-08-22)
 
