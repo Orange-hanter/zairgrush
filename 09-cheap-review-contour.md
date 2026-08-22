@@ -2,9 +2,9 @@
 title: "ZeusLogic — Cheap models in the review path: a plan"
 type: design
 status: draft
-version: 0.4
+version: 0.5
 created: 2026-08-20
-updated: 2026-08-20
+updated: 2026-08-22
 related:
   - 05-agent-swarm.md
   - 06-knowledge-infra-experiments.md
@@ -344,8 +344,14 @@ review path.
   **18 of 19** produce a valid answer; the one holdout (`minimax-m3`,
   17 K characters of reasoning trace) is fine at 12000. **There are no
   unusable models in the catalogue** — every prior "this model is
-  unusable" verdict was a verdict on our ceiling. Default raised to 4000;
-  `HELPER_TIMEOUT` likewise (90 s cut the slowest juror mid-thought).
+  unusable" verdict was a verdict on our ceiling. The **harness** default
+  is now 4000 and its run scripts export `HELPER_TIMEOUT=300`. The
+  **loop's** defaults are deliberately unchanged — E12 has wired nothing
+  into `tools/swarm` — so `ollama_chat` still defaults to 400,
+  `HELPER_TIMEOUT` to 90, and the live helper call sites ask for 16–400
+  tokens. Raising them is a precondition of whichever insertion point
+  lands first, and it is **mandatory before `HELPER_MODEL` may name a
+  model that cannot disable its trace** (`gpt-oss:*`, `minimax*`).
 - Every draw and every helper call lands in metrics. An arm that is not
   in the journal turns the run into unreproducible noise.
 
@@ -397,6 +403,20 @@ confirm it, and both are cheap.
 ---
 
 ## Журнал изменений
+
+### v0.5 (2026-08-22)
+
+- Аудит выдачи E12 нашёл, что §5 и REPORT.md утверждали «умолчания
+  подняты», называя при этом константу ПЕТЛИ (`HELPER_TIMEOUT = 90`),
+  тогда как коммит 5d3e03d не тронул ни одного файла под `tools/swarm/`.
+  Подняты были умолчания СТЕНДА. Формулировки исправлены: в петле
+  по-прежнему `max_tokens=400`, `HELPER_TIMEOUT=90` и бюджеты вызовов
+  16–400 токенов. Названо и следствие, которого раньше не было нигде:
+  **смена `HELPER_MODEL` на семейство, не умеющее выключать трассу
+  (`gpt-oss:*`, `minimax*`), без подъёма этих бюджетов обрежет все пять
+  живых хелперов** — та же ошибка, что в прогоне A, слоем ниже.
+- Снят устаревший «следующий замер» (потолок находок 2): он проведён
+  прогоном D и вопрос закрыт.
 
 ### v0.4 (2026-08-20)
 

@@ -242,8 +242,18 @@ All 19 models on the account, one diff, a `think` ladder
   from rule §7.1, "we don't pay for thinking", which was written for the
   *metered* contour where each output token is money. On a flat
   subscription output tokens cost only latency. The same applies to
-  `HELPER_TIMEOUT = 90`, which cut the slowest juror mid-thought. Both
-  raised.
+  `HELPER_TIMEOUT = 90`, which cut the slowest juror mid-thought.
+  **Both were raised in the harness only** — `replay.py --max-tokens` now
+  defaults to 4000 and the run scripts export `HELPER_TIMEOUT=300`. The
+  loop's own defaults are untouched, because E12 has wired nothing into
+  `tools/swarm`: `ollama_chat` still defaults to `max_tokens=400`,
+  `HELPER_TIMEOUT` to 90, and the five live helper call sites ask for
+  16–400 tokens each. That is safe only while `HELPER_MODEL` names a
+  model that *can* disable its trace. **Pointing it at `gpt-oss` or
+  `minimax` without raising those budgets first would truncate every
+  helper in the loop** — the same failure as Run A, one layer down.
+  Raising them is a loop change and is listed below as pending, not
+  done.
 - **Four models ignore the `think` boolean** and reason regardless: both
   `gpt-oss` sizes and both `minimax`. This also refines the Run A
   post-mortem above — a *level* was never strictly required for gpt-oss,
@@ -325,8 +335,15 @@ Not decided, and explicitly still open:
   be lifted now that levels are supported — an owner decision, raised in
   the ADR amendment, not taken here.
 
-**Next measurement**: same roster at per-juror cap 2, scored the same way.
-Passes if volume drops under 10 with major-file coverage still at 4/4.
+**Pending loop change, not yet made**: `ollama_chat`'s `max_tokens`
+default and the five helper call-site budgets, plus `HELPER_TIMEOUT`.
+They are a precondition for any change of `HELPER_MODEL`, and they are
+the only code E12 would need in `tools/swarm` before an insertion point
+lands.
+
+**Next measurement**: the price of the adjudicator over three-juror
+output. Cap 2 was measured (run D) and is settled — it passes the volume
+gate and halves major-file coverage, so it is not the lever.
 
 ---
 
