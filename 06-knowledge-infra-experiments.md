@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.18
+version: 0.19
 created: 2026-08-06
 updated: 2026-08-23
 related:
@@ -421,6 +421,40 @@ summary: >
   cheaper.
 - **Decision by**: mutation-survival rate of B-tests vs A-tests on the
   frozen bench; USD per task delta.
+- **The meter came first** (2026-08-23), before any of arm B was built:
+  the criterion did not exist as a number for either arm.
+  `experiments/tools/mutation-survival.py` mutates a stand's sources one
+  AST node at a time and counts what its own suite noticed. It prints
+  every SURVIVOR with file, line and substitution rather than a bare
+  rate — an equivalent mutant is indistinguishable from a hole without a
+  human looking, and a percentage nobody can act on is not a
+  measurement.
+- **Arm A measured on work already paid for.** BENCH-3 is the corpus
+  where the executor wrote its own tests. Whole stand: 113 mutants, 98
+  killed, 15 survived (13 %). Split by AUTHORSHIP, which is the point:
+  modules whose tests were written beforehand as fixtures — 97 mutants,
+  11 survived, **11 %**; modules where the executor wrote both the code
+  and its tests from scratch (`cli.py`, `normalize.py`) — 16 mutants, 4
+  survived, **25 %**. All four survivors are real holes, not equivalent
+  mutants: two chosen defaults (`top = 10`, `width = 72`) and the guard
+  boundary (`if width < 1`) can all be shifted without the suite
+  noticing. The executor tested the paths it wrote and skipped the
+  defaults it chose and the boundary it guarded — the predicted failure,
+  now a number rather than four anecdotes. Caveats on the record: 16
+  mutants is a thin base, `normalize.py` gives only 2 of them, and
+  `rank.py`/`stats.py` are excluded from the clean split as
+  mixed-authorship confounds.
+- **Arm B implemented behind `[experiments] tester`** (default off, so
+  today's behaviour is unchanged). Independence is structural, not
+  promised: the tester runs BEFORE the executor, when no implementation
+  exists on disk, and sees only spec and acceptance — no repo map, no
+  memory, no other code. The gate between the two is deliberately not
+  checked: fresh tests must be red. Files it wrote become untouchable
+  for the executor, tracked by content fingerprint (they sit uncommitted,
+  so a path-only rule would have failed every round on the loop's own
+  setup). Its contract carries a field no other role has — `unclear`: a
+  spec that leaves a case undecided is a finding about the TASK, and a
+  guessed answer would freeze an invention into a test.
 - **Status: next in line.** It was queued behind E10 and E13; E13 is
   answered (ADR-012) and E10's arm A is unblocked by the engine choice,
   so nothing stands in front of it any more. What E13 hands it: a paired
