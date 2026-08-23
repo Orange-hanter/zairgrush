@@ -281,6 +281,41 @@ class TestExecutorUnavailable(unittest.TestCase):
                        {"reason": "executor_unavailable"}), statuses,
                       "задача ни в чём не виновата — обратно в очередь")
 
+    def test_budget_truncation_tells_the_executor_to_continue(self):
+        """Совет обязан лечить ту болезнь, что была.
+
+        Обрыв по потолку стоимости — не нарушение контракта: правки уже
+        на диске, оборвался отчёт. Совет «повтори, соблюдая контракт»
+        посылает исполнителя переделывать сделанное, то есть платить за
+        раунд дважды — а именно этот раунд и обрубили за дороговизну.
+        """
+        notes = []
+        state = _FakeState()
+
+        class FakeAgents:
+            last_implement_failure = {"reason": "budget_exhausted",
+                                      "wall_s": 800.0, "events": 1900}
+
+            def implement(self, task, feedback, iteration):
+                notes.append((feedback or {}).get("note"))
+                return
+
+            def review(self, *a, **k):
+                raise AssertionError("до ревью дойти не должно")
+
+        loop = lp.Loop(state, {}, FakeAgents())
+        loop.gate = lambda task: (True, "OK")
+        loop.scope_check = lambda task: (True, [], [])
+        loop.cleanup = lambda task, reason: None
+        loop.sh = lambda cmd, timeout=900: type(
+            "R", (), {"stdout": "", "returncode": 0})()
+        loop.run_task({"id": "t1", "title": "t", "paths": ["a.py"],
+                       "type": "feature"})
+        follow = [n for n in notes if n]
+        self.assertTrue(follow, "второй раунд обязан получить совет")
+        self.assertIn("ЦЕЛЫ", follow[0])
+        self.assertNotIn("контракт", follow[0])
+
     def test_slow_crash_still_burns_rounds(self):
         """Авария в середине настоящей работы — не «недоступен»: процесс
         жил, события шли. Такое честно стоит раунда (s2ky, раунд 3)."""

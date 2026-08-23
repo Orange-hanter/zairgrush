@@ -208,6 +208,30 @@ def envelope_facts(env: Any) -> dict[str, Any]:
     return facts
 
 
+# Обрыв по потолку `--max-budget-usd` CLI называет ДВУМЯ словами: в
+# `terminal_reason` конверта и в `subtype` результата, и совпадают они не
+# всегда. Читаются оба: одного мало, а промах здесь стоит не метрики, а
+# диагноза — раунд, обрубленный по деньгам, выглядит аварией.
+BUDGET_TRUNCATIONS = frozenset({"budget_exhausted", "error_max_budget_usd"})
+
+
+def budget_truncated(env: Any) -> bool:
+    """Конверт сам говорит, что прогон упёрся в потолок стоимости.
+
+    Слово конверта сильнее кода возврата: CLI выходит НЕНУЛЁВЫМ кодом,
+    когда обрубает себя по деньгам, и драйвер по коду честно говорит
+    «crash» — а настоящая смерть процесса конверта не оставляет вовсе.
+    Поэтому наличие конверта с этим именем и есть отличие «денег не
+    хватило» от «процесс умер».
+    """
+    if not isinstance(env, dict):
+        return False
+    for key in ("terminal_reason", "subtype"):
+        if str(env.get(key) or "") in BUDGET_TRUNCATIONS:
+            return True
+    return False
+
+
 def denied_commands(env: Any) -> list[str]:
     """Что именно исполнителю не дали сделать — для журнала человека.
 

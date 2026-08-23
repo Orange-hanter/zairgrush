@@ -135,13 +135,25 @@ def claude_outcome(agents: AgentsLike, task: dict[str, Any], iteration: int,
                        count=len(denied), commands=denied[:5])
     report = engines.report_from_envelope(env)
     reason = result.reason
-    if report is None and reason == "done":
-        # Обрыв по деньгам — не плохая работа, а раунд, в котором работу
-        # не о чем судить: петля обязана назвать его тем, чем он был
-        # (правило честности бюджета раундов, §5.3).
-        terminal = facts.get("terminal_reason")
-        reason = ("budget_exhausted" if terminal == "budget_exhausted"
-                  else "no_report")
+    if report is None and reason in ("done", "crash"):
+        # Обрыв по деньгам — не плохая работа и не авария, а раунд, в
+        # котором работу не о чем судить: петля обязана назвать его тем,
+        # чем он был (правило честности бюджета раундов, §5.3).
+        #
+        # «crash» здесь разбирается наравне с «done», и это не
+        # перестраховка. CLI выходит НЕНУЛЁВЫМ кодом, когда обрубает
+        # себя по потолку стоимости, драйвер по коду возврата честно
+        # говорит «crash» — и диагноз получается противоположный
+        # правде: оператор идёт искать аварию вместо того, чтобы
+        # поднять executor_budget_usd или разбить задачу. Поймано на
+        # плечах E9 (2026-08-24): оба потеряли первый раунд на потолке
+        # в $3, журнал обоих сказал «крах». Конверт при этом ЕСТЬ и сам
+        # называет причину, а настоящая смерть процесса конверта не
+        # оставляет — поэтому слово конверта сильнее кода возврата.
+        if engines.budget_truncated(env):
+            reason = "budget_exhausted"
+        elif reason == "done":
+            reason = "no_report"
     return report, reason, facts
 
 

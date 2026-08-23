@@ -293,13 +293,20 @@ class TestReportExtraction(AgentsCase):
                           "отчёт берётся только из assistant-событий")
 
 
-def _fake_process(stdout="", stderr=""):
-    """Двойник Popen: пустой поток, мгновенное и успешное завершение —
-    для тестов, которым нужен только argv, а не реальный прогон агента."""
+def _fake_process(stdout="", stderr="", returncode=0):
+    """Двойник Popen: пустой поток, мгновенное завершение — для тестов,
+    которым нужен только argv, а не реальный прогон агента.
+
+    Код возврата — параметр, потому что он бывает НЕНУЛЕВЫМ и при
+    осмысленном конверте: CLI так сообщает об обрыве по потолку
+    стоимости. Пока двойник умел только ноль, эта ветка была
+    непроверяема, и петля звала обрыв по деньгам крахом процесса.
+    """
     return type("P", (), {
         "stdout": io.StringIO(stdout), "stderr": io.StringIO(stderr),
-        "returncode": 0, "poll": lambda s: 0,
-        "wait": lambda s, timeout=None: 0, "kill": lambda s: None})()
+        "returncode": returncode, "poll": lambda s: returncode,
+        "wait": lambda s, timeout=None: returncode,
+        "kill": lambda s: None})()
 
 
 CLAUDE_DONE = {"status": "done", "summary": "сделано"}
@@ -329,7 +336,7 @@ class TestExecutorEngineWiring(AgentsCase):
     документатор давно ходят через claude.
     """
 
-    def _spawn(self, config, stdout="", task=None):
+    def _spawn(self, config, stdout="", task=None, returncode=0):
         seen = {}
         orig = subprocess.Popen
 
@@ -337,7 +344,7 @@ class TestExecutorEngineWiring(AgentsCase):
             if not (argv and argv[0] in ("kimi", "claude")):
                 return orig(argv, **kw)
             seen["argv"] = argv
-            return _fake_process(stdout=stdout)
+            return _fake_process(stdout=stdout, returncode=returncode)
 
         subprocess.Popen = fake
         self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
@@ -422,6 +429,47 @@ class TestExecutorEngineWiring(AgentsCase):
         self.assertIsNone(report)
         self.assertEqual(agents.last_implement_failure["reason"],
                          "budget_exhausted")
+
+    def test_budget_truncation_survives_a_nonzero_exit(self):
+        """Слово конверта сильнее кода возврата.
+
+        Настоящий CLI выходит НЕНУЛЁВЫМ кодом, когда обрубает себя по
+        `--max-budget-usd`, и драйвер по коду возврата честно говорит
+        «crash». Пока разбирался только исход «done», диагноз получался
+        противоположный правде: оператор шёл искать аварию вместо того,
+        чтобы поднять потолок. Замерено на плечах E9 (2026-08-24) — оба
+        потеряли первый раунд на потолке в $3 и оба сказали «крах».
+        """
+        stream = _claude_stream(structured_output=None, result="…",
+                                is_error=True,
+                                subtype="error_max_budget_usd",
+                                terminal_reason="budget_exhausted")
+        _argv, report, agents = self._spawn({"executor_engine": "claude"},
+                                            stream, returncode=1)
+        self.assertIsNone(report)
+        self.assertEqual(agents.last_implement_failure["reason"],
+                         "budget_exhausted")
+
+    def test_subtype_alone_is_enough_to_name_the_truncation(self):
+        """Потолок называется двумя словами, и совпадают они не всегда:
+        читать одно `terminal_reason` — значит зависеть от того, какое
+        из полей CLI заполнит в этой версии."""
+        stream = _claude_stream(structured_output=None, result="…",
+                                is_error=True,
+                                subtype="error_max_budget_usd")
+        _argv, _report, agents = self._spawn({"executor_engine": "claude"},
+                                             stream, returncode=1)
+        self.assertEqual(agents.last_implement_failure["reason"],
+                         "budget_exhausted")
+
+    def test_real_crash_is_still_a_crash(self):
+        """Ненулевой код БЕЗ конверта — смерть процесса, и звать её
+        обрывом по деньгам нельзя: настоящая авария конверта не
+        оставляет вовсе, на этом и держится различение."""
+        _argv, report, agents = self._spawn({"executor_engine": "claude"},
+                                            "", returncode=1)
+        self.assertIsNone(report)
+        self.assertEqual(agents.last_implement_failure["reason"], "crash")
 
     def test_empty_envelope_is_no_report(self):
         _argv, report, agents = self._spawn({"executor_engine": "claude"}, "")

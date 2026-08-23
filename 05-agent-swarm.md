@@ -2,9 +2,9 @@
 title: "ZeusLogic — Рой агентов: петля «исполнитель ↔ ревьюер»"
 type: design
 status: draft
-version: 0.52
+version: 0.53
 created: 2026-07-30
-updated: 2026-08-23
+updated: 2026-08-24
 related:
   - docs/00-conventions.md
   - docs/01-requirements.md
@@ -673,7 +673,17 @@ Heartbeat на двух сигналах: (а) процесс жив, (б) из 
   escalation, which names what the rounds burned on instead of guessing
   about size. Journal: `round_futile` per round, `futile_exhausted` at
   the ceiling; the blocked reason is `futile_rounds`, not
-  `max_iterations`;
+  `max_iterations`. **A futile round must be named by what actually
+  happened, and the envelope outranks the exit code**: a CLI that stops
+  itself at `executor_budget_usd` exits non-zero, which is
+  indistinguishable from process death by return code alone — but it
+  leaves an envelope that says so, and a real crash leaves none. That
+  absence is the whole difference. Getting the word wrong costs the
+  diagnosis, not the metric: "crash" sends the operator hunting an
+  infrastructure fault when the fix is one number. The retry note is
+  split by cause for the same reason — after a budget truncation the
+  edits are already on disk, and "repeat, respecting the contract" pays
+  for the same work twice (measured on both E9 arms, 2026-08-24);
 - **жёсткий wall-clock cap** на вызов агента (по умолчанию 30 мин, конфиг) —
   дополнение к таймауту тишины: агент, стабильно генерирующий события по
   кругу, иначе может крутиться часами;
@@ -2115,6 +2125,16 @@ verdict = retry (§4.2).
 ---
 
 ## Журнал изменений
+
+### v0.53 (2026-08-24)
+
+- §5.3: правило честности бюджета раундов дополнено — бесплодный раунд
+  обязан называться тем, чем он был, и слово конверта сильнее кода
+  возврата. Обрыв по `executor_budget_usd` выходит ненулевым кодом и по
+  коду неотличим от смерти процесса; отличает их наличие конверта.
+  Совет исполнителю разведён по причине: после обрыва по деньгам правки
+  на диске целы, и «повтори, соблюдая контракт» платит за ту же работу
+  дважды. Замерено на обоих плечах E9.
 
 ### v0.52 (2026-08-23)
 
