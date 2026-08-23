@@ -2,9 +2,9 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.17
+version: 0.18
 created: 2026-08-06
-updated: 2026-08-22
+updated: 2026-08-23
 related:
   - 05-agent-swarm.md
   - 05-agent-swarm-audit.md
@@ -421,8 +421,13 @@ summary: >
   cheaper.
 - **Decision by**: mutation-survival rate of B-tests vs A-tests on the
   frozen bench; USD per task delta.
-- **Status: queued** (one factor per run; after E10's first
-  measurement).
+- **Status: next in line.** It was queued behind E10 and E13; E13 is
+  answered (ADR-012) and E10's arm A is unblocked by the engine choice,
+  so nothing stands in front of it any more. What E13 hands it: a paired
+  instrument (`bench/e13-rejudge.py`) that judges frozen diffs without
+  re-running an executor, and the warning that a cheap judge sees
+  nothing — mutation survival must be measured, not inferred from
+  reviewer approval.
 
 ### E12. Frozen replay benches for the loop's own judgements
 
@@ -531,6 +536,12 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.18 (2026-08-23)
+
+- E11 unblocked: it stood behind E10 and E13, and both props are gone.
+  Status rewritten with what E13 hands it — the paired re-judge
+  instrument and the warning that a cheap judge sees nothing.
 
 ### v0.17 (2026-08-23)
 

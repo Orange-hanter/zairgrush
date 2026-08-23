@@ -4,7 +4,7 @@ type: guide
 status: draft
 version: 0.17
 created: 2026-08-09
-updated: 2026-08-20
+updated: 2026-08-23
 related:
   - 05-agent-swarm.md
   - 07-experiments-journal.md
