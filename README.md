@@ -68,6 +68,7 @@ python3 -m pytest
 | [`06-knowledge-infra-experiments.md`](06-knowledge-infra-experiments.md) | Программа экспериментов над знаниевой инфраструктурой: дублирующие варианты подсистем E1–E8, протокол findings/ADR, правила анти-зоопарка. |
 | [`07-experiments-journal.md`](07-experiments-journal.md) | Связный человекочитаемый журнал программы экспериментов. |
 | [`08-operators-guide.md`](08-operators-guide.md) | Руководство оператора: подготовка стенда, постановка задач, разбор блокировок. |
+| [`11-architecture-diagrams.md`](11-architecture-diagrams.md) | Архитектура в диаграммах (Mermaid): роли и состояние, конечный автомат задачи, цепочка гейтов раунда, учёт раундов, контракт вердикта, потоки контекста, эскалации, память. Документ на английском. |
 | [`tools/swarm/`](tools/swarm) | Реализация: CLI `swarm`, оркестратор, индексация кода (ctags/tree-sitter), JSON-схемы контрактов (`schemas/`), тесты (`pytest`). |
 | [`experiments/adr/`](experiments/adr) | Принятые решения экспериментальной программы (Context → Варианты → Решение → Последствия). |
 | `experiments/findings.jsonl` | Сырой журнал наблюдений по экспериментам (см. `.gitignore` — рабочие стенды в git не попадают, только выводы). |
