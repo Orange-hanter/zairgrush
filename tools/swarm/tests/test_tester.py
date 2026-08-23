@@ -104,7 +104,17 @@ class TestPromptIsAboutCatchingMistakes(unittest.TestCase):
         self.assertIn("instead of\n  inventing an answer", text)
 
     def test_forbids_making_tests_green_by_skipping(self):
-        self.assertIn("Do not add skips or xfail", self._text())
+        self.assertIn("never add skips or xfail", self._text())
+
+    def test_does_not_demand_that_every_test_start_red(self):
+        """Раунд 1 E11: прежнее «тесты обязаны падать сегодня» ложно для
+        задач, которые сохраняют поведение и меняют способ (кэш, ускорение,
+        рефакторинг). Буквальное послушание заставило бы выдумывать
+        искусственные падения."""
+        text = self._text()
+        self.assertIn("PRESERVES behaviour", text)
+        self.assertIn("pass before AND\n  after", text)
+        self.assertIn("Never invent an artificial failure", text)
 
     def test_carries_acceptance_and_spec(self):
         text = self._text()

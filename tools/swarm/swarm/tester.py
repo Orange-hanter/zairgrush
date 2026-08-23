@@ -92,6 +92,16 @@ def prompt(task: dict[str, Any], goal: str, targets: list[str],
     выбрана намеренно: «покрой поведение» на канарейках давало тесты,
     повторяющие docstring. Это тот же урок, что у ADR-005 с запросами
     проверки — формулировка и есть механизм.
+
+    Правка после раунда 1 E11: прежний текст требовал, чтобы тесты
+    ПАДАЛИ сегодня. Для задачи, добавляющей поведение, это верно (s3nm и
+    s4cli вышли красными целиком — модулей ещё не было), а для задачи,
+    которая сохраняет поведение и меняет способ, ложно: у кэширования
+    (s1ch) красным был 1 тест из 6, у ускорения (s2tn) — 2 из 5, потому
+    что остальные охраняют то, что меняться НЕ должно. Тестировщик
+    проигнорировал инструкцию ровно там, где она не применима, и это
+    была удача, а не устройство: буквальное послушание заставило бы его
+    выдумывать искусственные падения.
     """
     acc = "\n".join("- " + a for a in task.get("acceptance") or [])
     files = "\n".join("- " + t for t in targets)
@@ -128,8 +138,14 @@ on that mistake and passes on the correct one.
 - Do not write a test whose expected value you cannot derive from the spec
   alone. If the spec does not decide a case, say so in `unclear` instead of
   inventing an answer — an ambiguous spec is a finding, not a guess.
-- Tests must fail today (nothing is implemented) and pass once the spec is
-  implemented correctly. Do not add skips or xfail to make them green.
+- Some of your tests will fail today and some will not, and BOTH are
+  correct. A task that ADDS behaviour leaves you nothing to run against:
+  those tests fail now and pass once the spec is implemented. A task that
+  PRESERVES behaviour while changing how it is achieved — caching, a
+  faster algorithm, a refactor — is guarded by tests that pass before AND
+  after; they exist to fail if the change breaks what must not change.
+  Write whichever the task calls for. Never invent an artificial failure
+  to make a test look red, and never add skips or xfail to make one green.
 - Write only the files listed above. Do not create or edit anything else.
 
 ## Output
