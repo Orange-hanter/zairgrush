@@ -164,11 +164,18 @@ def scope_check(loop: LoopLike, task: dict[str, Any],
     """
     allowed = task.get("paths") or []
     protected = loop.config.get("protected_paths") or ["tests/*", "tests/**"]
+    # E11, плечо B: файл, написанный НЕЗАВИСИМЫМ тестировщиком, снова
+    # становится чужим тестом, хотя `paths` его называет. Без этого
+    # исключения плечо было бы плечом A с лишним вызовом: исполнитель
+    # волен переписать проверку под свою реализацию, и независимость
+    # автора кончается на первом же неудобном тесте.
+    authored = list(getattr(loop, "_authored_tests", None) or [])
 
     def is_protected(path: str) -> bool:
         return any(fnmatch.fnmatch(path, p) for p in protected)
 
-    unlocking = [pat for pat in allowed if is_protected(pat)]
+    unlocking = [pat for pat in allowed
+                 if is_protected(pat) and pat not in authored]
     bad, touched_tests = [], []
     for path in loop.state.changed_files():
         if state_mod.owned_by_loop(path):
@@ -192,6 +199,11 @@ def scope_check(loop: LoopLike, task: dict[str, Any],
             continue
         if not any(fnmatch.fnmatch(path, p) for p in allowed):
             bad.append(path)
+            continue
+        if path in authored:
+            # Прямо и без глобов: свой же путь в `paths` не отпирает
+            # файл, который написал не исполнитель.
+            touched_tests.append(path)
             continue
         if is_protected(path) and not any(
                 fnmatch.fnmatch(path, u) for u in unlocking):

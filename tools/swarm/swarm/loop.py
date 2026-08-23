@@ -31,6 +31,7 @@ import gitops  # noqa: E402
 import memory as memory_mod  # noqa: E402
 import obs  # noqa: E402
 import pyindex  # noqa: E402
+import tester as tester_mod  # noqa: E402
 from gitops import (  # noqa: E402
     _apply_patch as _git_apply_patch,
     declared_state_sha as _git_declared_state_sha,
@@ -226,6 +227,43 @@ class Loop:
                                 ) -> dict[str, Any] | None:
         return _rc_review_with_quota_wait(self, task, tail, iteration, confirming)
 
+    def _author_tests(self, task: dict[str, Any]) -> list[str]:
+        """Плечо B E11: независимый тестировщик пишет тесты задачи.
+
+        Возвращает пути, которые он написал, — они становятся
+        неприкосновенными для исполнителя на всю задачу. Пустой список
+        означает «плечо не применялось»: флаг выключен, задача не того
+        типа или вызов не удался.
+        """
+        tester = tester_mod
+        if not tester.wants_tester(self.config, task):
+            return []
+        goal = str(self.state.load_tasks().get("goal", ""))
+        suite = " ".join(self.config.get("gate_command") or ["по умолчанию"])
+        try:
+            report = tester.write_tests(self.agents, task, goal, suite)
+        except Exception:
+            # Тестировщик — необязательное плечо замера: его падение не
+            # имеет права стоить задачи (§7.3, тот же fail-open).
+            log.exception("тестировщик упал", extra={"swarm_task": task["id"]})
+            report = None
+        written = [p for p in tester.test_paths(task)
+                   if (self.state.root / p).exists()]
+        if report is None or not written:
+            self.state.log("tests_not_authored", task=task["id"],
+                           reason=("нет отчёта" if report is None
+                                   else "файлы не появились"),
+                           degraded="плечо B выродилось в плечо A")
+            return []
+        self.state.log("tests_authored", task=task["id"], files=written,
+                       cases=len(report.get("cases") or []),
+                       unclear=report.get("unclear") or [],
+                       summary=report.get("summary"))
+        self.ui(f"    тесты написаны независимо: {', '.join(written)}"
+                + (f"; неясного в спеке: {len(report['unclear'])}"
+                   if report.get("unclear") else ""))
+        return written
+
     def _implement_with_quota_wait(self, task: dict[str, Any],
                                    feedback: Any, iteration: int) -> Any:
         # Тип отчёта — контракт агентов, а не петли: `agents` здесь Any,
@@ -320,6 +358,14 @@ class Loop:
                      "note": "решение человека по замыслу — обязательно к "
                              "исполнению во всех последующих итерациях"}
         feedback = dict(human) if human else None
+        # E11, плечо B: тесты пишет отдельный вызов ДО исполнителя — тогда
+        # реализации ещё нет на диске, и независимость автора получается
+        # структурной, а не обещанной. Гейт между тестировщиком и
+        # исполнителем НЕ проверяется намеренно: свежие тесты обязаны быть
+        # красными, это и есть их работа. Отказ тестировщика задачу не
+        # роняет — плечо просто вырождается в сегодняшнее (плечо A), и об
+        # этом честно пишется в журнал.
+        self._authored_tests = self._author_tests(task)
         history: list[dict[str, Any]] = []
         best: dict[str, Any] = {"findings": None, "round": None, "diff": None,
                                 "items": None}

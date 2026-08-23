@@ -68,6 +68,8 @@ KIND_RU = {
     "executor_failed": "вызов исполнителя не состоялся",
     "executor_denied": "исполнителю отказано в вызове инструмента",
     "verdict_salvaged": "вердикт добыт из потока",
+    "tests_authored": "тесты написаны независимо",
+    "tests_not_authored": "независимых тестов не получилось",
     "memory_written": "память пополнена",
     "memory_injected": "память подмешана в промпт",
     "memory_reflect": "память переосмыслена",
@@ -452,6 +454,20 @@ NARRATORS: dict[str, Narrator] = {
          f"{_s(r.get('verdict'))}, находок {r.get('findings')}"
          + (" (поля разобраны из одного)" if r.get("repaired") else "")),
         {"round", "verdict", "findings", "repaired"}),
+    # Плечо B E11 видно построчно: кто написал тесты — вопрос замера, и
+    # «неясное в спецификации» ценнее самих тестов, потому что это
+    # находка о ПОСТАНОВКЕ, а не о коде.
+    "tests_authored": lambda r: (
+        ("тесты написаны независимо: "
+         + ", ".join(map(str, _seq(r.get("files")) or ["?"]))
+         + f"; случаев {r.get('cases')}"
+         + (f"; неясного в спеке: {len(_seq(r.get('unclear')))}"
+            if r.get("unclear") else "")),
+        {"files", "cases", "unclear"}),
+    "tests_not_authored": lambda r: (
+        (f"независимых тестов не получилось ({_s(r.get('reason'))}): "
+         f"{_s(r.get('degraded'))}"),
+        {"reason", "degraded"}),
     # Запрет, который сработал, обязан быть видимым. На движке claude
     # «git для тебя только для чтения» — не фраза промпта, а правило
     # разрешений: отказ приходит ДО выполнения команды. Молчать о нём

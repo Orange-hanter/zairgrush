@@ -74,7 +74,7 @@ KNOWN_CONFIG_KEYS = frozenset({
 # Экспериментальные флаги (06-док, §1): та же семантика, что у основного
 # списка, — опечатка в имени флага молча включала бы умолчание.
 KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
-                                   "skeleton"})
+                                   "skeleton", "tester"})
 
 # Значения флага `[experiments] memory` — это имена ролей (см.
 # memory.enabled_for): каждая включается отдельно, чтобы замер шёл по
