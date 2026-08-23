@@ -227,17 +227,20 @@ class Loop:
                                 ) -> dict[str, Any] | None:
         return _rc_review_with_quota_wait(self, task, tail, iteration, confirming)
 
-    def _author_tests(self, task: dict[str, Any]) -> list[str]:
+    def _author_tests(self, task: dict[str, Any]) -> dict[str, str]:
         """Плечо B E11: независимый тестировщик пишет тесты задачи.
 
-        Возвращает пути, которые он написал, — они становятся
-        неприкосновенными для исполнителя на всю задачу. Пустой список
-        означает «плечо не применялось»: флаг выключен, задача не того
-        типа или вызов не удался.
+        Возвращает {путь: отпечаток содержимого} — по отпечатку страж
+        границ отличает «этот файл написал тестировщик» от «исполнитель
+        его потом переписал». Без отпечатка не обойтись: файлы
+        тестировщика лежат в дереве незакоммиченными, и страж видел бы
+        их как работу исполнителя, срывая каждый раунд на собственной
+        же подготовке. Пустой словарь означает «плечо не применялось»:
+        флаг выключен, задача не того типа или вызов не удался.
         """
         tester = tester_mod
         if not tester.wants_tester(self.config, task):
-            return []
+            return {}
         goal = str(self.state.load_tasks().get("goal", ""))
         suite = " ".join(self.config.get("gate_command") or ["по умолчанию"])
         try:
@@ -254,7 +257,7 @@ class Loop:
                            reason=("нет отчёта" if report is None
                                    else "файлы не появились"),
                            degraded="плечо B выродилось в плечо A")
-            return []
+            return {}
         self.state.log("tests_authored", task=task["id"], files=written,
                        cases=len(report.get("cases") or []),
                        unclear=report.get("unclear") or [],
@@ -262,7 +265,15 @@ class Loop:
         self.ui(f"    тесты написаны независимо: {', '.join(written)}"
                 + (f"; неясного в спеке: {len(report['unclear'])}"
                    if report.get("unclear") else ""))
-        return written
+        return {p: self.file_fingerprint(p) for p in written}
+
+    def file_fingerprint(self, rel: str) -> str:
+        """Отпечаток содержимого файла; пустая строка — прочитать нельзя."""
+        try:
+            data = (self.state.root / rel).read_bytes()
+        except OSError:
+            return ""
+        return hashlib.sha256(data).hexdigest()
 
     def _implement_with_quota_wait(self, task: dict[str, Any],
                                    feedback: Any, iteration: int) -> Any:

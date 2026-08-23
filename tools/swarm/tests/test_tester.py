@@ -153,16 +153,29 @@ class TestAuthoredTestsAreOffLimits(unittest.TestCase):
         ok, bad, tests = self.loop.scope_check(dict(TASK))
         self.assertTrue(ok, f"плечо A сломано: {bad} {tests}")
 
+    def _authored(self, rel):
+        """Пометить файл написанным тестировщиком — по его содержимому."""
+        return {rel: self.loop.file_fingerprint(rel)}
+
     def test_executor_may_not_edit_independently_written_tests(self):
-        self.loop._authored_tests = ["tests/test_normalize.py"]
+        self.loop._authored_tests = self._authored("tests/test_normalize.py")
         self._touch("tests/test_normalize.py", "# правка исполнителя\n")
         ok, _bad, tests = self.loop.scope_check(dict(TASK))
         self.assertFalse(ok)
         self.assertIn("tests/test_normalize.py", tests)
 
+    def test_untouched_authored_test_is_not_a_violation(self):
+        """Файл тестировщика лежит незакоммиченным и потому есть в списке
+        изменений ВСЕГДА. Без сверки по содержимому страж срывал бы
+        каждый раунд на собственной же подготовке."""
+        self._touch("tests/test_normalize.py", "# написал тестировщик\n")
+        self.loop._authored_tests = self._authored("tests/test_normalize.py")
+        ok, bad, tests = self.loop.scope_check(dict(TASK))
+        self.assertTrue(ok, f"{bad} {tests}")
+
     def test_the_implementation_stays_editable(self):
         """Запрет узкий: код задачи исполнитель правит как обычно."""
-        self.loop._authored_tests = ["tests/test_normalize.py"]
+        self.loop._authored_tests = self._authored("tests/test_normalize.py")
         self._touch("wordstat/normalize.py", "x = 2\n")
         ok, bad, tests = self.loop.scope_check(dict(TASK))
         self.assertTrue(ok, f"{bad} {tests}")
@@ -200,7 +213,7 @@ class TestDegradationIsHonest(unittest.TestCase):
 
     def test_no_report_degrades_to_arm_a_and_says_so(self):
         loop = self._loop(None)
-        self.assertEqual(loop._author_tests(dict(TASK)), [])
+        self.assertEqual(loop._author_tests(dict(TASK)), {})
         journal = self.state.journal_path.read_text()
         self.assertIn("tests_not_authored", journal)
         self.assertIn("плечо B выродилось в плечо A", journal)
@@ -209,7 +222,7 @@ class TestDegradationIsHonest(unittest.TestCase):
         """Отчёт «сделано» без файлов на диске — не сделано. Верить
         отчёту вместо дерева значит замерить обещание."""
         loop = self._loop({"status": "done", "summary": "готово"})
-        self.assertEqual(loop._author_tests(dict(TASK)), [])
+        self.assertEqual(loop._author_tests(dict(TASK)), {})
         self.assertIn("файлы не появились",
                       self.state.journal_path.read_text())
 
@@ -220,7 +233,7 @@ class TestDegradationIsHonest(unittest.TestCase):
         buf = io.StringIO()
         loop.ui = lambda *a: buf.write(" ".join(map(str, a)))
         written = loop._author_tests(dict(TASK))
-        self.assertEqual(written, ["tests/test_normalize.py"])
+        self.assertEqual(sorted(written), ["tests/test_normalize.py"])
         row = next(json.loads(x) for x in
                    self.state.journal_path.read_text().splitlines()
                    if "tests_authored" in x)
@@ -231,7 +244,7 @@ class TestDegradationIsHonest(unittest.TestCase):
     def test_flag_off_never_calls_the_tester(self):
         loop = self._loop({"status": "done", "summary": "s"})
         loop.config = {}
-        self.assertEqual(loop._author_tests(dict(TASK)), [])
+        self.assertEqual(loop._author_tests(dict(TASK)), {})
         self.assertEqual(self.calls, [], "выключенный флаг обязан молчать")
 
 

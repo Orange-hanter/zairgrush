@@ -32,6 +32,9 @@ class LoopLike(Protocol):
     def state_fingerprint(self) -> str | None:
         ...
 
+    def file_fingerprint(self, rel: str) -> str:
+        ...
+
     def declared_state_sha(self) -> str | None:
         ...
 

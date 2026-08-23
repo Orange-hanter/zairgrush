@@ -169,7 +169,7 @@ def scope_check(loop: LoopLike, task: dict[str, Any],
     # исключения плечо было бы плечом A с лишним вызовом: исполнитель
     # волен переписать проверку под свою реализацию, и независимость
     # автора кончается на первом же неудобном тесте.
-    authored = list(getattr(loop, "_authored_tests", None) or [])
+    authored = dict(getattr(loop, "_authored_tests", None) or {})
 
     def is_protected(path: str) -> bool:
         return any(fnmatch.fnmatch(path, p) for p in protected)
@@ -201,9 +201,12 @@ def scope_check(loop: LoopLike, task: dict[str, Any],
             bad.append(path)
             continue
         if path in authored:
-            # Прямо и без глобов: свой же путь в `paths` не отпирает
-            # файл, который написал не исполнитель.
-            touched_tests.append(path)
+            # Файл тестировщика лежит незакоммиченным, поэтому в списке
+            # изменений он есть ВСЕГДА. Нарушение — только если
+            # содержимое разошлось с тем, что он записал: свой же путь в
+            # `paths` не отпирает файл, который писал не исполнитель.
+            if loop.file_fingerprint(path) != authored[path]:
+                touched_tests.append(path)
             continue
         if is_protected(path) and not any(
                 fnmatch.fnmatch(path, u) for u in unlocking):
