@@ -377,6 +377,28 @@ class TestEnginePreflight(CliCase):
         _code, out = run_cli("--root", str(self.root), "run")
         self.assertIn("независимость судьи", out)
 
+    def test_undiverged_confirming_round_is_named(self):
+        """§8.2 обещает второй ВЗГЛЯД, а конфиг по умолчанию оплачивает
+        второй раз тот же вопрос: подтверждение ревьюит тот же дифф теми
+        же параметрами. Расхождение обещания и поведения обязано быть
+        видно на старте, а не выясняться по счёту."""
+        (self.root / "swarm.toml").write_text("confirmations = 2\n")
+        _code, out = run_cli("--root", str(self.root), "run")
+        self.assertIn("не разведён", out)
+
+    def test_diverged_confirming_round_stays_quiet(self):
+        (self.root / "swarm.toml").write_text(
+            'confirmations = 2\nconfirm_effort = "medium"\n')
+        _code, out = run_cli("--root", str(self.root), "run")
+        self.assertNotIn("не разведён", out)
+
+    def test_single_confirmation_needs_no_divergence(self):
+        """Один подтверждающий раунд — это и есть отсутствие второго
+        прохода: разводить нечего, и предупреждение было бы шумом."""
+        (self.root / "swarm.toml").write_text("confirmations = 1\n")
+        _code, out = run_cli("--root", str(self.root), "run")
+        self.assertNotIn("не разведён", out)
+
     def test_default_engine_says_kimi_and_stays_quiet(self):
         _code, out = run_cli("--root", str(self.root), "run")
         self.assertIn("исполнитель: kimi", out)

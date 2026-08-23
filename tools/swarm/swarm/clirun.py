@@ -80,7 +80,22 @@ def _engine_preflight(cfg: dict[str, Any]) -> bool:
         print(f"движок исполнителя не выбран: {e}", file=sys.stderr)
         return False
     cli.ui(f"исполнитель: {engine}" + (f" ({model})" if model else ""))
-    if engine == "claude" and str(model) == str(cfg.get("review_model") or ""):
+    same_model = engine == "claude" and str(model) == str(
+        cfg.get("review_model") or "")
+    # Подтверждающий раунд ревьюит ТОТ ЖЕ дифф. Если он не разведён ни
+    # моделью, ни усилием, ни линзой, это не второй ВЗГЛЯД, а второй раз
+    # тот же вопрос: §8.2 обещает угол зрения, а конфиг по умолчанию
+    # оплачивает повтор. Молчать об этом нельзя — обещание документа и
+    # поведение прогона расходятся именно здесь.
+    diverged = any(cfg.get(k) for k in
+                   ("confirm_model", "confirm_model_pool", "confirm_effort",
+                    "confirm_effort_pool", "confirm_lens"))
+    if int(cfg.get("confirmations", 2) or 0) > 1 and not diverged:
+        cli.ui("    ВНИМАНИЕ: подтверждающий раунд ничем не разведён — тот "
+               "же дифф тем же ревьюером с теми же параметрами; это второй "
+               "образец, а не второй взгляд. Развести: confirm_model, "
+               "confirm_effort или confirm_lens")
+    if same_model:
         cli.ui("    ВНИМАНИЕ: исполнитель и ревьюер — одна и та же модель; "
                "независимость судьи (§3.2) держится только на "
                "confirm_model/confirm_effort/confirm_lens")

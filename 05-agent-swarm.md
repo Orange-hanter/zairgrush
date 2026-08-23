@@ -2,9 +2,9 @@
 title: "ZeusLogic — Рой агентов: петля «исполнитель ↔ ревьюер»"
 type: design
 status: draft
-version: 0.50
+version: 0.51
 created: 2026-07-30
-updated: 2026-08-22
+updated: 2026-08-23
 related:
   - docs/00-conventions.md
   - docs/01-requirements.md
@@ -232,9 +232,22 @@ pre-dispute state (`experiments/goldset/boundaries/`): the first version
 of the linter, which searched a single kind of evidence, scored 1/7 at
 7.1 warnings per task — synthetic tests praised a design the repository
 refuted. The shipped version scores 4/7 at a cap of 6 advisory lines
-(5/7 at 8). Two of the seven — "the feature is born in the importer" —
-have no textual trace at all and are not reachable by any mechanical
-signal; silence from the linter is therefore not a guarantee either.
+(5/7 at 8), so **silence from the linter is not a guarantee**.
+
+Which two it misses, precisely, because the earlier wording named the
+wrong pair: **q014** (a document holding a corpus count, for a task that
+changes the corpus) and **q016** (a producer upstream, `convert.rs`, for
+a task in another crate). Their CLASSES are reachable — the same two
+classes are caught elsewhere in the same set (q017 at rank 6, q005 at
+rank 2); it is these two instances that are not. A fifth kind of
+evidence was built and priced for exactly this gap — names *declared*
+inside the boundary and used outside, which is a code dependency rather
+than a word coincidence — and the bench rejected it: at a weight low
+enough to be safe it moves q016 from rank 24 to 21 and changes nothing
+else, and at a weight high enough to reach q016 it costs q017 and q020.
+About twenty files carry an equally rare symbol link to any given task,
+so the signal cannot discriminate. Reverted; recorded as a negative in
+`experiments/findings.jsonl` (E12/producer-signal).
 
 ### 3.2. Почему Kimi — исполнитель, Claude — ревьюер (а не наоборот)
 
@@ -2049,6 +2062,15 @@ verdict = retry (§4.2).
 ---
 
 ## Журнал изменений
+
+### v0.51 (2026-08-23)
+
+- §3.1.1: corrected which two boundary disputes the linter misses — q014
+  and q016, not q005/q016 as previously written; both of their classes
+  are caught elsewhere in the same set, so it is the instances that are
+  unreachable, not the classes. Added the measured refusal of a fifth
+  signal (declarations used outside the boundary): safe weights buy
+  nothing, useful weights cost two disputes already caught.
 
 ### v0.50 (2026-08-22)
 
