@@ -359,6 +359,15 @@ class TestEnginePreflight(CliCase):
         self.assertEqual(code, 2)
         self.assertIn("движок исполнителя не выбран", out)
 
+    def test_go_also_refuses_an_unknown_engine(self):
+        """Мутационный аудит нашёл эту дыру: `go` — вход «от и до», и
+        именно он тратит деньги на планирование ДО первой задачи. Проверка
+        движка в одном из двух входов — это проверка в половине случаев."""
+        (self.root / "swarm.toml").write_text('executor_engine = "sonnet"\n')
+        code, out = run_cli("--root", str(self.root), "go")
+        self.assertEqual(code, 2)
+        self.assertIn("движок исполнителя не выбран", out)
+
     def test_run_names_the_engine_it_will_use(self):
         """Строка вывода — не украшение: прогон на чужом движке выглядит
         точно так же, как прогон на своём, пока никто не назвал движок."""

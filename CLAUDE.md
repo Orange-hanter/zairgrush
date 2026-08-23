@@ -21,7 +21,10 @@ Kimi Code (исполнитель, модель K3) и Claude Code (ревьюе
 - `experiments/adr/` — принятые решения экспериментальной программы (ADR); `experiments/findings.jsonl` — сырой журнал наблюдений. Рабочие стенды экспериментов (`experiments/stand*`, `bench/`, `repomap/` и т.п.) — воспроизводимый scratch, в git не попадают (`.gitignore`).
 
 Проверка — одна команда: `cd tools/swarm && ./check.sh` (линт → типы →
-тесты, в этом порядке). Отдельно: `.venv/bin/ruff check swarm/ tests/`,
+тесты, в этом порядке). Отдельно от гейта — мутационный аудит
+`python3 tools/swarm/mutate.py`: он ломает по одному инварианту и
+требует, чтобы тесты это заметили. Новая подсистема дописывает туда свои
+мутации; непойманная мутация — дыра в наборе тестов, а не мелочь. Отдельно: `.venv/bin/ruff check swarm/ tests/`,
 `.venv/bin/mypy` (strict), `python3 -m pytest`. Инструменты ставятся в
 `.venv` (`uv venv .venv && uv pip install --python .venv ruff mypy`);
 в git `.venv` не попадает.

@@ -524,6 +524,37 @@ class TestVerdictSalvagedFromStream(RepoCase):
         self.assertIn('"salvaged": true',
                       self.state.metrics_path.read_text())
 
+    def test_salvaged_verdict_gets_no_leniency(self):
+        """Мутационный аудит нашёл эту дыру: спасение держится на том, что
+        добытое из потока проходит ТУ ЖЕ проверку. Заглушка, вытащенная из
+        потока, — по-прежнему заглушка, и подтверждать ею работу нельзя."""
+        agents = self._patch([
+            [_tool_call(PLACEHOLDER),
+             {"type": "result", "structured_output": None}],
+            [{"type": "result", "structured_output": VALID}],
+        ])
+        verdict = agents.review(dict(self.TASK), "OK", 1)
+        self.assertEqual(len(self.prompts), 2,
+                         "негодное спасённое обязано уйти в повтор")
+        self.assertEqual(verdict["analysis"], VALID["analysis"])
+
+    def test_salvaged_but_broken_findings_are_refused(self):
+        """Список находок, который не разобрался, — не пустой список:
+        подставить [] значило бы превратить request_changes в approve."""
+        broken = {"analysis": (
+            "Разбор диффа целиком, замечания по существу перечислены "
+            "ниже в поле findings.</analysis>\n"
+            "<verdict>request_changes</verdict>\n"
+            "<summary>Нужны правки по трём местам разбора.</summary>\n"
+            "<findings>[{сломано</findings>\n")}
+        agents = self._patch([
+            [_tool_call(broken), {"type": "result", "structured_output": None}],
+            [{"type": "result", "structured_output": VALID}],
+        ])
+        verdict = agents.review(dict(self.TASK), "OK", 1)
+        self.assertEqual(verdict["verdict"], "approve",
+                         "нечитаемые находки не имеют права стать вердиктом")
+
     def test_nothing_to_salvage_stays_a_failure(self):
         agents = self._patch([[{"type": "result", "structured_output": None}]])
         self.assertIsNone(agents.review(dict(self.TASK), "OK", 1))

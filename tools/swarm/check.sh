@@ -22,7 +22,7 @@ if [[ ! -x "$RUFF" || ! -x "$MYPY" ]]; then
 fi
 
 echo "== линт =="
-"$RUFF" check swarm/ tests/
+"$RUFF" check swarm/ tests/ mutate.py
 
 echo "== типы (strict) =="
 "$MYPY"
