@@ -7,6 +7,7 @@
 байт-идентичность промптов при выключенном флаге.
 """
 import importlib.util
+import json
 import pathlib
 import subprocess
 import sys
@@ -838,6 +839,63 @@ class TestFtsQueryIsOrNotAnd(unittest.TestCase):
         исходную строку сам, а «or» из ничего сломал бы разбор."""
         self.assertEqual(self.fts(""), "")
         self.assertEqual(self.fts("и в на"), "")
+
+
+class TestLessonFilesReachThePrompt(unittest.TestCase):
+    """Файлы урока — тоже урок.
+
+    Замер 2026-08-23: под задачу s2ky извлекался урок k3ad, у которого
+    `zeus/crates/zeus-erc/tests/corpus_erc.rs` стоит в якорях, — а s2ky
+    споткнулась о границу ровно на этом файле. В промпт уезжала одна
+    проза: решение вида «границы расширены на такие-то файлы» доходило
+    без файлов, то есть без своей действующей части.
+    """
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "meminject", ROOT_DIR / "meminject.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["meminject"] = mod
+        spec.loader.exec_module(mod)
+        self.paths = mod._anchor_paths
+        self.cap = mod._MAX_ANCHOR_PATHS
+
+    def test_paths_are_taken_from_anchors(self):
+        hit = {"anchors": [{"kind": "task", "ref": "k3ad"},
+                           {"kind": "path", "ref": "src/a.rs"},
+                           {"kind": "path", "ref": "tests/corpus.rs"}]}
+        self.assertEqual(self.paths(hit), ["src/a.rs", "tests/corpus.rs"])
+
+    def test_task_and_symbol_anchors_are_not_paths(self):
+        """Id задачи и имя символа в списке файлов бесполезны: первый
+        ничего не открывает, второй не путь."""
+        hit = {"anchors": [{"kind": "task", "ref": "s2ky"},
+                           {"kind": "symbol", "ref": "check_erc02"}]}
+        self.assertEqual(self.paths(hit), [])
+
+    def test_anchors_as_json_string_are_read(self):
+        """Журнал читается как данные: якоря приходят и строкой."""
+        hit = {"anchors": json.dumps([{"kind": "path", "ref": "src/b.rs"}])}
+        self.assertEqual(self.paths(hit), ["src/b.rs"])
+
+    def test_broken_anchors_do_not_raise(self):
+        for bad in ({"anchors": "не json"}, {"anchors": None}, {},
+                    {"anchors": ["src/c.rs", 42]}):
+            self.paths(bad)     # не бросает
+
+    def test_plain_string_anchors_still_work(self):
+        self.assertEqual(self.paths({"anchors": ["src/c.rs", "нет-слеша"]}),
+                         ["src/c.rs"])
+
+    def test_duplicates_collapse(self):
+        hit = {"anchors": [{"ref": "src/a.rs"}, {"ref": "src/a.rs"}]}
+        self.assertEqual(self.paths(hit), ["src/a.rs"])
+
+    def test_list_is_capped(self):
+        """Потолок мерен по корпусу (максимум путей у урока — 5), а не
+        подобран под нужный ответ."""
+        hit = {"anchors": [{"ref": f"src/f{i}.rs"} for i in range(20)]}
+        self.assertEqual(len(self.paths(hit)), self.cap)
 
 
 if __name__ == "__main__":

@@ -279,7 +279,7 @@ def search_fts(config: dict[str, Any], repo: str, query: str,
     # модуля; данные (repo, q, k) едут через -v-переменные psql.
     sql = (
         "SELECT coalesce(json_agg(t), '[]'::json) FROM ("  # noqa: S608 — данные через -v
-        "SELECT id, outcome, body, title, task_id, count, anchors_ok "
+        "SELECT id, outcome, body, title, task_id, count, anchors_ok, anchors "
         f"FROM lessons WHERE {_repo_filter()} "
         "AND tsv @@ websearch_to_tsquery('russian', :'q') "
         "ORDER BY ts_rank(tsv, websearch_to_tsquery('russian', :'q')) DESC, "
@@ -350,7 +350,7 @@ def search_vec(config: dict[str, Any], repo: str, vec: list[float],
     # S608: подставляется только _repo_filter(); вектор — в -v-переменной.
     sql = (
         "SELECT coalesce(json_agg(t), '[]'::json) FROM ("  # noqa: S608 — данные через -v
-        "SELECT id, outcome, body, title, task_id, count, anchors_ok "
+        "SELECT id, outcome, body, title, task_id, count, anchors_ok, anchors "
         f"FROM lessons WHERE {_repo_filter()} "
         "AND embedding IS NOT NULL "
         "ORDER BY embedding <=> :'qv'::vector, id LIMIT :k) t;"

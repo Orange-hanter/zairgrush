@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 from typing import Any
@@ -77,6 +78,39 @@ def enabled_for(config: dict[str, Any], role: str) -> bool:
     return mode == role
 
 
+# Сколько путей урока показывать. Потолок мерен по корпусу, а не подобран
+# под нужный ответ: у уроков, несущих пути, их 5, 5 и 4 (медиана по всем
+# урокам — 0, файлы несут не все). Шесть показывает файловый список
+# целиком и всё ещё обрезает патологический случай. Замечено на себе:
+# первый потолок в 4 отрезал ровно тот файл, ради которого ставился
+# замер, и поднимать его «потому что не влез мой» было бы подгонкой —
+# той самой, что уже отвергнута замером в линтере границ.
+_MAX_ANCHOR_PATHS = 6
+
+
+def _anchor_paths(hit: dict[str, Any]) -> list[str]:
+    """Пути из якорей урока: то, ЧЕГО решение касалось, а не только о чём.
+
+    Якоря приходят и списком словарей (`{"kind": "path", "ref": …}`), и
+    списком строк — журнал читается как данные. Отбираем похожее на
+    путь: у якоря-задачи `ref` это id из четырёх символов, и в промпте
+    он бесполезен.
+    """
+    out: list[str] = []
+    raw = hit.get("anchors")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    for a in raw or []:
+        ref = a.get("ref") if isinstance(a, dict) else a
+        text = str(ref or "")
+        if "/" in text and text not in out:
+            out.append(text)
+    return out[:_MAX_ANCHOR_PATHS]
+
+
 def inject_block(role: str, task: dict[str, Any], state: Any,
                  config: dict[str, Any]) -> str:
     """Блок памяти для промпта роли. Пустая строка — норма, а не ошибка.
@@ -129,6 +163,17 @@ def _render_hits(head: str, hits: list[dict[str, Any]],
                  if h.get("anchors_ok") is False else "")
         line = (f"- [{mark}, {conf}{stale}] ({h.get('id')}) "
                 f"{str(h.get('body') or '').strip()}")
+        # ФАЙЛЫ УРОКА — тоже урок. Якоря несут ровно ту часть решения,
+        # которая называется путями: «границы расширены на convert.rs и
+        # engine.rs» полезно настолько, насколько видно, какие это файлы.
+        # Пока в промпт уезжала одна проза, знание файлового уровня не
+        # доходило вовсе: замер 2026-08-23 показал, что урок k3ad с
+        # `tests/corpus_erc.rs` в якорях извлекается под задачу s2ky, а в
+        # блоке этого файла нет — при том что s2ky споткнулась именно о
+        # него. Пути пишутся хвостом и в бюджет входят наравне с прозой.
+        paths = _anchor_paths(h)
+        if paths:
+            line += "\n  файлы урока: " + ", ".join(paths)
         if used + len(line) + 1 > budget:
             break
         lines.append(line)
