@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.16
+version: 0.17
 created: 2026-08-06
 updated: 2026-08-22
 related:
@@ -363,13 +363,27 @@ summary: >
   (B). Accounting rule used: rounds are keyed by *(task, iter)*, and two
   rows sharing an iter are one round played twice — a replay after a
   block is not a fix round and must not be charged to the engine.
-- **Conclusion, and it is the one ADR-002 predicted:** trivial
-  greenfield tasks cannot discriminate executors, because both converge
-  in one round and the reviewer finds nothing to say. **E13 stays open
-  and needs a brownfield set** (BENCH-2-class: existing code, larger
-  diffs, 2–3 plausible rounds). What round 1 did settle: switching the
-  engine is operationally neutral — same outcomes, same speed, no new
-  failure mode attributable to the engine.
+- **Round 2 (2026-08-23) ran the brownfield set** ADR-002 demanded —
+  BENCH-2, six tasks that edit existing code with regression risk, full
+  suite as the gate, same protocol. Arms again indistinguishable: 6/6
+  each, every task on the first iteration, **zero findings on either
+  arm**; 305 s vs 224 s of executor work, $0.734 vs $0.692 of review,
+  executor price $0.841 on B and unmeasurable on A.
+- **The zero was the clue.** The same six tasks in 2026-08-07 produced
+  10 findings and needed second and third iterations. Same tasks, same
+  red state — so brownfield did not fail to discriminate, the JUDGE did.
+  Testable without re-running an executor: the diffs are committed.
+- **Paired re-judge settles E13** (`experiments/bench/e13-rejudge.py`:
+  re-review frozen diffs with another reviewer arm, using the loop's own
+  `review_prompt`). opus/xhigh over all twelve brownfield diffs: **arm A
+  6 findings, all minor, 6/6 approve, $2.466; arm B 6 findings, all
+  minor, 6/6 approve, $2.470.** On two tasks both arms drew the *same*
+  finding — what is left over belongs to the task, not to the executor.
+- **Status: answered, ADR-012.** On small, well-specified tasks the
+  engine changes neither outcome nor rounds nor visible quality; it
+  changes measurability and provider dependence. The reviewer arm
+  dominates: 0 findings for $0.73 versus 6 for $2.47 on the same diffs.
+  Reopen when a task set exists where the arms differ in rounds.
 - **The bench found a bigger lever than the one it measured.** 5 of 17
   reviewer calls (29 %) failed to return a valid verdict, burning $0.67
   — 37 % of all review spend and more than the entire distance between
@@ -517,6 +531,13 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.17 (2026-08-23)
+
+- E13 answered (ADR-012): brownfield round 2 plus a paired re-judge of
+  all twelve diffs with a strong reviewer — engines tie at 6 findings
+  each, all minor; the reviewer arm, not the executor arm, decides what
+  anyone sees. New reusable instrument `bench/e13-rejudge.py`.
 
 ### v0.16 (2026-08-23)
 
