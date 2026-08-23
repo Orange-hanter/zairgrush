@@ -794,5 +794,51 @@ class TestAutoIndexTriggers(MemCase):
         mem.record_task_outcome(state, {"id": "t9"}, {})
 
 
+class TestFtsQueryIsOrNotAnd(unittest.TestCase):
+    """Замер на пилоте 2026-08-23: по НАСТОЯЩИМ запросам FTS отдавал ровно
+    ноль строк, потому что `websearch_to_tsquery` соединяет слова через И,
+    а в запрос уезжала спецификация задачи целиком. Условие «в одном уроке
+    встретились все её слова» не выполнялось никогда, и весь поиск
+    держался на векторе — при том что дизайн обещает обратное."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "mempg", ROOT_DIR / "mempg.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["mempg"] = mod
+        spec.loader.exec_module(mod)
+        self.fts = mod.fts_query
+
+    def test_words_are_joined_by_or(self):
+        self.assertEqual(self.fts("корпус эталон"), "корпус or эталон")
+
+    def test_short_words_are_dropped(self):
+        """Слово короче четырёх букв стеммер сотрёт всё равно; в запросе
+        оно только удлиняет разбор."""
+        self.assertEqual(self.fts("в шкафу и на корпус"), "шкафу or корпус")
+
+    def test_long_query_is_capped(self):
+        text = " ".join(f"слово{i:02}" for i in range(40))
+        self.assertEqual(len(self.fts(text).split(" or ")), 12)
+
+    def test_duplicates_collapse_and_order_survives(self):
+        self.assertEqual(self.fts("корпус эталон корпус"),
+                         "корпус or эталон")
+
+    def test_punctuation_and_paths_do_not_break_the_query(self):
+        """Запрос строится из спеки задачи, где есть пути и знаки: они не
+        имеют права превратиться в синтаксис websearch."""
+        out = self.fts("ERC-03: клемма zeus/crates/zeus-erc/src/rules/*.rs")
+        self.assertNotIn("*", out)
+        self.assertNotIn(":", out)
+        self.assertIn("erc-03", out)
+
+    def test_empty_text_yields_empty_query(self):
+        """Пустой запрос обязан остаться пустым: `search_fts` подставит
+        исходную строку сам, а «or» из ничего сломал бы разбор."""
+        self.assertEqual(self.fts(""), "")
+        self.assertEqual(self.fts("и в на"), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
