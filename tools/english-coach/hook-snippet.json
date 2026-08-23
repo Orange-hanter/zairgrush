@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/zsh -c \"exec python3 /Users/dakh/Git/_my/ZAIrgRush/tools/english-coach/coach.py\" 2>/dev/null || true",
+            "async": true,
+            "timeout": 120,
+            "statusMessage": "английский разбор реплики"
+          }
+        ]
+      }
+    ]
+  }
+}
