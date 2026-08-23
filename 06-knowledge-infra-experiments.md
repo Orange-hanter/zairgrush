@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.19
+version: 0.20
 created: 2026-08-06
 updated: 2026-08-23
 related:
@@ -455,13 +455,37 @@ summary: >
   setup). Its contract carries a field no other role has — `unclear`: a
   spec that leaves a case undecided is a finding about the TASK, and a
   guessed answer would freeze an invention into a test.
-- **Status: next in line.** It was queued behind E10 and E13; E13 is
-  answered (ADR-012) and E10's arm A is unblocked by the engine choice,
-  so nothing stands in front of it any more. What E13 hands it: a paired
-  instrument (`bench/e13-rejudge.py`) that judges frozen diffs without
-  re-running an executor, and the warning that a cheap judge sees
-  nothing — mutation survival must be measured, not inferred from
-  reviewer approval.
+- **Round 1 measured 2026-08-23.** Four feature-tests tasks (s1ch,
+  s2tn, s3nm, s4cli), same starting commit, same four modules, arm A
+  replayed at the commit arm B reaches so that no later task's tests
+  count for A. **Arm A: 37 mutants, 11 survived — 30 %. Arm B: 27
+  mutants, 6 survived — 22 %.** Per module A→B: stats 25→13 %, rank
+  40→25 %, normalize 50→0 %, cli 29→43 %. Volume does not explain it
+  (28 tests vs 32). Mutant counts differ because the implementations
+  differ — only rates compare, and the tool says so on every run.
+- **Price: arm B adds a whole role.** $4.48 this run — tester $2.34,
+  executor $1.01, review $0.72, plus $0.42 burned on reviewer contract
+  failures. The tester alone cost more than twice the executor.
+- **The metric needs correcting, and arm B is what showed it.** On
+  cli.py arm B looks worse (43 % vs 29 %) — on the very module where
+  arm A had four real holes. Two of arm B's three survivors are
+  `return 2 → return 3`: the exit code on bad arguments, which the spec
+  never fixes (it says only «ненулевой код, без трейсбека»). The tester
+  DECLARED that gap in advance in its `unclear` field. Arm A pins `2`
+  only because the same author chose 2 and then asserted its own
+  arbitrary choice. So a mutant that changes only UNSPECIFIED behaviour
+  is equivalent with respect to the contract and must not score against
+  the tests — and `unclear` is the mechanical list of where to expect
+  one. That was not why the field was added.
+- **Status: open, round 2 designed.** Two changes before it decides
+  anything. (1) The prompt carries a false premise: «tests must fail
+  today» holds for tasks that ADD behaviour (s3nm and s4cli were fully
+  red) and fails for tasks that PRESERVE it while changing how (s1ch 1
+  of 6 red, s2tn 2 of 5) — caching and speed-ups are guarded by tests
+  that pass before and after. Not fixed mid-experiment on purpose.
+  (2) Survival must be scored against the spec, discounting positions
+  the tester declared `unclear`. The sample is thin besides: four tasks,
+  one repository, every task converged in a single round.
 
 ### E12. Frozen replay benches for the loop's own judgements
 
@@ -570,6 +594,23 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.20 (2026-08-23)
+
+- E11 round 1 measured: arm B 22 % mutation survival against arm A's
+  30 %, at the price of a whole extra role ($4.48, tester $2.34). Two
+  corrections the run found in the experiment itself — the «tests must
+  be red» premise is false for preserve-behaviour tasks, and survival
+  must be scored against the spec (arm B's cli.py «failures» are
+  declared spec gaps). Round 2 designed; status stays open.
+
+### v0.19 (2026-08-23)
+
+- E11 opened: measurement instrument first
+  (`experiments/tools/mutation-survival.py`), arm A measured on work
+  already paid for, and the tester role implemented behind
+  `[experiments] tester`. Entry added retroactively — v0.19 bumped the
+  frontmatter without recording itself here.
 
 ### v0.18 (2026-08-23)
 
