@@ -436,16 +436,16 @@ class SwarmState:
         task_id = questions[qid]["task"]
         data = self.load_tasks()
         target = next((t for t in data["tasks"] if t["id"] == task_id), None)
-        if target is not None and target.get("status") == "done":
-            # Ответ на залежавшийся вопрос не имеет права воскрешать
-            # закрытую задачу: безусловный pending отправлял done-работу
-            # на повторное исполнение. Проверка ДО записи в журнал —
-            # иначе вопрос числился бы отвеченным при неслучившемся ответе.
-            raise StateError(
-                f"вопрос {qid} принадлежит завершённой задаче {task_id!r}: "
-                f"ответ не возвращает её в очередь. Переоткрыть — "
-                f"`swarm retry {task_id}` или план-диффом")
-        self.log("answer", qid=qid, task=task_id, text=text)
+        # Задача, закрывшаяся ДРУГИМ путём (`swarm retry` вместо ответа),
+        # оставляет вопрос без адресата. Воскрешать её ответом нельзя —
+        # безусловный pending отправлял done-работу на повторное
+        # исполнение. Но и терять ответ незачем: вопрос — ЗАПИСЬ о
+        # случившемся, и отказ вместе с ответом выбрасывал разбор
+        # причины (E13: диагноз отказа ревьюера деть было некуда).
+        # Поэтому ответ пишется, решение копится, а СТАТУС не трогается.
+        closed = target is not None and target.get("status") == "done"
+        self.log("answer", qid=qid, task=task_id, text=text,
+                 reopened=not closed)
         for t in data["tasks"]:
             if t["id"] == task_id:
                 # Ответ уходит в handoff следующей итерации. Решения
@@ -462,8 +462,9 @@ class SwarmState:
                 t["human_decisions"] = prior
                 t["human_answer"] = (prior[0] if len(prior) == 1
                                      else "\n".join(f"- {d}" for d in prior))
-                t["status"] = "pending"
-                t.pop("reason", None)
+                if not closed:
+                    t["status"] = "pending"
+                    t.pop("reason", None)
                 for extra in add_paths or []:
                     if extra not in t.setdefault("paths", []):
                         t["paths"].append(extra)
@@ -473,8 +474,40 @@ class SwarmState:
         self.save_tasks(data)
         return str(task_id) if task_id else None
 
-    def questions(self, only_open: bool = False) -> list[dict[str, Any]]:
-        """Вопросы из журнала со статусом open/answered."""
+    def question_is_stale(self, question: dict[str, Any],
+                          closed_tasks: set[str] | None = None) -> bool:
+        """Вопрос, у которого не осталось адресата: задача уже закрыта.
+
+        Такой вопрос не держит очередь — держать её нечем, работа сделана.
+        Но и молча исчезнуть он не должен: `status` объявлял «очередь не
+        пойдёт дальше без решения» над очередью 6/6 (E13, задача b4wr
+        вернулась в работу через `swarm retry`, а не ответом).
+
+        Пропажу задачи из tasks.json СТАРЫМ вопросом не считаем: файл
+        задач можно потерять или заменить план-диффом целиком, и тогда
+        «устарели все» спрятало бы живые вопросы — отказ хуже дефекта.
+        """
+        if closed_tasks is None:
+            closed_tasks = self.closed_task_ids()
+        return str(question.get("task")) in closed_tasks
+
+    def closed_task_ids(self) -> set[str]:
+        """Id закрытых задач. Очередь читается как ДАННЫЕ: правка руками
+        оставляет в ней строку вместо словаря, и сводка, падающая на
+        такой строке, — худший способ узнать о поломке файла."""
+        return {str(t["id"]) for t in self.load_tasks().get("tasks", [])
+                if isinstance(t, dict) and t.get("status") == "done"
+                and t.get("id") is not None}
+
+    def questions(self, only_open: bool = False,
+                  blocking: bool = False) -> list[dict[str, Any]]:
+        """Вопросы из журнала со статусом open/answered.
+
+        `blocking=True` — только те, что действительно держат очередь:
+        открытые и с незакрытой задачей. Разница не косметическая: над
+        закрытой очередью подсказка «ответьте, иначе не поедем» посылает
+        человека делать невозможное (см. `question_is_stale`).
+        """
         asked, answered = {}, {}
         if not self.journal_path.exists():
             return []
@@ -487,15 +520,19 @@ class SwarmState:
                 asked[row["qid"]] = row
             elif row.get("kind") == "answer":
                 answered[row["qid"]] = row
+        closed = self.closed_task_ids()
         out = []
         for qid, row in asked.items():
             item = dict(row)
             item["status"] = "answered" if qid in answered else "open"
             if qid in answered:
                 item["answer"] = answered[qid]["text"]
+            item["stale"] = self.question_is_stale(item, closed)
             out.append(item)
-        if only_open:
+        if only_open or blocking:
             out = [q for q in out if q["status"] == "open"]
+        if blocking:
+            out = [q for q in out if not q["stale"]]
         return sorted(out, key=lambda q: q["qid"])
 
     # --- политики прогона --------------------------------------------------

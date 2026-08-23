@@ -12,6 +12,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import cli  # noqa: E402
+from cliexplain import _prefix  # noqa: E402
 
 
 def cmd_inbox(args: argparse.Namespace) -> int:
@@ -24,8 +25,11 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         return 0
     for q in questions:
         mark = "?" if q["status"] == "open" else "v"
+        # Устаревший вопрос виден с первого взгляда: иначе он выглядит
+        # как задолженность человека, хотя отвечать уже нечему.
+        stale = ", задача закрыта — очередь не держит" if q.get("stale") else ""
         print(f"[{mark}] {q['qid']}  задача {q.get('task')}  "
-              f"({vocab.ru(vocab.QKIND_RU, q.get('qkind'))})")
+              f"({vocab.ru(vocab.QKIND_RU, q.get('qkind'))}{stale})")
         print(f"     {str(q.get('question') or '')[:150]}")
         dispute = q.get("dispute")
         if dispute:
@@ -57,10 +61,14 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         if q["status"] == "answered":
             print(f"     ответ: {q['answer'][:150]}")
         print()
-    open_count = sum(1 for q in questions if q["status"] == "open")
-    if open_count:
-        print(f"открытых: {open_count} — ответить: "
+    open_q = [q for q in questions if q["status"] == "open"]
+    blocking = [q for q in open_q if not q.get("stale")]
+    if blocking:
+        print(f"открытых: {len(blocking)} — ответить: "
               f'swarm answer <id> "текст"')
+    if len(open_q) > len(blocking):
+        print(f"устаревших: {len(open_q) - len(blocking)} — их задачи уже "
+              f"закрыты; ответ на такой вопрос только записывается")
     return 0
 
 
@@ -123,6 +131,16 @@ def cmd_answer(args: argparse.Namespace) -> int:
     except cli.state_mod.StateError as e:
         print(f"{e}", file=sys.stderr)
         return 2
+    if task and task.get("status") == "done":
+        # Ответ на вопрос закрытой задачи — запись, а не команда. Прежде
+        # он не принимался вовсе, и разбор случившегося деть было некуда.
+        print(f"вопрос {args.qid} закрыт — ответ записан")
+        print(f"задача {task_id} уже закрыта: в очередь она НЕ возвращается. "
+              f"Нужно переделать — `{_prefix(args.root)} retry {task_id}`")
+        if args.add_path:
+            print(f"границы расширены на будущее: {', '.join(args.add_path)} "
+                  f"— подействует, если задачу переоткроют")
+        return 0
     if task_id == "*":
         # Вопрос уровня прогона (plan_failed и т.п.): задачи за ним нет,
         # и фраза «задача * возвращена в очередь» была ложью — ничего не

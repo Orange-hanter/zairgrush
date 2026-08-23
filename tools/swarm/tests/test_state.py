@@ -178,19 +178,37 @@ class TestSpendSurvivesGarbage(StateCase):
 
 class TestAnswerDoneGuard(StateCase):
     """Ответ на залежавшийся вопрос не воскрешает закрытую задачу:
-    безусловный pending отправлял done-работу на повторное исполнение."""
+    безусловный pending отправлял done-работу на повторное исполнение.
 
-    def test_answer_to_done_task_refuses(self):
+    Охраняемое свойство осталось прежним, а вот его цена изменилась. До
+    2026-08-23 отказ уносил с собой САМ ОТВЕТ: вопрос оставался открытым,
+    разбор случившегося записать было некуда, а `status` требовал решения
+    над закрытой очередью (E13, задача b4wr вернулась в работу через
+    `swarm retry`). Теперь ответ записывается, решение копится при
+    задаче, а статус не трогается — переоткрывает только `swarm retry`.
+    """
+
+    def _answered_after_close(self):
         qid = self.state.ask("aaaa", "intent", "вопрос по замыслу")
         self.state.set_status("aaaa", "done")
-        with self.assertRaises(st.StateError):
-            self.state.answer(qid, "поздний ответ")
-        q = {x["qid"]: x for x in self.state.questions()}[qid]
-        self.assertEqual(q["status"], "open",
-                         "неслучившийся ответ не должен закрыть вопрос")
+        self.state.answer(qid, "поздний ответ")
+        return qid
+
+    def test_done_task_stays_done(self):
+        self._answered_after_close()
         task = {t["id"]: t
                 for t in self.state.load_tasks()["tasks"]}["aaaa"]
         self.assertEqual(task["status"], "done")
+
+    def test_the_answer_is_not_lost(self):
+        qid = self._answered_after_close()
+        q = {x["qid"]: x for x in self.state.questions()}[qid]
+        self.assertEqual(q["status"], "answered")
+        self.assertEqual(q["answer"], "поздний ответ")
+
+    def test_such_a_question_no_longer_blocks_the_queue(self):
+        self._answered_after_close()
+        self.assertEqual(self.state.questions(blocking=True), [])
 
 
 class TestConcurrentWriters(StateCase):

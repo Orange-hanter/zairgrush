@@ -396,12 +396,21 @@ def cmd_resume(args: argparse.Namespace) -> int:
         for p in policies:
             print(f"  {p['pid']}  {p['text'][:70]}")
 
-    open_q = st.questions(only_open=True)
+    open_q = st.questions(blocking=True)
     if open_q:
         print(f"\nВОПРОСЫ К ЧЕЛОВЕКУ ({len(open_q)}):")
         for q in open_q:
             print(f"  {q['qid']}  {q['task']}  {q['question'][:70]}")
         print("  -> `swarm inbox` покажет детали")
+    # Вопросы закрытых задач очередь не держат, но и не исчезают: они
+    # остаются записью о случившемся (E13). Отдельным списком, чтобы
+    # «вас ждут N вопросов» относилось только к тем, что и правда ждут.
+    stale_q = [q for q in st.questions(only_open=True) if q.get("stale")]
+    if stale_q:
+        print(f"\nустаревшие вопросы ({len(stale_q)}) — их задачи уже "
+              f"закрыты, очередь они не держат:")
+        for q in stale_q:
+            print(f"  {q['qid']}  {q['task']}  {q['question'][:70]}")
 
     unfinished = st.unfinished_steps()
     leftover = []

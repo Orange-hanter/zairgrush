@@ -567,6 +567,109 @@ class TestAnswerPathGuardEscape(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+class TestQuestionOutlivesItsTask(InboxCase):
+    """Вопрос, у которого не осталось адресата.
+
+    Замерено на E13: задачу b4wr заблокировал отказ ревьюера, её вернули
+    в очередь через `swarm retry` (а не ответом), и она закрылась. После
+    этого `swarm answer` отказывался ВМЕСТЕ С ОТВЕТОМ — разбор причины
+    деть было некуда, — а `swarm status` продолжал печатать «очередь не
+    пойдёт дальше без решения» над очередью, где всё сделано.
+    """
+
+    def _stale_question(self):
+        qid = self.state.ask("aaaa", "review_failed", "ревью не состоялось")
+        data = self.state.load_tasks()
+        for t in data["tasks"]:
+            if t["id"] == "aaaa":
+                t["status"] = "done"
+        self.state.save_tasks(data)
+        return qid
+
+    def test_answer_is_recorded_not_refused(self):
+        qid = self._stale_question()
+        code, out = run_cli("--root", str(self.root), "answer", qid,
+                            "дефект ревьюера, не работы: разбор в findings")
+        self.assertEqual(code, 0, out)
+        answered = {q["qid"]: q for q in self.state.questions()}[qid]
+        self.assertEqual(answered["status"], "answered")
+        self.assertIn("дефект ревьюера", answered["answer"])
+
+    def test_closed_task_is_not_resurrected(self):
+        """Ответ — не команда переоткрыть: безусловный pending отправлял
+        готовую работу на повторное исполнение."""
+        qid = self._stale_question()
+        run_cli("--root", str(self.root), "answer", qid, "разбор случившегося")
+        task = next(t for t in self.state.load_tasks()["tasks"]
+                    if t["id"] == "aaaa")
+        self.assertEqual(task["status"], "done")
+
+    def test_answer_says_the_task_was_not_reopened(self):
+        qid = self._stale_question()
+        _code, out = run_cli("--root", str(self.root), "answer", qid, "разбор")
+        self.assertIn("НЕ возвращается", out)
+        self.assertIn("retry aaaa", out,
+                      "надо назвать команду, которая ДЕЙСТВИТЕЛЬНО переоткроет")
+
+    def test_decision_survives_for_a_future_retry(self):
+        """Решение остаётся при задаче: если её переоткроют, оно уйдёт
+        исполнителю — и памяти (E9 строит уроки из human_decisions)."""
+        qid = self._stale_question()
+        run_cli("--root", str(self.root), "answer", qid, "правило на будущее")
+        task = next(t for t in self.state.load_tasks()["tasks"]
+                    if t["id"] == "aaaa")
+        self.assertIn("правило на будущее", task["human_decisions"])
+
+    def test_stale_question_does_not_hold_the_queue(self):
+        self._stale_question()
+        self.assertEqual(self.state.questions(blocking=True), [],
+                         "закрытая задача не может держать очередь")
+        self.assertEqual(len(self.state.questions(only_open=True)), 1,
+                         "и при этом вопрос не исчезает")
+
+    def test_status_stops_demanding_a_decision(self):
+        self._stale_question()
+        _code, out = run_cli("--root", str(self.root), "status")
+        self.assertNotIn("очередь не пойдёт дальше", out)
+        self.assertIn("устаревшие вопросы", out)
+
+    def test_live_question_still_holds_the_queue(self):
+        """Обратная сторона: вопрос живой задачи обязан держать очередь
+        по-прежнему — иначе починка съела бы саму механику инбокса."""
+        self.state.ask("bbbb", "intent", "нужна ли абстракция?")
+        _code, out = run_cli("--root", str(self.root), "status")
+        self.assertIn("очередь не пойдёт дальше", out)
+        self.assertEqual(len(self.state.questions(blocking=True)), 1)
+
+    def test_inbox_marks_the_stale_one(self):
+        self._stale_question()
+        self.state.ask("bbbb", "intent", "живой вопрос")
+        _code, out = run_cli("--root", str(self.root), "inbox")
+        self.assertIn("задача закрыта", out)
+        self.assertIn("устаревших: 1", out)
+        self.assertIn("открытых: 1", out)
+
+    def test_journal_says_whether_the_task_came_back(self):
+        """Журнал читается как данные: «ответ записан» и «ответ вернул
+        задачу» — разные события, и различать их постфактум надо уметь."""
+        import json
+        qid = self._stale_question()
+        run_cli("--root", str(self.root), "answer", qid, "разбор")
+        rows = [json.loads(x) for x in
+                self.state.journal_path.read_text().splitlines()]
+        answer = next(r for r in rows if r["kind"] == "answer")
+        self.assertFalse(answer["reopened"])
+
+    def test_double_answer_still_refused(self):
+        """Устаревший — не значит бесконтрольный: второй ответ на тот же
+        вопрос по-прежнему отказ."""
+        qid = self._stale_question()
+        run_cli("--root", str(self.root), "answer", qid, "первый")
+        code, out = run_cli("--root", str(self.root), "answer", qid, "второй")
+        self.assertEqual(code, 2)
+        self.assertIn("уже отвечен", out)
+
+
 class TestRunLevelAnswer(InboxCase):
     """Ответ на вопрос уровня прогона (task="*") ничего не перезапускает.
 

@@ -8,7 +8,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3ecbe0.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/status-experimental-ff9d54.svg" alt="status: experimental">
-  <img src="https://img.shields.io/badge/tests-1094%20passed-4a2e78.svg" alt="tests: 1094 passed">
+  <img src="https://img.shields.io/badge/tests-1106%20passed-4a2e78.svg" alt="tests: 1106 passed">
 </p>
 
 ---
@@ -83,7 +83,7 @@ python3 -m pytest
 
 Проект **экспериментальный** (`draft`), активно меняется — см. `version`/
 `updated` во frontmatter каждого документа и журналы изменений в их конце.
-Автотесты `tools/swarm`: 1094 passed — одна команда
+Автотесты `tools/swarm`: 1106 passed — одна команда
 `cd tools/swarm && ./check.sh` (линт → типы → тесты).
 
 Открытые решения помечены в документах как «на утверждение» / «проект
