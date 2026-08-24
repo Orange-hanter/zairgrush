@@ -14,10 +14,11 @@ cd "$(dirname "$0")"
 VENV="${SWARM_VENV:-.venv}"
 RUFF="$VENV/bin/ruff"
 MYPY="$VENV/bin/mypy"
+PY="$VENV/bin/python3"
 
-if [[ ! -x "$RUFF" || ! -x "$MYPY" ]]; then
+if [[ ! -x "$RUFF" || ! -x "$MYPY" || ! -x "$PY" ]]; then
     echo "нет инструментов проверки в $VENV" >&2
-    echo "создать: uv venv $VENV && uv pip install --python $VENV ruff mypy" >&2
+    echo "создать: uv venv $VENV && uv pip install --python $VENV ruff mypy pytest" >&2
     exit 3
 fi
 
@@ -32,6 +33,8 @@ echo "== тесты =="
 # и заставляет Python исполнять СТАРЫЙ код. На мутационном аудите это уже
 # давало ложный вывод «мутация не поймана» — тест проходил по кэшу.
 find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
-PYTHONDONTWRITEBYTECODE=1 python3 -B -m pytest -q
+# Именно "$PY", а не системный python3: у системного нет pytest, и гейт,
+# запущенный из свежей оболочки без активированного venv, падал на этом шаге.
+PYTHONDONTWRITEBYTECODE=1 "$PY" -B -m pytest -q
 
 echo "== всё зелёное =="
