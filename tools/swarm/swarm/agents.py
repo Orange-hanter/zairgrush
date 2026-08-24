@@ -48,10 +48,21 @@ class Agents:
     # атрибут, ломал бы им ревью из-за опционального слоя памяти.
     memory_cache: tuple[str, str] | None = None
     norms_cache: tuple[str, str] | None = None
+    # Дерево, В КОТОРОМ работает исполнитель. Почти всегда это корень
+    # состояния, и тогда всё как было. Отличается ровно в одном случае —
+    # теневое плечо дуэли (duel.py) работает в git-worktree, чтобы два
+    # исполнителя на одной задаче не переписывали друг друга. Атрибут, а
+    # не аргумент, потому что менять пришлось бы подпись пяти функций
+    # ради случая, которого в 99 % прогонов нет.
+    work_root: Any = None
+    # Блок пуриста (E14): (id задачи, текст). Считается один раз на
+    # задачу — см. promptbuilder.unclear_block.
+    unclear_cache: tuple[str, str] | None = None
 
     def __init__(self, state: Any, config: dict[str, Any]) -> None:
         self.state = state
         self.config = config
+        self.work_root = state.root
         self.driver = _load("driver")
         self.loop_mod = _load("loop")
         self.helpers: ModuleType | None = None

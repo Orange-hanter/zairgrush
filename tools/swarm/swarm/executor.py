@@ -53,7 +53,8 @@ def implement(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
         return implement_fill(agents, task, feedback, iteration, model)
     prompt = promptbuilder.handoff(
         agents, task, feedback, promptbuilder.repo_map(agents, task),
-        memory=promptbuilder.memory_block(agents, task) or None)
+        memory=promptbuilder.memory_block(agents, task) or None,
+        unclear=promptbuilder.unclear_block(agents, task) or None)
     cmd = engines.executor_argv(engine, model, prompt, agents.config,
                                 report_schema() if engine == "claude" else "")
     # Разборщик потока и способ достать отчёт — свойства ДВИЖКА, а не
@@ -62,7 +63,10 @@ def implement(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
     # ревьюер).
     claude = engine == "claude"
     drv = agents.driver.AgentDriver(
-        cwd=str(agents.state.root),
+        # Дерево плеча, не корень состояния: теневое плечо дуэли живёт в
+        # worktree, и запусти мы его в общем дереве — два исполнителя
+        # переписали бы работу друг друга, а замер сравнил бы кашу.
+        cwd=str(getattr(agents, "work_root", None) or agents.state.root),
         silence_timeout=agents.config.get("silence_timeout", 600),
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800))
     run = drv.start(cmd, parser=(agents.driver.parse_claude if claude

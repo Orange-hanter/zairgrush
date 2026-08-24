@@ -98,6 +98,22 @@ def _engine_preflight(cfg: dict[str, Any]) -> bool:
     if factor:
         cli.ui(f"фоновый замер: фактор {factor}, "
                f"сид {(cfg.get('experiments') or {}).get('ambient_seed')}")
+    # Дуэль: два исполнителя на задачу. Проверки те же и по той же
+    # причине — испорченную выборку не видно ни в одном выводе.
+    duel = cli.load_mod("duel")
+    try:
+        clash = duel.conflict(cfg)
+    except ValueError as e:
+        print(f"дуэль не настроена: {e}", file=sys.stderr)
+        return False
+    if clash:
+        print(f"дуэль противоречит конфигу: {clash}", file=sys.stderr)
+        return False
+    duel_factor = duel.factor(cfg)
+    if duel_factor:
+        cli.ui(f"ДУЭЛЬ: фактор {duel_factor} — на каждой задаче два "
+               f"исполнителя параллельно; работа остаётся у плеча, "
+               f"выбранного жребием ЗАРАНЕЕ")
     engines = cli.load_mod("engines")
     try:
         engine, model = engines.resolve(cfg)

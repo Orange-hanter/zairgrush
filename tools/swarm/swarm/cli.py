@@ -68,7 +68,7 @@ KNOWN_CONFIG_KEYS = frozenset({
     "memory_db", "memory_budget_chars", "memory_top_k", "memory_embed_model",
     "memory_index",
     "fill_num_predict",
-    "spending",
+    "spending", "unclear_model",
     "experiments",
 })
 
@@ -80,7 +80,8 @@ SPENDING_MODES = frozenset({"money_bin", "capped"})
 # списка, — опечатка в имени флага молча включала бы умолчание.
 KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
                                    "skeleton", "tester",
-                                   "ambient", "ambient_seed"})
+                                   "ambient", "ambient_seed", "duel",
+                                   "unclear"})
 
 # Значения флага `[experiments] memory` — это имена ролей (см.
 # memory.enabled_for): каждая включается отдельно, чтобы замер шёл по

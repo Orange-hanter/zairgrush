@@ -29,11 +29,13 @@ if _HERE not in sys.path:
 
 import ambient  # noqa: E402 — каталог добавлен строкой выше
 import board  # noqa: E402
+import duel  # noqa: E402
 import gitops  # noqa: E402
 import memory as memory_mod  # noqa: E402
 import obs  # noqa: E402
 import pyindex  # noqa: E402
 import tester as tester_mod  # noqa: E402
+import unclear as unclear_mod  # noqa: E402
 from gitops import (  # noqa: E402
     _apply_patch as _git_apply_patch,
     declared_state_sha as _git_declared_state_sha,
@@ -229,6 +231,34 @@ class Loop:
                                 ) -> dict[str, Any] | None:
         return _rc_review_with_quota_wait(self, task, tail, iteration, confirming)
 
+    def _find_unclear(self, task: dict[str, Any]) -> None:
+        """Пурист: развилки спецификации ДО работы (E14, за флагом).
+
+        Один вызов на задачу, до первого раунда. Результат кладётся в
+        кэш агентов и оттуда попадает в промпт исполнителя байт-стабильно
+        между раундами. Провал пуриста задачу не роняет: без списка
+        поведение вырождается в сегодняшнее, и это видно в журнале.
+        """
+        self.agents.unclear_cache = None
+        if not unclear_mod.enabled(self.config):
+            return
+        goal = str(self.state.load_tasks().get("goal", ""))
+        try:
+            report = unclear_mod.find(self.agents, task, goal)
+        except Exception:  # noqa: BLE001 — граница деградации прибора
+            self.state.log("unclear_failed", task=task["id"], exc_info=True)
+            return
+        block = unclear_mod.block(report)
+        if block:
+            self.agents.unclear_cache = (str(task["id"]), block)
+            count = len((report or {}).get("unclear") or [])
+            self.ui(f"    пурист: развилок спецификации {count}")
+        else:
+            # Пустой список — законный и частый ответ, и говорить о нём
+            # надо ровно так, а не молчать: молчание тут неотличимо от
+            # «пурист не сработал».
+            self.ui("    пурист: спецификация развилок не оставила")
+
     def _author_tests(self, task: dict[str, Any]) -> dict[str, str]:
         """Плечо B E11: независимый тестировщик пишет тесты задачи.
 
@@ -282,7 +312,103 @@ class Loop:
         # Тип отчёта — контракт агентов, а не петли: `agents` здесь Any,
         # и сужать его тут значило бы объявить сузившееся знание, которого
         # у делегата нет (feedback на деле словарь находок, не строка).
-        return _rc_implement_with_quota_wait(self, task, feedback, iteration)
+        plan = duel.plan(self.config, task["id"])
+        if plan is None:
+            return _rc_implement_with_quota_wait(self, task, feedback,
+                                                 iteration)
+        return self._duel_implement(plan, task, feedback, iteration)
+
+    def _duel_implement(self, plan: dict[str, Any], task: dict[str, Any],
+                        feedback: Any, iteration: int) -> Any:
+        """Два исполнителя на одной задаче одновременно (duel.py).
+
+        Возвращается отчёт ЖИВОГО плеча, и только он. Теневое плечо —
+        прибор: его отчёт уходит в журнал и в метрику, а работа его
+        дерева не адоптируется никогда. Иначе замерялся бы отбор
+        лучшего из двух, а не каждое плечо (довод целиком — в duel.py).
+        """
+        tid = task["id"]
+        live, shadow = plan["live"], plan["shadow"]
+        self.state.log("duel_start", task=tid, round=iteration,
+                       factor=plan["factor"], key=plan["key"],
+                       live_arm=live["arm"], shadow_arm=shadow["arm"])
+        self.ui(f"    дуэль {plan['factor']}: живое плечо {live['arm']}, "
+                f"теневое {shadow['arm']} (параллельно)")
+
+        wt: pathlib.Path | None = None
+        try:
+            wt = duel.worktree(self.state.root, self.state.dir, tid)
+        except subprocess.CalledProcessError:
+            # Теневое дерево не создалось — задача не виновата: работаем
+            # живым плечом и говорим, что замера на этой задаче нет.
+            self.state.log("duel_no_shadow", task=tid, round=iteration,
+                           reason="worktree_failed")
+            self.ui("    теневое дерево не создалось — дуэли нет, работаем")
+
+        old_cfg, old_agents_cfg = self.config, self.agents.config
+        self.config = self.agents.config = live["config"]
+
+        def run_live() -> Any:
+            return _rc_implement_with_quota_wait(self, task, feedback,
+                                                 iteration)
+
+        def run_shadow() -> Any:
+            if wt is None:
+                return None
+            return self._shadow_arm(shadow, task, feedback, iteration, wt)
+
+        try:
+            report, shadow_facts = duel.run_pair(run_live, run_shadow)
+        finally:
+            self.config, self.agents.config = old_cfg, old_agents_cfg
+
+        live_facts = {"report": bool(report)}
+        if self.agents.last_implement_failure:
+            live_facts["reason"] = self.agents.last_implement_failure.get(
+                "reason")
+        self.state.metric(task=tid, iter=iteration, phase="duel",
+                          factor=plan["factor"], live_arm=live["arm"],
+                          shadow_arm=shadow["arm"],
+                          live=live_facts, shadow=shadow_facts)
+        if wt is not None:
+            duel.drop_worktree(self.state.root, wt)
+        return report
+
+    def _shadow_arm(self, shadow: dict[str, Any], task: dict[str, Any],
+                    feedback: Any, iteration: int,
+                    wt: pathlib.Path) -> dict[str, Any]:
+        """Теневое плечо в своём дереве: отчёт, гейт, объём диффа.
+
+        Собственный экземпляр Agents, а не подмена полей общего: общий
+        объект в этот момент работает живым плечом в другом потоке, и
+        подмена его конфига была бы гонкой, портящей ЗАМЕР, — то есть
+        именно то, что заметить нечем.
+        """
+        # Импорт ленивый: agents грузит loop, и модульный импорт обратно
+        # замкнул бы круг. Второй экземпляр Agents нужен именно потому,
+        # что общий сейчас занят живым плечом в другом потоке.
+        import agents as agents_mod  # noqa: PLC0415 — круг импорта, см. выше
+        arm_agents = agents_mod.Agents(self.state, shadow["config"])
+        arm_agents.work_root = wt
+        report = arm_agents.implement(task, feedback, iteration)
+        facts: dict[str, Any] = {
+            "arm": shadow["arm"], "report": bool(report),
+            "diff": duel.shadow_diff_stat(wt)}
+        if arm_agents.last_implement_failure:
+            facts["reason"] = arm_agents.last_implement_failure.get("reason")
+        # Гейт теневого плеча — в ЕГО дереве. Это и есть главная метрика:
+        # «прошла ли работа плеча проверки проекта».
+        if report is not None:
+            cmd = self.config.get("gate_command")
+            if isinstance(cmd, list) and cmd:
+                r = subprocess.run(
+                    cmd, cwd=wt, capture_output=True, text=True,
+                    check=False,
+                    timeout=self.config.get("gate_timeout", 900))
+                facts["gate"] = r.returncode == 0
+        self.state.log("duel_shadow", task=task["id"], round=iteration,
+                       **facts)
+        return facts
 
     @staticmethod
     def _reviewers_disagreed(history: list[dict[str, Any]]
@@ -411,6 +537,7 @@ class Loop:
         # роняет — плечо просто вырождается в сегодняшнее (плечо A), и об
         # этом честно пишется в журнал.
         self._authored_tests = self._author_tests(task)
+        self._find_unclear(task)
         history: list[dict[str, Any]] = []
         best: dict[str, Any] = {"findings": None, "round": None, "diff": None,
                                 "items": None}

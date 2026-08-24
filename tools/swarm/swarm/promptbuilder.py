@@ -89,7 +89,8 @@ def repo_map(agents: AgentsLike, task: dict[str, Any]) -> str | None:
     if agents.map_cache and agents.map_cache[0] == key:
         return agents.map_cache[1]
     try:
-        idx = agents.codemap.HybridIndex(agents.state.root)
+        idx = agents.codemap.HybridIndex(
+            getattr(agents, "work_root", None) or agents.state.root)
         text: str = idx.project_map(budget=budget)
     except Exception:
         log.warning("карта репозитория не построена", exc_info=True,
@@ -97,6 +98,21 @@ def repo_map(agents: AgentsLike, task: dict[str, Any]) -> str | None:
         return None
     agents.map_cache = (key, text)
     return text
+
+
+def unclear_block(agents: AgentsLike, task: dict[str, Any]) -> str:
+    """Блок пуриста, посчитанный ОДИН раз на задачу (E14).
+
+    Кэш на задачу — то же требование, что у блока памяти: между раундами
+    блок обязан быть байт-стабилен, иначе каждый раунд переписывает
+    префикс-кэш промпта и раунд платится заново (§8, экономика порядка
+    блоков).
+    """
+    cache = getattr(agents, "unclear_cache", None)
+    tid = str(task.get("id"))
+    if cache and cache[0] == tid:
+        return str(cache[1])
+    return ""
 
 
 def tree_fingerprint(agents: AgentsLike) -> str:
@@ -134,7 +150,8 @@ def norms_for(agents: AgentsLike, task: dict[str, Any]) -> str:
 
 
 def handoff(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
-            repo_map: str | None, memory: str | None = None) -> str:
+            repo_map: str | None, memory: str | None = None,
+            unclear: str | None = None) -> str:
     allowed = ", ".join(task.get("paths") or [])
     protected = {
         "test-task": ("This is a test-task: production code is "
@@ -152,6 +169,11 @@ def handoff(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
         fb = ("\n## Feedback — you must address it\n"
               + json.dumps(feedback, ensure_ascii=False, indent=1) + "\n")
     mp = f"\n## Repository map\n```\n{repo_map}\n```\n" if repo_map else ""
+    # Блок пуриста (E14) стоит СРАЗУ ЗА приёмкой: он про эту задачу и
+    # стабилен между её раундами, поэтому префикс-кэш промпта не рвёт.
+    # Пусто по умолчанию — с выключенным флагом промпт байт-в-байт
+    # прежний, и плечи E8/E10 остаются сравнимыми.
+    unc = f"\n{unclear.rstrip()}\n" if unclear else ""
     mem = f"\n{memory.rstrip()}\n" if memory else ""
     return f"""You are the executor in an automated dev loop. Your reply is
 parsed by machine.
@@ -164,7 +186,7 @@ parsed by machine.
 
 Acceptance:
 {acc}
-{mp}{fb}
+{unc}{mp}{fb}
 ## Constraints
 - Do exactly what the spec asks, at the scope it sets. Do not add abstractions,
   helpers, handling for impossible cases, or backwards compatibility the task
