@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.24
+version: 0.25
 created: 2026-08-06
 updated: 2026-08-24
 related:
@@ -538,10 +538,14 @@ summary: >
   modules whose tests were written beforehand as fixtures — 97 mutants,
   11 survived, **11 %**; modules where the executor wrote both the code
   and its tests from scratch (`cli.py`, `normalize.py`) — 16 mutants, 4
-  survived, **25 %**. All four survivors are real holes, not equivalent
-  mutants: two chosen defaults (`top = 10`, `width = 72`) and the guard
-  boundary (`if width < 1`) can all be shifted without the suite
-  noticing. The executor tested the paths it wrote and skipped the
+  survived, **25 %**. Three of the four are real holes: the two chosen
+  defaults (`top = 10`, `width = 72`, both NAMED in the spec) and one
+  more. The fourth — the guard boundary `if width < 1` — was called a
+  hole here and **that was wrong**: the spec names no minimum width at
+  all, so no test written from it can pin that boundary. Corrected
+  2026-08-24 by the classification below; the claim survived a month
+  because nothing forced each survivor to be justified against the spec
+  text. The executor tested the paths it wrote and skipped the
   defaults it chose and the boundary it guarded — the predicted failure,
   now a number rather than four anecdotes. Caveats on the record: 16
   mutants is a thin base, `normalize.py` gives only 2 of them, and
@@ -589,6 +593,50 @@ summary: >
   (2) Survival must be scored against the spec, discounting positions
   the tester declared `unclear`. The sample is thin besides: four tasks,
   one repository, every task converged in a single round.
+- **Change (2) done 2026-08-24 — and it doubles arm B's margin.** Every
+  mutant that survived, and every mutant CAUGHT in the same positions,
+  was classified against the spec text into three classes:
+  `real_gap` (a test could have caught it and did not), `equivalent`
+  (behaviour unchanged — unkillable by anything) and `spec_silent` (the
+  spec does not decide it, so an honest spec-derived test must let it
+  through). The classification lives as data with a reason per row
+  (`experiments/goldset/e11/classification.jsonl`), not in code, because
+  it is judgement and must stay arguable; equivalence claims are VERIFIED
+  by input enumeration, not asserted. Both classes are removed from both
+  arms' denominators **together with the mutants they caught** — dropping
+  only survivors would hand a free point to whichever arm has more such
+  positions.
+- **Result: A 18 % against B 9 %, where the raw numbers said 30 % against
+  22 %.** The independent tester's margin goes from a 27 % relative
+  reduction in holes to **50 %**. Both rates fall, but NOT equally —
+  arm A by 40 % (30 → 18), arm B by more than half (22 → 9) — and that
+  asymmetry is the second finding: raw mutation survival was measuring
+  the spec's silence and the generator's generosity as much as it
+  measured tests, and the arm that wrote tests against its own
+  implementation carried more of the false holes. (The first draft of
+  this line said «both more than halve»; the gate test written in the
+  same hour refused it. The number was in the prose before it was
+  computed.)
+  Arm A: 9 mutants dropped (2 equivalent, 7 spec_silent), 5 real holes
+  left. Arm B: 4 dropped (1 equivalent, 3 spec_silent), 2 real holes
+  left — and **all four of arm B's dropped mutants were survivors in
+  positions it had itself declared `unclear`**. Arm B had no unexplained
+  survivor at all.
+- **Two corrections the classification forced.** The mutant surviving in
+  BOTH arms (`rank.py:18`, `n <= 0` → `n < 0`) was reported as «the
+  shared blind spot, authorship has nothing to do with it». It is not a
+  blind spot: at `n == 0` both implementations return `[]` down either
+  path — verified on 9031 input pairs, zero differences. It is
+  unkillable. Likewise `rank.py:21` (`n >= len(freq)` → `>`) in arm A:
+  equivalent on 11730 pairs. Rule taken: **an equivalence claim must be
+  enumerated, not argued** — and a survivor list nobody has justified
+  against the spec is a list of suspects, not of holes.
+- **The sharpest single fact.** The only two constants the s4cli spec
+  states outright — `--top` default 10 and `--width` default 72 — are
+  exactly what arm A failed to pin and arm B pinned. The implementer's
+  own tests missed the specified thing and caught the unspecified one
+  (exit code `2`); the independent tester did the reverse. That is the
+  hollow-test failure mode in one line, and it is now a number.
 
 ### E12. Frozen replay benches for the loop's own judgements
 
@@ -700,6 +748,20 @@ B (ast-grep) точнее A (FPR 0/10 против 1/10), общая слепа�
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.25 (2026-08-24)
+
+- E11 раунд 2, изменение (2) сделано: выживаемость считается ПРОТИВ
+  СПЕЦИФИКАЦИИ. Мутанты разобраны по трём классам (real_gap /
+  equivalent / spec_silent), неубиваемые и неоговорённые сняты у обоих
+  плеч вместе с пойманными. Итог 18 % против 9 % там, где сырьё
+  говорило 30 % против 22 %: преимущество независимого автора тестов
+  вдвое больше замеренного. Два прежних утверждения исправлены —
+  «общая слепая зона» оказалась неубиваемым мутантом (проверено
+  перебором), а граница `if width < 1` не дырой, а местом, о котором
+  спека молчит. Набор и классификация лежат в git
+  (`experiments/goldset/e11/`), число заморожено гейтом
+  (`test_e11_spec_score.py`).
 
 ### v0.24 (2026-08-24)
 

@@ -1,0 +1,37 @@
+{"file": "wordstat/stats.py", "kind": "константа", "line": 23, "before": "False", "after": "True", "survived": true}
+{"file": "wordstat/stats.py", "kind": "число", "line": 11, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/stats.py", "kind": "логика", "line": 13, "before": "And", "after": "Or", "survived": false}
+{"file": "wordstat/stats.py", "kind": "логика", "line": 15, "before": "And", "after": "Or", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 6, "before": "256", "after": "257", "survived": true}
+{"file": "wordstat/stats.py", "kind": "сравнение", "line": 13, "before": "Lt", "after": "LtE", "survived": false}
+{"file": "wordstat/stats.py", "kind": "отрицание", "line": 13, "before": "not X", "after": "X", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 14, "before": "1", "after": "2", "survived": true}
+{"file": "wordstat/stats.py", "kind": "сравнение", "line": 15, "before": "Gt", "after": "GtE", "survived": true}
+{"file": "wordstat/stats.py", "kind": "отрицание", "line": 15, "before": "not X", "after": "X", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 16, "before": "1", "after": "2", "survived": false}
+{"file": "wordstat/stats.py", "kind": "арифметика", "line": 19, "before": "Add", "after": "Sub", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 19, "before": "1", "after": "2", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 19, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/stats.py", "kind": "арифметика", "line": 15, "before": "Sub", "after": "Add", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 15, "before": "1", "after": "2", "survived": false}
+{"file": "wordstat/rank.py", "kind": "сравнение", "line": 18, "before": "LtE", "after": "Lt", "survived": true}
+{"file": "wordstat/rank.py", "kind": "сравнение", "line": 21, "before": "GtE", "after": "Gt", "survived": true}
+{"file": "wordstat/rank.py", "kind": "число", "line": 18, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/rank.py", "kind": "число", "line": 20, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/rank.py", "kind": "число", "line": 20, "before": "1", "after": "2", "survived": false}
+{"file": "wordstat/normalize.py", "kind": "отрицание", "line": 17, "before": "not X", "after": "X", "survived": false}
+{"file": "wordstat/normalize.py", "kind": "отказ", "line": 18, "before": "raise", "after": "pass", "survived": true}
+{"file": "wordstat/cli.py", "kind": "число", "line": 23, "before": "10", "after": "11", "survived": true}
+{"file": "wordstat/cli.py", "kind": "число", "line": 24, "before": "72", "after": "73", "survived": true}
+{"file": "wordstat/cli.py", "kind": "сравнение", "line": 41, "before": "Lt", "after": "LtE", "survived": true}
+{"file": "wordstat/cli.py", "kind": "число", "line": 47, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/cli.py", "kind": "логика", "line": 28, "before": "And", "after": "Or", "survived": false}
+{"file": "wordstat/cli.py", "kind": "число", "line": 41, "before": "1", "after": "2", "survived": true}
+{"file": "wordstat/cli.py", "kind": "число", "line": 43, "before": "2", "after": "3", "survived": false}
+{"file": "wordstat/cli.py", "kind": "число", "line": 27, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/cli.py", "kind": "сравнение", "line": 28, "before": "In", "after": "NotIn", "survived": false}
+{"file": "wordstat/cli.py", "kind": "сравнение", "line": 34, "before": "Eq", "after": "NotEq", "survived": false}
+{"file": "wordstat/cli.py", "kind": "число", "line": 40, "before": "2", "after": "3", "survived": false}
+{"file": "wordstat/cli.py", "kind": "арифметика", "line": 46, "before": "Add", "after": "Sub", "survived": false}
+{"file": "wordstat/cli.py", "kind": "число", "line": 33, "before": "2", "after": "3", "survived": false}
+{"file": "wordstat/cli.py", "kind": "число", "line": 30, "before": "0", "after": "1", "survived": false}

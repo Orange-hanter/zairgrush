@@ -1,0 +1,27 @@
+{"file": "wordstat/stats.py", "kind": "константа", "line": 22, "before": "False", "after": "True", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 10, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/stats.py", "kind": "логика", "line": 12, "before": "And", "after": "Or", "survived": false}
+{"file": "wordstat/stats.py", "kind": "логика", "line": 14, "before": "And", "after": "Or", "survived": false}
+{"file": "wordstat/stats.py", "kind": "сравнение", "line": 12, "before": "Lt", "after": "LtE", "survived": false}
+{"file": "wordstat/stats.py", "kind": "отрицание", "line": 12, "before": "not X", "after": "X", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 13, "before": "1", "after": "2", "survived": true}
+{"file": "wordstat/stats.py", "kind": "сравнение", "line": 14, "before": "Gt", "after": "GtE", "survived": true}
+{"file": "wordstat/stats.py", "kind": "отрицание", "line": 14, "before": "not X", "after": "X", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 15, "before": "1", "after": "2", "survived": false}
+{"file": "wordstat/stats.py", "kind": "арифметика", "line": 18, "before": "Add", "after": "Sub", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 18, "before": "1", "after": "2", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 18, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/stats.py", "kind": "арифметика", "line": 14, "before": "Sub", "after": "Add", "survived": false}
+{"file": "wordstat/stats.py", "kind": "число", "line": 14, "before": "1", "after": "2", "survived": false}
+{"file": "wordstat/rank.py", "kind": "сравнение", "line": 18, "before": "LtE", "after": "Lt", "survived": true}
+{"file": "wordstat/rank.py", "kind": "число", "line": 18, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/rank.py", "kind": "число", "line": 23, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/rank.py", "kind": "число", "line": 23, "before": "1", "after": "2", "survived": false}
+{"file": "wordstat/normalize.py", "kind": "отрицание", "line": 45, "before": "not X", "after": "X", "survived": false}
+{"file": "wordstat/cli.py", "kind": "отказ", "line": 14, "before": "raise", "after": "pass", "survived": false}
+{"file": "wordstat/cli.py", "kind": "число", "line": 55, "before": "0", "after": "1", "survived": false}
+{"file": "wordstat/cli.py", "kind": "константа", "line": 18, "before": "False", "after": "True", "survived": true}
+{"file": "wordstat/cli.py", "kind": "число", "line": 19, "before": "10", "after": "11", "survived": false}
+{"file": "wordstat/cli.py", "kind": "число", "line": 20, "before": "72", "after": "73", "survived": false}
+{"file": "wordstat/cli.py", "kind": "число", "line": 44, "before": "2", "after": "3", "survived": true}
+{"file": "wordstat/cli.py", "kind": "число", "line": 50, "before": "2", "after": "3", "survived": true}
