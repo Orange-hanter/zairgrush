@@ -83,7 +83,7 @@ python3 -m pytest
 
 Проект **экспериментальный** (`draft`), активно меняется — см. `version`/
 `updated` во frontmatter каждого документа и журналы изменений в их конце.
-Автотесты `tools/swarm`: 1213 passed + 492 subtests — одна команда
+Автотесты `tools/swarm`: 1208 passed + 492 subtests (+10 skipped: tree-sitter опционален) — одна команда
 `cd tools/swarm && ./check.sh` (линт → типы → тесты).
 
 Открытые решения помечены в документах как «на утверждение» / «проект

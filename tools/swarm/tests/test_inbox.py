@@ -744,5 +744,59 @@ class TestInboxSpeaksHuman(InboxCase):
         self.assertIn("лишний слой", out)
 
 
+
+class TestRetryNoteDoesNotClobberDecisions(unittest.TestCase):
+    """`swarm retry --note` затирал решения владельца.
+
+    Правило «решения НАКАПЛИВАЮТСЯ» было записано в `state.answer()` и
+    куплено инцидентом на приёмке v3st. Но писателей у поля `human_answer`
+    оказалось ДВА, а правило знал один: `retry --note` присваивал поле
+    напрямую. Поймано на себе 2026-08-24 — после ручной остановки прогона
+    v9lb служебная записка «прогон остановлен, вернул в очередь» заняла
+    место двух ответов владельца на q022/q023, и следующий исполнитель
+    получил бы ЕЁ вместо решений.
+
+    Урок: правило, записанное в одном из двух путей к полю, — не правило,
+    а совпадение.
+    """
+
+    def test_note_appends_instead_of_replacing(self):
+        task = {"id": "t1"}
+        st_mod.record_decision(task, "решение владельца: делай X")
+        st_mod.record_decision(task, "прогон остановлен, вернул в очередь")
+        self.assertEqual(len(task["human_decisions"]), 2)
+        self.assertIn("делай X", task["human_answer"])
+        self.assertIn("вернул в очередь", task["human_answer"])
+
+    def test_single_decision_stays_plain(self):
+        """Одно решение — без списочного маркера: промпт исполнителя
+        байт-стабилен для самого частого случая."""
+        task = {"id": "t1"}
+        st_mod.record_decision(task, "делай X")
+        self.assertEqual(task["human_answer"], "делай X")
+
+    def test_repeat_is_not_duplicated(self):
+        task = {"id": "t1"}
+        st_mod.record_decision(task, "делай X")
+        st_mod.record_decision(task, "делай X")
+        self.assertEqual(task["human_decisions"], ["делай X"])
+
+    def test_legacy_task_with_only_human_answer_is_absorbed(self):
+        """Задача, записанная до появления списка, не теряет решение."""
+        task = {"id": "t1", "human_answer": "старое решение"}
+        st_mod.record_decision(task, "новое решение")
+        self.assertEqual(task["human_decisions"],
+                         ["старое решение", "новое решение"])
+
+    def test_retry_command_goes_through_the_accumulator(self):
+        """Проверяется САМ путь retry, а не только помощник: дефект был
+        именно в том, что путь помощника не знал."""
+        import inspect
+
+        import cliexplain
+        src = inspect.getsource(cliexplain.cmd_retry)
+        self.assertIn("record_decision", src)
+        self.assertNotIn('task["human_answer"] = args.note', src)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

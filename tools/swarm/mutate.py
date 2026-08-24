@@ -74,6 +74,20 @@ MUTATIONS = [
      """    if False:
         msg = (""",
      "test_ambient"),
+    # --- решения человека (state.record_decision) ---
+    ("решения: retry-записка снова затирает решения владельца",
+     "swarm/cliexplain.py",
+     "            cli.state_mod.record_decision(task, args.note)",
+     '            task["human_answer"] = args.note',
+     "test_inbox"),
+    ("решения: накопитель снова держит только последнее",
+     "swarm/state.py",
+     """    if text not in prior:
+        prior.append(text)""",
+     """    prior = [text]
+    if False:
+        prior.append(text)""",
+     "test_inbox"),
     # --- пурист (unclear.py, E14) ---
     ("пурист: пустой список развилок всё равно едет в промпт",
      "swarm/unclear.py",

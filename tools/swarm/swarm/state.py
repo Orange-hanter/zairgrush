@@ -109,6 +109,36 @@ def _atomic_write(path: pathlib.Path, text: str) -> None:
         os.close(dir_fd)
 
 
+def record_decision(task: dict[str, Any], text: str) -> None:
+    """Добавить решение человека в задачу, НЕ затирая прежние.
+
+    Одно поле `human_answer` означало, что каждый следующий ответ стирает
+    предыдущий, и задача закрывалась вопреки уже принятому решению. На
+    приёмке v3st так и вышло: архитектурное «вынеси валидатор в
+    _utils.py» стёрлось техническим ответом на следующий вопрос, ревьюер
+    его уже не видел и одобрил инлайн-вариант.
+
+    Функция существует отдельно, потому что писателей у этого поля ДВА, а
+    правило знал один. `swarm retry --note` присваивал `human_answer`
+    напрямую — и служебная записка оператора («прогон остановлен, вернул
+    в очередь») занимала место решения владельца. Поймано на себе
+    2026-08-24: после ручной остановки прогона v9lb исполнитель получил
+    бы мою уборочную заметку ВМЕСТО двух ответов на q022/q023. Сами
+    решения уцелели в `human_decisions`, но в промпт уезжает
+    производное поле — то есть потеря была полной там, где она важна.
+
+    Урок общий: правило, записанное в одном из двух путей к полю, — не
+    правило, а совпадение.
+    """
+    prior = task.get("human_decisions") or (
+        [task["human_answer"]] if task.get("human_answer") else [])
+    if text not in prior:
+        prior.append(text)
+    task["human_decisions"] = prior
+    task["human_answer"] = (prior[0] if len(prior) == 1
+                            else "\n".join(f"- {d}" for d in prior))
+
+
 class SwarmState:
     def __init__(self, root: str | pathlib.Path,
                  swarm_dir: str = ".swarm") -> None:
@@ -448,20 +478,9 @@ class SwarmState:
                  reopened=not closed)
         for t in data["tasks"]:
             if t["id"] == task_id:
-                # Ответ уходит в handoff следующей итерации. Решения
-                # НАКАПЛИВАЮТСЯ: одно поле означало, что каждый следующий
-                # ответ затирает предыдущий, и задача закрывалась вопреки
-                # уже принятому решению. На приёмке v3st так и вышло —
-                # архитектурное «вынеси валидатор в _utils.py» стёрлось
-                # техническим ответом на следующий вопрос, ревьюер его уже
-                # не видел и одобрил инлайн-вариант.
-                prior = t.get("human_decisions") or (
-                    [t["human_answer"]] if t.get("human_answer") else [])
-                if text not in prior:
-                    prior.append(text)
-                t["human_decisions"] = prior
-                t["human_answer"] = (prior[0] if len(prior) == 1
-                                     else "\n".join(f"- {d}" for d in prior))
+                # Ответ уходит в handoff следующей итерации, и решения
+                # НАКАПЛИВАЮТСЯ — см. record_decision().
+                record_decision(t, text)
                 if not closed:
                     t["status"] = "pending"
                     t.pop("reason", None)

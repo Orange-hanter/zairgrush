@@ -367,7 +367,10 @@ def cmd_retry(args: argparse.Namespace) -> int:
         task["status"] = "pending"
         task.pop("reason", None)
         if args.note:
-            task["human_answer"] = args.note
+            # НЕ присваивание: записка retry — такой же вход исполнителя,
+            # как ответ на вопрос, и затирать ею принятые решения нельзя
+            # (см. state.record_decision — поймано на v9lb 2026-08-24).
+            cli.state_mod.record_decision(task, args.note)
         for extra in args.add_path or []:
             if extra not in task.setdefault("paths", []):
                 task["paths"].append(extra)
