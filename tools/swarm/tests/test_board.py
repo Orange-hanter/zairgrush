@@ -394,5 +394,107 @@ class TestLiveBoard(unittest.TestCase):
         loop.refresh_board()      # исключения быть не должно
 
 
+
+class TestNowPanel(unittest.TestCase):
+    """Настоящее на странице: одна и та же отметка значит разное у живой
+    и мёртвой петли, и доска не имеет права называть фазу, не назвав
+    состояния петли."""
+
+    def board(self, live, now):
+        return {"goal": "цель", "tasks": [], "questions": [], "events": [],
+                "run_level": [], "unfinished": [], "spend": {}, "total": 0,
+                "root": "/r", "swarm_dir": "/r/.swarm", "built": "сейчас",
+                "run": {"live": live, "now": now if live else None,
+                        "broke_at": None if live else now}}
+
+    NOW = {"phase": "implement", "task": "t1", "iter": 2,
+           "since": "2026-08-24T09:00:00+00:00"}
+
+    def test_live_loop_shows_what_is_happening(self):
+        page = bd.render(self.board(True, self.NOW))
+        self.assertIn("сейчас: исполнитель", page)
+        self.assertIn("задача t1", page)
+        self.assertNotIn("оборвался", page)
+
+    def test_dead_loop_with_a_mark_calls_it_a_break_not_a_phase(self):
+        page = bd.render(self.board(False, self.NOW))
+        self.assertIn("оборвался на фазе", page)
+        self.assertNotIn("сейчас: исполнитель", page)
+        self.assertIn("resume", page)
+
+    def test_no_mark_no_panel(self):
+        page = bd.render(self.board(True, None))
+        self.assertNotIn("Настоящее", page)
+
+
+class TestRunFacts(unittest.TestCase):
+    """Паспорт прогона собирается из тех же файлов, что и всё остальное."""
+
+    def test_dead_run_is_not_reported_live(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, tasks=[{"id": "t1", "status": "done"}])
+            (root / ".swarm" / "now.json").write_text(
+                json.dumps({"phase": "review", "task": "t1",
+                            "since": "2026-08-24T09:00:00+00:00"}),
+                encoding="utf-8")
+            board = bd.collect(root)
+        self.assertFalse(board["run"]["live"])
+        self.assertIsNone(board["run"]["now"])
+        self.assertEqual(board["run"]["broke_at"]["phase"], "review")
+
+    def test_money_is_split_by_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, tasks=[{"id": "t1", "status": "done"}],
+                             metrics=[
+                                 {"task": "t1", "phase": "implement",
+                                  "cost_usd": 0.5, "ts": "2026-08-24T09:00:00+00:00"},
+                                 {"task": "t1", "phase": "review",
+                                  "cost_usd": 1.5, "ts": "2026-08-24T09:10:00+00:00"}])
+            board = bd.collect(root)
+        phases = board["totals"]["phases"]
+        self.assertEqual(phases["implement"]["cost"], 0.5)
+        self.assertEqual(phases["review"]["cost"], 1.5)
+        # Раскладка и общая сумма считаются из одних метрик: разойтись
+        # они не могут — на пилоте два авторитета на одну цифру дали
+        # $38.43 на доске против $40.12 у стража бюджета.
+        self.assertEqual(round(sum(p["cost"] for p in phases.values()), 2),
+                         board["total"])
+
+    def test_timeline_places_a_phase_by_its_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, tasks=[{"id": "t1", "status": "done"}],
+                             metrics=[{"task": "t1", "phase": "implement",
+                                       "wall_s": 60,
+                                       "ts": "2026-08-24T09:01:00+00:00"}])
+            board = bd.collect(root)
+        seg = board["timeline"][0]
+        self.assertEqual(seg["t1"] - seg["t0"], 60)
+
+    def test_page_declares_its_encoding(self):
+        """Файл открывают и напрямую (file://), где заголовка сервера нет
+        вовсе — без объявления весь русский текст превращался в мусор."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, goal="кодировка")
+            page = bd.render(bd.collect(root))
+        self.assertIn('<meta charset="utf-8">', page)
+
+
+class TestDecisionQueue(unittest.TestCase):
+    """Очередь человека: вопрос и блокировка ждут его одинаково, и обе
+    обязаны называть команду, которой их снимают."""
+
+    def test_blocked_task_names_the_command(self):
+        board = {"goal": "цель", "tasks": [
+            {"id": "t9", "status": "blocked", "title": "встала",
+             "reason": "invalid_verdict"}],
+            "questions": [], "events": [], "run_level": [], "unfinished": [],
+            "spend": {}, "total": 0, "root": "/r", "swarm_dir": "/r/.swarm",
+            "built": "сейчас"}
+        page = bd.render(board)
+        self.assertIn("Ждут вас", page)
+        self.assertIn("retry t9", page)
+        self.assertIn("why t9", page)
+
+
 if __name__ == "__main__":
     unittest.main()

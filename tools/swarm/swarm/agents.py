@@ -172,8 +172,12 @@ class Agents:
         # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
         # в историю. Единый источник — state.work_diff (intent-to-add).
         """Делегат к `reviewer.review`."""
-        return reviewer.review(self, task, gate_tail, iteration, attempt,
-                               verify_results, confirming)
+        # Отметка о настоящем (state.phase) — ревью идёт минутами, и до
+        # его конца в `.swarm/` о нём нет ни строки.
+        with self.state.phase("review", task["id"], iter=iteration,
+                              attempt=attempt, confirming=confirming):
+            return reviewer.review(self, task, gate_tail, iteration, attempt,
+                                   verify_results, confirming)
 
     # --- хелперы ----------------------------------------------------------
 

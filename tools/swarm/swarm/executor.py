@@ -65,10 +65,14 @@ def implement(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
         cwd=str(agents.state.root),
         silence_timeout=agents.config.get("silence_timeout", 600),
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800))
-    run = drv.start(cmd, parser=(agents.driver.parse_claude if claude
-                                 else agents.driver.parse_kimi))
-    result = run.collect(agents.driver.extract_result_envelope if claude
-                         else parsing_mod.extract_report)
+    # Пока идёт вызов — единственная запись о происходящем: метрика
+    # появится только после (state.phase).
+    with agents.state.phase("implement", task["id"], iter=iteration,
+                            engine=engine, model=model or None):
+        run = drv.start(cmd, parser=(agents.driver.parse_claude if claude
+                                     else agents.driver.parse_kimi))
+        result = run.collect(agents.driver.extract_result_envelope if claude
+                             else parsing_mod.extract_report)
     raw = agents.state.dir / "log" / f"{task['id']}-i{iteration}-executor.jsonl"
     raw.write_text(run.raw_stream())
     report: dict[str, Any] | None = result.report

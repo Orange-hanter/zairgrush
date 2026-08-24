@@ -37,6 +37,8 @@ if _HERE not in sys.path:
 
 import obs  # noqa: E402 — каталог добавлен строкой выше
 
+log = obs.get_logger("state")
+
 LEGAL_STATUS = {"pending", "in_progress", "in_review", "done", "blocked"}
 TERMINAL = {"done", "blocked"}
 
@@ -122,8 +124,12 @@ class SwarmState:
         self.metrics_path = self.dir / "metrics.jsonl"
         self.lock_path = self.dir / "state.lock"
         self.write_lock_path = self.dir / "write.lock"
+        # Отметка о настоящем (см. `phase`): единственный файл, который
+        # существует, ПОКА фаза идёт, и исчезает, когда она кончилась.
+        self.now_path = self.dir / "now.json"
         self._lock: IO[str] | None = None
         self._mutating = False
+        self._phases: list[dict[str, Any]] = []
 
     def _self_ignore(self, swarm_dir: str) -> None:
         """Состояние петли не должно выглядеть как чужие правки.
@@ -173,6 +179,34 @@ class SwarmState:
             fcntl.flock(self._lock, fcntl.LOCK_UN)
             self._lock.close()
             self._lock = None
+
+    def is_running(self) -> bool:
+        """Жив ли прогон — то есть держит ли кто-то блокировку состояния.
+
+        Не по pid из файла: pid переиспользуется системой, и мёртвый
+        прогон изредка «оживал» чужим процессом с тем же номером. Тот же
+        флок, которым петля объявляет себя единственным писателем (§4.3),
+        отвечает на вопрос точно: захватился — держать некому.
+
+        Ответ нужен доске: файл `now.json`, переживший убитый процесс,
+        и фаза, которая идёт прямо сейчас, — это один и тот же файл, и
+        различает их только живость петли.
+        """
+        if self._lock is not None:
+            return True            # держим сами: доска строится внутри петли
+        try:
+            fh = self.lock_path.open("r")
+        except OSError:
+            return False           # файла нет — блокировку никто не брал
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True            # занят — на том конце живой оркестратор
+        else:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            return False
+        finally:
+            fh.close()
 
     def __enter__(self) -> "SwarmState":
         self.acquire()
@@ -619,6 +653,56 @@ class SwarmState:
         """
         return _Step(self, task_id, action, **payload)
 
+    def phase(self, phase: str, task: str | None = None,
+              **fields: Any) -> "_Phase":
+        """Отметка «идёт прямо сейчас» — единственный факт о настоящем.
+
+        И журнал, и метрики пишутся ПОСЛЕ фазы. Пока исполнитель работает
+        семь минут, в `.swarm/` не появляется ни строки: доска показывает
+        последний завершённый раунд, и человек не может отличить «идёт
+        новый» от «петля встала». Живой сервер доски эту слепоту не лечит,
+        а маскирует — страница исправно обновляется тем же прошлым.
+
+        Отметка живёт ровно столько, сколько идёт фаза: `now.json`
+        появляется на входе и исчезает на выходе. Файл, переживший
+        прогон, — тоже факт, и притом ценный: он называет фазу, на
+        которой процесс убили, — `finally` при SIGKILL не отрабатывает.
+        Поэтому читать отметку в отрыве от `is_running` нельзя: одна и та
+        же запись означает «идёт» у живой петли и «оборвалось здесь» у
+        мёртвой.
+
+        Использование:
+            with state.phase("implement", task["id"], iter=2, model=...):
+                run_executor()
+        """
+        return _Phase(self, phase, task, **fields)
+
+    def current_phase(self) -> dict[str, Any] | None:
+        """Отметка о настоящем, если она есть. Сырьё, не суждение:
+        живость петли проверяет вызывающий (`is_running`)."""
+        try:
+            row = json.loads(self.now_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return row if isinstance(row, dict) else None
+
+    def _phase_write(self) -> None:
+        """Верхушка стека фаз — на диск; пустой стек — файла нет.
+
+        Стек, а не одна запись: проверки внутри ревью — фаза внутри фазы,
+        и выход из вложенной не значит, что петля бездельничает.
+        Наблюдение не имеет права ронять работу (§9.3): сбой записи
+        уходит в диагностику вместе с трассировкой.
+        """
+        try:
+            if self._phases:
+                _atomic_write(self.now_path,
+                              json.dumps(self._phases[-1], ensure_ascii=False))
+            else:
+                self.now_path.unlink(missing_ok=True)
+        except OSError:
+            log.warning("отметка о текущей фазе не записана", exc_info=True)
+
     def unfinished_steps(self) -> list[dict[str, Any]]:
         """Шаги с intent без исхода — их оставило падение (§5.6).
 
@@ -643,6 +727,28 @@ class SwarmState:
             elif row.get("kind") in ("step_done", "step_failed"):
                 finished.add(row["step_id"])
         return [r for sid, r in started.items() if sid not in finished]
+
+
+class _Phase:
+    """Контекст одной фазы: запись о настоящем на входе, снятие на выходе."""
+
+    def __init__(self, state: SwarmState, phase: str, task: str | None,
+                 **fields: Any) -> None:
+        self.state = state
+        self.row: dict[str, Any] = {"phase": phase, "task": task,
+                                    "since": obs.now(), **fields}
+
+    def __enter__(self) -> "_Phase":
+        self.state._phases.append(self.row)  # noqa: SLF001 — _Phase и SwarmState одна пара
+        self.state._phase_write()            # noqa: SLF001 — см. выше
+        return self
+
+    def __exit__(self, exc_type: type[BaseException] | None,
+                 exc: BaseException | None,
+                 tb: TracebackType | None) -> None:
+        if self.state._phases:               # noqa: SLF001 — см. выше
+            self.state._phases.pop()         # noqa: SLF001 — см. выше
+        self.state._phase_write()            # noqa: SLF001 — см. выше
 
 
 class _Step:

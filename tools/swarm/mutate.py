@@ -24,6 +24,26 @@ SW = pathlib.Path("/Users/dakh/Git/_my/ZAIrgRush/tools/swarm")
 
 # (имя, файл, было, стало, чем обязана ловиться)
 MUTATIONS = [
+    # --- отметка о настоящем и живость петли (§9.3) ---
+    ("настоящее: отметка о фазе не снимается после выхода",
+     "swarm/state.py",
+     """            else:
+                self.now_path.unlink(missing_ok=True)""",
+     """            else:
+                pass""",
+     "test_state"),
+    ("настоящее: мёртвый прогон объявлен живым",
+     "swarm/state.py",
+     """        if self._lock is not None:
+            return True            # держим сами: доска строится внутри петли""",
+     """        if True:
+            return True            # держим сами: доска строится внутри петли""",
+     "test_state"),
+    ("настоящее: доска называет фазой то, что осталось от обрыва",
+     "swarm/board.py",
+     '        "now": now if live else None,',
+     '        "now": now,',
+     "test_board"),
     # --- движок исполнителя (ADR-011) ---
     ("движок: незнакомое имя молча становится умолчанием",
      "swarm/engines.py",
