@@ -19,6 +19,7 @@ if _HERE not in sys.path:
 
 import parsing as parsing_mod  # noqa: E402
 import promptbuilder  # noqa: E402
+import spending  # noqa: E402
 from agents_types import AgentsLike  # noqa: E402
 
 
@@ -80,7 +81,11 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
            "--include-partial-messages",
            "--json-schema", schema,
            "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
-           "--max-budget-usd", str(agents.config.get("review_budget_usd", 1.0)),
+           # Потолок вызова — политика денег, а не деталь argv ревьюера.
+           # Умолчание $1 жило здесь и срабатывало: «ревьюер обрублен по
+           # бюджету» — штатный диагноз петли. В режиме money_bin флага
+           # нет вовсе, явно заданный — действует (см. spending.py).
+           *spending.budget_flags(agents.config, "review_budget_usd"),
            *promptbuilder.tuning(agents, "review", confirming)]
     drv = agents.driver.AgentDriver(
         cwd=str(agents.state.root),

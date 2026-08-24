@@ -12,13 +12,14 @@
     4.  REVIEW         — ревьюер; вердикт валидируется механически
     5.  COMMIT | FEEDBACK
 """
+import contextlib
 import datetime as dt
 import hashlib
 import pathlib
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 # Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
@@ -26,7 +27,8 @@ _HERE = str(pathlib.Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import board  # noqa: E402 — каталог добавлен строкой выше
+import ambient  # noqa: E402 — каталог добавлен строкой выше
+import board  # noqa: E402
 import gitops  # noqa: E402
 import memory as memory_mod  # noqa: E402
 import obs  # noqa: E402
@@ -336,7 +338,39 @@ class Loop:
 
     # --- цикл --------------------------------------------------------------
 
+    @contextlib.contextmanager
+    def _ambient_scope(self, tid: str) -> Iterator[None]:
+        """Фактор фонового замера, разыгранный на ОДНУ задачу.
+
+        Конфиг подменяется на копию и возвращается обратно в `finally`:
+        плечо одной задачи, протёкшее в следующую, не упало бы, а тихо
+        смешало бы выборку — и обнаружилось бы через недели по
+        несходящимся числам. Подменяется и у петли, и у агентов: флаги
+        `[experiments]` читают оба, и половинчатая подмена дала бы
+        задачу, у которой тестировщик из одного плеча, а память из
+        другого.
+        """
+        over = ambient.overlay(self.config, tid)
+        if over is None:
+            yield
+            return
+        facts = ambient.facts(self.config, tid)
+        self.state.log("ambient_arm", task=tid, **facts)
+        self.state.metric(task=tid, phase="ambient", **facts)
+        old_loop, old_agents = self.config, self.agents.config
+        self.config, self.agents.config = over, over
+        self.ui(f"    фоновый замер: {facts['ambient_factor']} = "
+                f"{facts['ambient_arm']}")
+        try:
+            yield
+        finally:
+            self.config, self.agents.config = old_loop, old_agents
+
     def run_task(self, task: dict[str, Any]) -> str:
+        with self._ambient_scope(task["id"]):
+            return self._run_task(task)
+
+    def _run_task(self, task: dict[str, Any]) -> str:
         tid = task["id"]
         self.ui(f"=== {tid}: {task['title']}")
         self.state.set_status(tid, "in_progress")

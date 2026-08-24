@@ -183,6 +183,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
               f"таким именем")
     st = cli.state_mod.SwarmState(root)
     print(f"[  ok ] состояние: {st.dir}")
+    # Политика денег — то, о чём спрашивают доктора чаще всего постфактум
+    # («почему ревьюер обрублен?», «почему прогон встал?»). Незнакомый
+    # режим здесь не роняет доктора: он для того и нужен, чтобы назвать
+    # проблему конфига до прогона, а не вместе с ним.
+    spending = cli.load_mod("spending")
+    try:
+        print(f"[  ok ] деньги: {spending.headline(cfg, st.total_spend())}")
+    except ValueError as e:
+        checks.append((False, "деньги", str(e)))
+        print(f"[ПРОБЛ] деньги: {e}")
     return 0 if all(c[0] is not False for c in checks) else 1
 
 
@@ -284,9 +294,13 @@ def cmd_plan(args: argparse.Namespace) -> int:
             "planner", task, st, cfg)
         prompt = planner.replan_prompt(task, dispute, tasks, files, suite,
                                        memory=mem_block)
+    # Потолок вызова планировщика — через общую политику денег, а не
+    # чтением ключа: иначе `money_bin` действовал бы на две роли из
+    # трёх, и режим врал бы своим названием.
+    spending_mod = cli.load_mod("spending")
     diff, errs, reason = planner.plan_with_retry(
         prompt, args.cmd, tasks, root=args.root,
-        budget=cfg.get("plan_budget_usd"),
+        budget=spending_mod.call_cap(cfg, "plan_budget_usd"),
         model=cfg.get("plan_model"), effort=cfg.get("plan_effort"),
         timeout=cfg.get("plan_timeout"))
     if errs:

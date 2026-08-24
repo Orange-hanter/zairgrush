@@ -24,6 +24,56 @@ SW = pathlib.Path("/Users/dakh/Git/_my/ZAIrgRush/tools/swarm")
 
 # (имя, файл, было, стало, чем обязана ловиться)
 MUTATIONS = [
+    # --- политика денег (spending.py) ---
+    ("деньги: явно заданный потолок перестал быть старше режима",
+     "swarm/spending.py",
+     """    explicit = config.get(key)
+    if explicit is not None:""",
+     """    explicit = config.get(key)
+    if False:""",
+     "test_spending"),
+    ("деньги: незнакомый режим траты молча становится умолчанием",
+     "swarm/spending.py",
+     """    if value not in MODES:
+        msg = (""",
+     """    if False:
+        msg = (""",
+     "test_spending"),
+    ("деньги: явный ноль снова обрубает вызов немедленно",
+     "swarm/spending.py",
+     "        return float(explicit) or None",
+     "        return float(explicit)",
+     "test_spending"),
+    ("деньги: строка отчёта называет режим вместо действующих потолков",
+     "swarm/spending.py",
+     "    caps = effective_caps(config)",
+     "    caps = {} if mode(config) == DEFAULT_MODE else dict(CAPPED_DEFAULTS)",
+     "test_spending"),
+    # --- фоновый замер (ambient.py) ---
+    ("фон: жребий перестал зависеть от задачи (всё в одно плечо)",
+     "swarm/ambient.py",
+     '    raw = f"{seed}|{name}|{task_id}".encode()',
+     '    raw = f"{seed}|{name}".encode()',
+     "test_ambient"),
+    ("фон: оверлей мутирует общий конфиг прогона",
+     "swarm/ambient.py",
+     """    out = dict(config)
+    out["experiments"] = dict(config.get("experiments") or {})""",
+     """    out = config
+    out["experiments"] = config.get("experiments") or {}""",
+     "test_ambient"),
+    ("фон: конфликт явного флага и жребия больше не отказ",
+     "swarm/ambient.py",
+     "    if key in exp:\n        return (f",
+     "    if False:\n        return (f",
+     "test_ambient"),
+    ("фон: незнакомый фактор молча выключает замер",
+     "swarm/ambient.py",
+     """    if name not in FACTORS:
+        msg = (""",
+     """    if False:
+        msg = (""",
+     "test_ambient"),
     # --- движок исполнителя (ADR-011) ---
     ("движок: незнакомое имя молча становится умолчанием",
      "swarm/engines.py",

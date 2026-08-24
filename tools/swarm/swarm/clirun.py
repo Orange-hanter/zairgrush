@@ -73,6 +73,31 @@ def _engine_preflight(cfg: dict[str, Any]) -> bool:
     другая. Исполнитель и ревьюер на одной и той же модели эту опору
     убирают — предупреждаем прямо, а не оставляем это знанием автора.
     """
+    # Режим денег проверяется здесь же и первым: незнакомое значение
+    # роняло бы каждый вызов роли по отдельности, посреди работы, вместо
+    # одного отказа на старте.
+    try:
+        cli.load_mod("spending").mode(cfg)
+    except ValueError as e:
+        print(f"режим траты не выбран: {e}", file=sys.stderr)
+        return False
+    # Фоновый замер: незнакомый фактор и конфликт с явным флагом —
+    # отказ ДО работы. Испорченную выборку не видно ни в одном выводе,
+    # и заметить её можно было бы только по несходящимся числам через
+    # недели обычных прогонов.
+    ambient = cli.load_mod("ambient")
+    try:
+        clash = ambient.conflict(cfg)
+    except ValueError as e:
+        print(f"фоновый замер не настроен: {e}", file=sys.stderr)
+        return False
+    if clash:
+        print(f"фоновый замер противоречит конфигу: {clash}", file=sys.stderr)
+        return False
+    factor = ambient.factor(cfg)
+    if factor:
+        cli.ui(f"фоновый замер: фактор {factor}, "
+               f"сид {(cfg.get('experiments') or {}).get('ambient_seed')}")
     engines = cli.load_mod("engines")
     try:
         engine, model = engines.resolve(cfg)
@@ -147,9 +172,12 @@ def cmd_go(args: argparse.Namespace) -> int:
     elif pending:
         print(f"в очереди уже {len(pending)} задач(и) — планирование пропущено\n")
 
-    budget = cfg.get("total_budget_usd")
-    if budget:
-        print(f"бюджет прогона: ${budget}, потрачено ${st.total_spend()}\n")
+    # Печатается ВСЕГДА, а не только когда потолок задан: режим без
+    # потолков обязан назвать себя вслух. Тихое «без ограничений» — это
+    # то, как получают неожиданный счёт, и владелец имеет право узнать о
+    # политике денег до старта, а не из счёта провайдера.
+    spending = cli.load_mod("spending")
+    print(spending.headline(cfg, st.total_spend()) + "\n")
 
     out, board_url = _board_open(args.root, cfg)
     cli.ui(f"доска: {board_url}" if board_url else f"доска: file://{out.resolve()}")
@@ -164,8 +192,9 @@ def cmd_go(args: argparse.Namespace) -> int:
     out, board = board_mod.build(args.root)
     open_q = [q for q in board["questions"] if q["status"] == "open"]
     _print_results(results)
+    run_cap = spending.run_budget(cfg)
     print(f"потрачено ${board['total']}"
-          + (f" из ${budget}" if budget else ""))
+          + (f" из ${run_cap}" if run_cap else " (потолка прогона нет)"))
     print(f"доска: {out}")
     if open_q:
         print(f"\nЖДУТ ВАС ({len(open_q)}):")

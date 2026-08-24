@@ -40,3 +40,7 @@ experiments/verify/
 # --- English coach: личный журнал слов (не для репозитория) ---
 tools/english-coach/words.jsonl
 experiments/e4/
+
+# Скратч браузерного инструмента и снимки доски — не артефакты проекта
+.playwright-mcp/
+current-board.png

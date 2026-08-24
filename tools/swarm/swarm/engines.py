@@ -34,6 +34,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import parsing  # noqa: E402
+import spending  # noqa: E402
 
 # Закрытый список. `ollama` — не CLI, а маршрут на chat-fill (E10):
 # движок в том же перечислении, потому что вопрос «кем исполнять» у него
@@ -151,9 +152,7 @@ def executor_argv(engine: str, model: str, prompt: str,
         effort = config.get("executor_effort")
         if effort:
             cmd += ["--effort", str(effort)]
-        budget = config.get("executor_budget_usd")
-        if budget:
-            cmd += ["--max-budget-usd", str(budget)]
+        cmd += spending.budget_flags(config, "executor_budget_usd")
         return cmd
     raise EngineError(f"у движка {engine!r} нет командной строки")
 

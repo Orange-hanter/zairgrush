@@ -2,7 +2,7 @@
 title: "ZeusLogic — Рой агентов: петля «исполнитель ↔ ревьюер»"
 type: design
 status: draft
-version: 0.53
+version: 0.54
 created: 2026-07-30
 updated: 2026-08-24
 related:
@@ -683,7 +683,17 @@ Heartbeat на двух сигналах: (а) процесс жив, (б) из 
   infrastructure fault when the fix is one number. The retry note is
   split by cause for the same reason — after a budget truncation the
   edits are already on disk, and "repeat, respecting the contract" pays
-  for the same work twice (measured on both E9 arms, 2026-08-24);
+  for the same work twice (measured on both E9 arms, 2026-08-24). **And
+  the loop no longer invents a ceiling nobody asked for**: `spending`
+  defaults to `money_bin`, which has no implicit per-call cap anywhere
+  (the reviewer carried a silent `--max-budget-usd 1.0` — the most
+  expensive role in the loop, capped by a default that 1155 gate tests
+  never noticed). An EXPLICIT cap always wins over the mode, in both
+  directions, because a setting that silently stops applying is the
+  worst failure this tool has; the run budget stays never-implicit,
+  since what a goal is worth to spend is the owner's decision. §8.1 has
+  the keys, and the run header names the effective caps rather than the
+  mode — `money_bin` plus one explicit number IS a capped run;
 - **жёсткий wall-clock cap** на вызов агента (по умолчанию 30 мин, конфиг) —
   дополнение к таймауту тишины: агент, стабильно генерирующий события по
   кругу, иначе может крутиться часами;
@@ -1866,6 +1876,19 @@ replan'ах. Премиса плеча исполнителя проверена
 только для движка `claude` и только если заданы (без явной настройки роль
 наследует сессионные параметры, как и `review_*`).
 
+Ключ `spending` — режим траты (§5.3): `money_bin` (умолчание, неявных
+потолков на вызов нет) или `capped` (прежнее поведение, у ревьюера
+умолчание $1). Явно заданные `review_budget_usd` /
+`executor_budget_usd` / `plan_budget_usd` старше режима в обе стороны;
+явный `0` читается как «снять потолок», а не «обрубить немедленно».
+Незнакомое значение — отказ на старте, не умолчание.
+
+Блок `[experiments]`: `ambient` — имя фактора, который бросается
+жребием на КАЖДУЮ задачу обычной работы (§1 06-дока), `ambient_seed` —
+сид, без которого запись замера непроверяема. Жребий детерминирован по
+`(сид, фактор, id задачи)`, поэтому реплей задачи попадает в то же
+плечо. Фактор, вместе с тем прибитый явным флагом, — отказ на старте.
+
 Команда `swarm status` показывает сводку «время/деньги/скорость»: USD и
 токены на задачу, wall-time на задачу, итераций до сходимости. Это данные для
 коэффициента эффективности из §9. Подпись к сумме — просто «дорогие роли»:
@@ -2125,6 +2148,19 @@ verdict = retry (§4.2).
 ---
 
 ## Журнал изменений
+
+### v0.54 (2026-08-24)
+
+- §5.3: `spending = "money_bin"` — новый умолчательный режим траты, в
+  котором у петли нет НЕЯВНЫХ потолков на вызов роли. Явно заданный
+  потолок старше режима всегда; потолок прогона неявным не бывает.
+  Решение владельца 2026-08-24. Побочно вскрыто: умолчание $1 у
+  ревьюера не проверял ни один из 1155 тестов гейта.
+- §1: фоновый замер как второй способ мерить — фактор бросается
+  жребием на задачах обычной работы вместо парного стенда. Причина в
+  замере, а не во вкусе: парный стенд дважды не дал ответа по плечу
+  исполнителя, и обе неудачи про метод (шум гигиены на одной задаче,
+  выбор задачи человеком под ожидаемый признак).
 
 ### v0.53 (2026-08-24)
 

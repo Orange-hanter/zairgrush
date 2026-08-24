@@ -68,13 +68,19 @@ KNOWN_CONFIG_KEYS = frozenset({
     "memory_db", "memory_budget_chars", "memory_top_k", "memory_embed_model",
     "memory_index",
     "fill_num_predict",
+    "spending",
     "experiments",
 })
+
+# Режимы траты денег (см. spending.MODES). Продублировано строкой по той
+# же причине, что и список движков: cli грузится раньше плоских модулей.
+SPENDING_MODES = frozenset({"money_bin", "capped"})
 
 # Экспериментальные флаги (06-док, §1): та же семантика, что у основного
 # списка, — опечатка в имени флага молча включала бы умолчание.
 KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
-                                   "skeleton", "tester"})
+                                   "skeleton", "tester",
+                                   "ambient", "ambient_seed"})
 
 # Значения флага `[experiments] memory` — это имена ролей (см.
 # memory.enabled_for): каждая включается отдельно, чтобы замер шёл по
@@ -141,6 +147,15 @@ def load_config(root: str | pathlib.Path) -> dict[str, Any]:
                 print(f"ВНИМАНИЕ: {path}: gate_command обязан быть списком "
                       f"аргументов, а не строкой — иначе петля ищет файл с "
                       f'таким именем. Пример: ["python3", "-m", "pytest"]',
+                      file=sys.stderr)
+            spend = parsed.get("spending")
+            if spend is not None and spend not in SPENDING_MODES:
+                # Опечатка в режиме денег не имеет права молча включить
+                # противоположную политику: «capped» и «money_bin»
+                # отличаются наличием потолка у самой дорогой роли.
+                print(f"ВНИМАНИЕ: {path}: spending = {spend!r} — неизвестный "
+                      f"режим траты; прогон откажется стартовать. "
+                      f"Допустимо: {', '.join(sorted(SPENDING_MODES))}",
                       file=sys.stderr)
             engine = parsed.get("executor_engine")
             if engine is not None and engine not in EXECUTOR_ENGINES:
