@@ -209,6 +209,21 @@ class TestSmokeDefects(unittest.TestCase):
         self.assertEqual(live["status"], "done")
         self.assertIsNone(shadow)
 
+    def test_shadow_spend_is_distinguishable_from_work(self):
+        """Деньги замера и деньги работы обязаны быть различимы.
+
+        Обе траты настоящие и обе входят в бюджет прогона — но на v9lb
+        из $7.30 задачи $2.76 стоил ПРИБОР, и в метрике это выглядело
+        вторым исполнителем. Бюджет, в котором замер неотличим от
+        работы, не врёт в сумме и врёт в смысле.
+        """
+        import inspect
+
+        import executor
+        src = inspect.getsource(executor.implement)
+        self.assertIn('arm = "shadow"', src)
+        self.assertIn("arm=arm", src)
+
     def test_arms_write_raw_streams_to_different_files(self):
         """Два потока, пишущие один путь, — молчаливая потеря журнала.
 

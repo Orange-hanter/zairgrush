@@ -95,10 +95,17 @@ def implement(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
     facts: dict[str, Any] = {}
     if claude:
         report, reason, facts = claude_outcome(agents, task, iteration, result)
+    # Плечо в метрике: без него теневой вызов дуэли неотличим от живого,
+    # и `total_spend()` показывает одну сумму, в которой ЗАМЕР и РАБОТА
+    # смешаны. Деньги в бюджет входят и там и там — они настоящие, — но
+    # оператор обязан видеть, за что заплатил: на v9lb (2026-08-24) из
+    # $7.30 задачи $2.76 стоило теневое плечо, и в отчёте это выглядело
+    # как второй исполнитель, а не как прибор.
+    arm = "shadow" if getattr(agents, "log_tag", "") else None
     agents.state.metric(task=task["id"], iter=iteration, phase="implement",
                       reason=reason, wall_s=round(result.wall_s, 1),
                       report=bool(report), events=result.events,
-                      engine=engine, model=model or None, **facts)
+                      engine=engine, model=model or None, arm=arm, **facts)
     if report is None or reason != "done":
         # stderr — единственное место, где провайдер объясняет отказ.
         # Пока он не сохранялся, диагноз «квота Kimi исчерпана» занял
