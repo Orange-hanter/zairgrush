@@ -193,12 +193,21 @@ def shadow_diff_stat(path: pathlib.Path) -> dict[str, int]:
     return {"files": files, "added": added, "removed": removed}
 
 
-def run_pair(live_call: Any, shadow_call: Any) -> tuple[Any, Any]:
+def run_pair(live_call: Any, shadow_call: Any,
+             on_shadow_error: Any = None) -> tuple[Any, Any]:
     """Два исполнителя ОДНОВРЕМЕННО: календарное время — по медленному.
 
     Потоки, не процессы: обе ветки только ждут subprocess, GIL здесь не
     мешает. Исключение теневого плеча НЕ поднимается наружу — замер не
     имеет права ронять работу, которая и так была бы сделана.
+
+    Но и молчать оно не имеет права, и первая редакция этой функции
+    именно молчала: на дымовом прогоне 2026-08-24 теневое плечо упало,
+    вернуло None, и в журнале не осталось НИЧЕГО — ни причины, ни
+    трассировки. Диагноз пришлось собирать по отсутствию файлов.
+    Поэтому `on_shadow_error` не опционален по смыслу: вызывающий обязан
+    записать поломку прибора, иначе прибор ломается невидимо и замер
+    молча превращается в односторонний.
     """
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         live_future = pool.submit(live_call)
@@ -206,9 +215,8 @@ def run_pair(live_call: Any, shadow_call: Any) -> tuple[Any, Any]:
         live = live_future.result()
         try:
             shadow = shadow_future.result()
-        except Exception:  # noqa: BLE001 — граница деградации, см. ниже
-            # Теневое плечо — измерительный прибор. Его поломка обязана
-            # оставить след и не тронуть прогон: иначе замер начинает
-            # стоить задач, а не только денег.
+        except Exception as exc:  # noqa: BLE001 — граница деградации
+            if on_shadow_error is not None:
+                on_shadow_error(exc)
             shadow = None
     return live, shadow

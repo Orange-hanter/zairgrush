@@ -183,7 +183,7 @@ def find(agents: AgentsLike, task: dict[str, Any],
     facts: dict[str, Any] = {}
     if claude:
         facts = engines.envelope_facts(result.report)
-        report = engines.report_from_envelope(result.report)
+        report = engines.report_from_envelope(result.report, "unclear")
     found = len((report or {}).get("unclear") or []) if report else None
     agents.state.metric(task=task["id"], phase="unclear", engine=engine,
                         model=model or None, reason=result.reason,

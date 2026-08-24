@@ -20,19 +20,28 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import executor  # noqa: E402
+import modlock  # noqa: E402
 import parsing as parsing_mod  # noqa: E402
 import promptbuilder  # noqa: E402
 import reviewer  # noqa: E402
 
 
 def _load(name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
-    if spec is None or spec.loader is None:
-        raise ImportError(f"не удалось загрузить модуль {name}")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    # Загрузка модулей — гонка, пока плечи дуэли идут в потоках:
+    # модуль публикуется в sys.modules ДО выполнения (иначе не сходятся
+    # круговые импорты), и сосед видит пустышку. Замок ОБЩИЙ на все
+    # загрузчики петли — см. modlock.py.
+    with modlock.LOCK:
+        cached = modlock.ready(name)
+        if cached is not None:
+            return cached
+        spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
+        if spec is None or spec.loader is None:
+            raise ImportError(f"не удалось загрузить модуль {name}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
 
 
 log = _load("obs").get_logger("agents")
@@ -58,6 +67,10 @@ class Agents:
     # Блок пуриста (E14): (id задачи, текст). Считается один раз на
     # задачу — см. promptbuilder.unclear_block.
     unclear_cache: tuple[str, str] | None = None
+    # Метка в именах файлов сырья: пусто у обычного прогона, `-shadow` у
+    # теневого плеча дуэли. Два потока, пишущие один путь, — молчаливая
+    # потеря журнала, а не падение.
+    log_tag: str = ""
 
     def __init__(self, state: Any, config: dict[str, Any]) -> None:
         self.state = state

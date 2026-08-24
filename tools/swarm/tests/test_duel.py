@@ -175,5 +175,53 @@ class TestBothArmsActuallyRun(unittest.TestCase):
         self.assertIn("duel_shadow", journal)
 
 
+class TestSmokeDefects(unittest.TestCase):
+    """Три дефекта, которых не поймал ни один из 1206 тестов гейта.
+
+    Все три нашёл ПЕРВЫЙ настоящий прогон (2026-08-24). Это и есть цена
+    зелёного набора: он говорит, что проверено, и молчит о том, что нет.
+    """
+
+    def test_shadow_failure_calls_the_error_hook(self):
+        """Прибор, ломающийся невидимо, превращает замер в односторонний.
+
+        В первой редакции исключение теневого плеча глоталось начисто: в
+        журнале не осталось ни причины, ни трассировки, и диагноз
+        собирался по ОТСУТСТВИЮ файлов.
+        """
+        seen = []
+
+        def boom():
+            raise RuntimeError("теневое плечо упало")
+
+        live, shadow = duel.run_pair(lambda: "живое", boom, seen.append)
+        self.assertEqual(live, "живое")
+        self.assertIsNone(shadow)
+        self.assertEqual(len(seen), 1)
+        self.assertIn("упало", str(seen[0]))
+
+    def test_live_arm_survives_a_broken_shadow(self):
+        """Замер не имеет права стоить задач — только денег."""
+        live, shadow = duel.run_pair(
+            lambda: {"status": "done"},
+            lambda: (_ for _ in ()).throw(OSError("нет дерева")),
+            lambda exc: None)
+        self.assertEqual(live["status"], "done")
+        self.assertIsNone(shadow)
+
+    def test_arms_write_raw_streams_to_different_files(self):
+        """Два потока, пишущие один путь, — молчаливая потеря журнала.
+
+        Оба плеча звали `{task}-i{n}-executor.jsonl`, то есть теневой
+        поток затирал живой.
+        """
+        import inspect
+
+        import executor
+        src = inspect.getsource(executor.implement)
+        self.assertIn("log_tag", src,
+                      "имя файла сырья обязано различать плечи")
+
+
 if __name__ == "__main__":
     unittest.main()

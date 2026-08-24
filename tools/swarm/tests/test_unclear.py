@@ -136,5 +136,39 @@ class TestPromptDiscipline(unittest.TestCase):
         self.assertNotIn("recommendation", item)
 
 
+class TestReportShapeIsNotTheExecutors(unittest.TestCase):
+    """Форма отчёта ИСПОЛНИТЕЛЯ навязывалась всем ролям.
+
+    `report_from_envelope` требовал поля `status`, которого у пуриста
+    нет и быть не должно: он отдаёт список развилок, а не исход. На
+    первом же настоящем прогоне (2026-08-24) пурист нашёл ровно ту
+    развилку, ради которой ставился замер, — и петля выбросила ответ,
+    заплатив за него, и сказала человеку «развилок не оставила».
+    Сказать «нет пробелов» вместо «нет ответа» — худший из возможных
+    выводов: он звучит как знание.
+    """
+
+    def test_purist_report_survives_without_a_status_field(self):
+        import engines
+        env = {"structured_output": {"unclear": [ITEM], "summary": "есть"}}
+        got = engines.report_from_envelope(env, "unclear")
+        self.assertIsNotNone(got)
+        self.assertEqual(len(got["unclear"]), 1)
+
+    def test_executor_contract_is_still_the_default(self):
+        import engines
+        env = {"structured_output": {"status": "done", "summary": "s"}}
+        self.assertIsNotNone(engines.report_from_envelope(env))
+        self.assertIsNone(engines.report_from_envelope(
+            {"structured_output": {"summary": "нет статуса"}}))
+
+    def test_wrong_shape_is_still_refused(self):
+        """Параметр ослабляет проверку ровно на одно поле, а не снимает
+        её: чужой объект по-прежнему не считается отчётом."""
+        import engines
+        env = {"structured_output": {"status": "done", "summary": "s"}}
+        self.assertIsNone(engines.report_from_envelope(env, "unclear"))
+
+
 if __name__ == "__main__":
     unittest.main()

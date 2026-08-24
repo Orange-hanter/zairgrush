@@ -17,6 +17,7 @@ _HERE = str(HERE)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import modlock  # noqa: E402
 import parsing as parsing_mod  # noqa: E402
 import promptbuilder  # noqa: E402
 import spending  # noqa: E402
@@ -24,13 +25,21 @@ from agents_types import AgentsLike  # noqa: E402
 
 
 def load_module(name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
-    if spec is None or spec.loader is None:
-        raise ImportError(f"не удалось загрузить модуль {name}")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    # Загрузка модулей — гонка, пока плечи дуэли идут в потоках:
+    # модуль публикуется в sys.modules ДО выполнения (иначе не сходятся
+    # круговые импорты), и сосед видит пустышку. Замок ОБЩИЙ на все
+    # загрузчики петли — см. modlock.py.
+    with modlock.LOCK:
+        cached = modlock.ready(name)
+        if cached is not None:
+            return cached
+        spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
+        if spec is None or spec.loader is None:
+            raise ImportError(f"не удалось загрузить модуль {name}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
 
 
 # Имя логера оставлено "agents": журнал наблюдаемости — контракт,

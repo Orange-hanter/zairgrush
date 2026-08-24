@@ -157,26 +157,39 @@ def executor_argv(engine: str, model: str, prompt: str,
     raise EngineError(f"у движка {engine!r} нет командной строки")
 
 
-def report_from_envelope(env: Any) -> dict[str, Any] | None:
-    """Отчёт исполнителя из конверта claude: два канала, не один.
+def report_from_envelope(env: Any,
+                         require: str = "status") -> dict[str, Any] | None:
+    """Отчёт роли из конверта claude: два канала, не один.
 
     Первый — `structured_output`: контракт, проверенный схемой на стороне
     CLI. Второй — тот же разбор хвоста текста, которым живёт kimi
     (`parsing.report_in`): промпт и без схемы требует финальный JSON, и
     терять готовую работу из-за пустого структурного канала незачем.
     Порядок именно такой: схема старше текста.
+
+    `require` — поле, по которому объект опознаётся как отчёт. Умолчание
+    `status` — контракт ИСПОЛНИТЕЛЯ, и раньше оно было зашито. Это
+    молча выбрасывало ответы ролей с другим контрактом: пурист (E14)
+    отдаёт список развилок, у него никакого `status` нет и быть не
+    должно. На дымовом прогоне 2026-08-24 он нашёл ровно ту развилку,
+    ради которой ставился замер, — и петля сказала человеку
+    «спецификация развилок не оставила», заплатив за ответ и выбросив
+    его. Форма отчёта одной роли не имеет права быть условием для всех.
     """
     if not isinstance(env, dict):
         return None
     out = env.get("structured_output")
-    if isinstance(out, dict) and isinstance(out.get("status"), str):
+    if isinstance(out, dict) and out.get(require) is not None:
         return out
     result: Any = env.get("result")
     if isinstance(result, dict):
         # Некоторые исходы кладут в `result` уже разобранный объект.
-        return result if "status" in result else None
+        return result if require in result else None
     text = "" if result is None else str(result)
-    return parsing.report_in(text)
+    parsed = parsing.report_in(text)
+    if parsed is not None and require != "status" and require not in parsed:
+        return None
+    return parsed
 
 
 def envelope_facts(env: Any) -> dict[str, Any]:

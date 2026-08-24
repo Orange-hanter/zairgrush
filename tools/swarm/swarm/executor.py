@@ -19,19 +19,28 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import engines  # noqa: E402
+import modlock  # noqa: E402
 import parsing as parsing_mod  # noqa: E402
 import promptbuilder  # noqa: E402
 from agents_types import AgentsLike  # noqa: E402
 
 
 def load_module(name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
-    if spec is None or spec.loader is None:
-        raise ImportError(f"не удалось загрузить модуль {name}")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    # Загрузка модулей — гонка, пока плечи дуэли идут в потоках:
+    # модуль публикуется в sys.modules ДО выполнения (иначе не сходятся
+    # круговые импорты), и сосед видит пустышку. Замок ОБЩИЙ на все
+    # загрузчики петли — см. modlock.py.
+    with modlock.LOCK:
+        cached = modlock.ready(name)
+        if cached is not None:
+            return cached
+        spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
+        if spec is None or spec.loader is None:
+            raise ImportError(f"не удалось загрузить модуль {name}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
 
 
 # Имя логера оставлено "agents": журнал наблюдаемости — контракт,
@@ -73,7 +82,13 @@ def implement(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
                                  else agents.driver.parse_kimi))
     result = run.collect(agents.driver.extract_result_envelope if claude
                          else parsing_mod.extract_report)
-    raw = agents.state.dir / "log" / f"{task['id']}-i{iteration}-executor.jsonl"
+    # Метка плеча в имени файла. Без неё оба исполнителя дуэли писали бы
+    # сырьё в ОДИН путь из двух потоков: поток теневого плеча затирал бы
+    # поток живого, и разбираться потом было бы не по чему — ровно та
+    # беда, что уже случилась с двумя вердиктами ревьюера в одном файле.
+    tag = str(getattr(agents, "log_tag", "") or "")
+    raw = (agents.state.dir / "log"
+           / f"{task['id']}-i{iteration}-executor{tag}.jsonl")
     raw.write_text(run.raw_stream())
     report: dict[str, Any] | None = result.report
     reason = result.reason

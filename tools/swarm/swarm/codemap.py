@@ -31,6 +31,10 @@ from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
 
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+import modlock  # noqa: E402
+
 # Уровни достоверности ссылки, от сильного к слабому.
 RESOLVED = "resolved"        # разрешён импорт, известен вызывающий символ
 IMPORT = "import"            # известно, что модуль/имя импортируется
@@ -39,13 +43,20 @@ NAME_MATCH = "name-match"    # совпадение по голому имени
 
 
 def _load(name: str, filename: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, HERE / filename)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"не удалось загрузить {filename}")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    # Общий замок загрузчиков: два плеча дуэли грузят модули из
+    # потоков, и без него сосед видит наполовину выполненный модуль
+    # (см. modlock.py — поймано первым же настоящим прогоном).
+    with modlock.LOCK:
+        cached = modlock.ready(name)
+        if cached is not None:
+            return cached
+        spec = importlib.util.spec_from_file_location(name, HERE / filename)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"не удалось загрузить {filename}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
 
 
 obs = _load("obs", "obs.py")

@@ -19,6 +19,7 @@ import pathlib
 import subprocess
 import sys
 import time
+import traceback
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -357,8 +358,19 @@ class Loop:
                 return None
             return self._shadow_arm(shadow, task, feedback, iteration, wt)
 
+        def shadow_broke(exc: BaseException) -> None:
+            # Прибор сломался — это факт о ЗАМЕРЕ, а не о задаче, и он
+            # обязан быть в журнале с трассировкой. Без неё диагноз
+            # собирается по отсутствию файлов (поймано на себе).
+            self.state.log("duel_shadow_failed", task=tid, round=iteration,
+                           error=f"{type(exc).__name__}: {exc}",
+                           trace=traceback.format_exc()[-1500:])
+            self.ui(f"    теневое плечо упало: {type(exc).__name__} — "
+                    f"замера на этой задаче нет, работа не тронута")
+
         try:
-            report, shadow_facts = duel.run_pair(run_live, run_shadow)
+            report, shadow_facts = duel.run_pair(run_live, run_shadow,
+                                                 shadow_broke)
         finally:
             self.config, self.agents.config = old_cfg, old_agents_cfg
 
@@ -390,6 +402,7 @@ class Loop:
         import agents as agents_mod  # noqa: PLC0415 — круг импорта, см. выше
         arm_agents = agents_mod.Agents(self.state, shadow["config"])
         arm_agents.work_root = wt
+        arm_agents.log_tag = "-shadow"
         report = arm_agents.implement(task, feedback, iteration)
         facts: dict[str, Any] = {
             "arm": shadow["arm"], "report": bool(report),
