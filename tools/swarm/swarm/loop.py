@@ -1148,6 +1148,16 @@ class Loop:
             return None
         reset = parse_quota_reset(message)
         if reset is None:
+            # Формат сообщения провайдера — чужая поверхность, и меняется
+            # она молча. Пока разбор промахивался беззвучно, дрейф формата
+            # был неотличим от сообщения без времени вовсе: петля просто
+            # уходила в слепую паузу и выглядела работающей. Событие
+            # называет ровно то, что известно: маркер квоты сработал, а
+            # время сброса из текста не достали.
+            self.state.log("quota_reset_unparsed",
+                           message=str(message)[:200],
+                           fallback_s=int(self.config.get(
+                               "quota_resume_fallback_s", 3600)))
             wait = int(self.config.get("quota_resume_fallback_s", 3600))
         else:
             now = dt.datetime.now(dt.UTC)

@@ -297,6 +297,33 @@ class TestQuotaAutoResume(unittest.TestCase):
         self.assertEqual([r["attempt"] for r in resumes], [1, 2])
         self.assertTrue(all(r["of"] == 2 for r in resumes))
 
+    def test_unparsed_reset_is_named_not_silent(self):
+        """Формат сообщения провайдера — чужая поверхность, и меняется он
+        молча. Пока промах разбора был беззвучным, дрейф формата не
+        отличался от сообщения без времени вовсе: петля уходила в слепую
+        паузу и выглядела работающей.
+        """
+        loop = self._loop({"live_board": False, "quota_resume": "auto",
+                           "quota_resume_max": 1,
+                           "quota_resume_fallback_s": 300})
+        with self.assertRaises(lp.QuotaExceededError):
+            loop.run()
+        unparsed = [p for k, p in self.logged if k == "quota_reset_unparsed"]
+        self.assertTrue(unparsed, "промах разбора времени сброса не назван")
+        self.assertEqual(unparsed[0]["fallback_s"], 300)
+        self.assertIn("usage limit", unparsed[0]["message"],
+                      "сообщение провайдера обязано попасть в улику")
+
+    def test_parsed_reset_says_nothing_about_drift(self):
+        """Событие о дрейфе — только когда разбор ПРОМАХНУЛСЯ; иначе оно
+        стало бы шумом на каждой штатной паузе."""
+        loop = self._loop({"live_board": False, "quota_resume": "auto",
+                           "quota_resume_max": 1})
+        loop._quota_resume_wait("You've hit your session limit · resets 3:10pm "
+                                "(Europe/Minsk)", 0)
+        self.assertEqual([k for k, _ in self.logged
+                          if k == "quota_reset_unparsed"], [])
+
     def test_auto_recovers_when_quota_lifts(self):
         # limit=1: FakeState не убирает задачу из очереди после успеха —
         # без лимита стенд кружил бы по «done_stub» вечно.

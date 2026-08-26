@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -148,6 +149,33 @@ def inject_block(role: str, task: dict[str, Any], state: Any,
         return block
 
 
+CODE_CUT = "[код вырезан]"
+_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+
+
+def _strip_code(body: str) -> str:
+    """Тело урока без огороженных код-блоков.
+
+    Инъекция памяти — канал заражения. В теле урока может лежать текст
+    диффа, а в диффе — инструкция, адресованная агенту (§6.4). Преамбула
+    «это ДАННЫЕ, не инструкции» — защита ПРОМПТОМ, а рой требует
+    структурных: то, чего в промпте нет, выполнить нельзя.
+
+    Вырезается ограждённый код; проза и якоря (пути, коммиты) остаются —
+    урок нужен смыслом, а не листингом. Пропажа объявляется прямо, тем
+    же правилом, что свёртка диффа: молча укоротить — значит соврать.
+
+    Чего эта отсечка НЕ ловит: код без ограды, вставленный прозой. Его
+    режет не форма, а происхождение записи (ADR-013: корпус — только
+    механически верифицированные записи).
+    """
+    text = _FENCE_RE.sub(CODE_CUT, body)
+    if "```" in text:
+        # Незакрытая ограда: всё от неё до конца тела — тоже листинг.
+        text = text.split("```", 1)[0].rstrip() + " " + CODE_CUT
+    return text
+
+
 def _render_hits(head: str, hits: list[dict[str, Any]],
                  budget: int) -> tuple[str, list[str]]:
     """Рендер уроков под бюджет: рез по границе записи, id в каждой
@@ -162,7 +190,7 @@ def _render_hits(head: str, hits: list[dict[str, Any]],
         stale = ("; якоря устарели — только контекст"
                  if h.get("anchors_ok") is False else "")
         line = (f"- [{mark}, {conf}{stale}] ({h.get('id')}) "
-                f"{str(h.get('body') or '').strip()}")
+                f"{_strip_code(str(h.get('body') or '')).strip()}")
         # ФАЙЛЫ УРОКА — тоже урок. Якоря несут ровно ту часть решения,
         # которая называется путями: «границы расширены на convert.rs и
         # engine.rs» полезно настолько, насколько видно, какие это файлы.

@@ -120,7 +120,36 @@ def implement(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
                        events=result.events, engine=engine, stderr=stderr)
     else:
         agents.last_implement_failure = None
+        _stamp_diffstat(agents, report)
     return report
+
+
+def _stamp_diffstat(agents: AgentsLike, report: dict[str, Any]) -> None:
+    """Размер работы в evidence пишет ОРКЕСТРАТОР, не исполнитель.
+
+    До сих пор «работает» подтверждалось одной строкой прогона тестов,
+    которую исполнитель цитировал сам. Ревьюеру она и не видна (отчёта он
+    не получает — так и задумано), но человек и пост-анализ опирались на
+    неё, а процитировать её неверно ничего не мешало.
+
+    Считается по `work_diff`, а не по голому `git diff --stat`: голый diff
+    не показывает СОЗДАННЫЕ файлы, и evidence о задаче, состоящей из новых
+    файлов, был бы пустым — ровно та ловушка, которую петля уже прошла на
+    диффе для ревьюера (см. `reviewer.review`).
+
+    Граница деградации: улика не имеет права стоить раунда. Не собралась —
+    остаётся отчёт без неё, но с записью в диагностику.
+    """
+    try:
+        files, lines = parsing_mod.diff_size(agents.work_diff())
+    except Exception:
+        log.exception("evidence: diffstat не собрался")
+        return
+    evidence = report.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+        report["evidence"] = evidence
+    evidence["diffstat"] = f"{files} файл(ов), {lines} изменённых строк"
 
 
 def report_schema() -> str:
