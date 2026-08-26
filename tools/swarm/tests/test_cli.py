@@ -495,6 +495,28 @@ class TestDoctor(CliCase):
         self.assertIn("неполные", line)
         self.assertIn("pip install tree-sitter-rust", line)
 
+    def test_stand_inside_dot_claude_is_a_problem(self):
+        """Файлы под `.claude/` Claude Code считает чувствительными и
+        править отказывается: исполнитель честно вернёт dispute вместо
+        работы. Ловушка стоила первой попытки развернуть стенд на
+        cod-doc — `EnterWorktree` кладёт worktree ровно туда, а доктор
+        молчал, и диагноз искали в тексте руководства."""
+        stand = self.root / ".claude" / "worktrees" / "stand"
+        stand.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=stand, check=True)
+        code, out = run_cli("--root", str(stand), "doctor")
+        line = next(ln for ln in out.splitlines() if "стенд" in ln)
+        self.assertIn("ПРОБЛ", line)
+        self.assertIn(".claude", line)
+        self.assertIn("dispute", line)
+        self.assertEqual(1, code)
+
+    def test_stand_outside_dot_claude_stays_quiet(self):
+        """Строка о стенде — диагноз, а не постоянный шум: обычный
+        стенд не имеет права получать её ни в каком виде."""
+        _, out = run_cli("--root", str(self.root), "doctor")
+        self.assertNotIn("] стенд", out)
+
     def test_full_bindings_report_ok(self):
         self._patch_tree_sitter(
             present={"tree_sitter", "tree_sitter_python", "tree_sitter_rust"},

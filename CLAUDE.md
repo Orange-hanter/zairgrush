@@ -18,6 +18,9 @@ Kimi Code (исполнитель, модель K3) и Claude Code (ревьюе
 - `07-experiments-journal.md` — связный журнал программы экспериментов (человекочитаемая проза по фактам из `experiments/`);
 - `08-operators-guide.md` — руководство оператора петли (что делать руками, по факту поведения инструмента);
 - `tools/swarm/` — сама реализация: CLI `swarm`, оркестратор, индексация кода, тесты (`pytest`, `tools/swarm/tests/`), JSON-схемы контрактов (`tools/swarm/schemas/`);
+- `stands/<проект>/` — готовые стенды: эталонный `swarm.toml` плюс README
+  с порядком развёртывания и списком мин конкретного репозитория
+  (`stands/cod-doc/`);
 - `experiments/adr/` — принятые решения экспериментальной программы (ADR); `experiments/findings.jsonl` — сырой журнал наблюдений. Рабочие стенды экспериментов (`experiments/stand*`, `bench/`, `repomap/` и т.п.) — воспроизводимый scratch, в git не попадают (`.gitignore`).
 
 Проверка — одна команда: `cd tools/swarm && ./check.sh` (линт → типы →

@@ -76,6 +76,7 @@ python3 -m pytest
 | [`09-swarm-decomposition-plan.md`](09-swarm-decomposition-plan.md) | План декомпозиции крупных модулей `tools/swarm` (`cli.py`, `loop.py`, `memory.py`, `agents.py`) без смены публичного API. |
 | [`10-decision-briefs.md`](10-decision-briefs.md) | Брифы для решений «на утверждение» 05-документа: лёгкое ревью, пороги §9.1, таксономия §12 — данные программы и рекомендации. |
 | [`tools/swarm/`](tools/swarm) | Реализация: CLI `swarm`, оркестратор, индексация кода (ctags/tree-sitter), JSON-схемы контрактов (`schemas/`), тесты (`pytest`). |
+| [`stands/`](stands) | Готовые стенды: эталонный `swarm.toml` и порядок развёртывания под конкретный репозиторий. Первый — [`stands/cod-doc/`](stands/cod-doc/README.md). |
 | [`experiments/adr/`](experiments/adr) | Принятые решения экспериментальной программы (Context → Варианты → Решение → Последствия). |
 | `experiments/findings.jsonl` | Сырой журнал наблюдений по экспериментам (см. `.gitignore` — рабочие стенды в git не попадают, только выводы). |
 
