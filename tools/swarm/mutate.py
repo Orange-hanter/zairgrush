@@ -20,10 +20,41 @@ import pathlib
 import subprocess
 import sys
 
-SW = pathlib.Path("/Users/dakh/Git/_my/ZAIrgRush/tools/swarm")
+# Каталог берётся от САМОГО ФАЙЛА, а не абсолютным путём: с зашитым
+# путём аудит, запущенный из git-worktree, правил файлы ЧУЖОГО
+# чекаута — мутировал и восстанавливал их там, где никто не просил,
+# а свои изменения не видел вовсе и объявлял якорь ненайденным.
+# Мутация пишется в файл напрямую, поэтому защита сессии от правок
+# чужого дерева этот путь не прикрывает — только сам путь.
+SW = pathlib.Path(__file__).resolve().parent
 
 # (имя, файл, было, стало, чем обязана ловиться)
 MUTATIONS = [
+    # --- размер диффа и тяжесть находок в строке метрик ---
+    ("метрика: размер диффа считается по свёрнутому, а не по сырому",
+     "swarm/reviewer.py",
+     """    raw_diff = agents.work_diff()
+    diff = parsing_mod.condense_diff(raw_diff)
+    diff_files, diff_lines = parsing_mod.diff_size(raw_diff)""",
+     """    raw_diff = agents.work_diff()
+    diff = parsing_mod.condense_diff(raw_diff)
+    diff_files, diff_lines = parsing_mod.diff_size(diff)""",
+     "test_review_failure"),
+    ("метрика: заголовки файла +++/--- пошли в счёт изменённых строк",
+     "swarm/parsing.py",
+     """                if (line.startswith(("+", "-"))
+                    and not line.startswith(("+++", "---"))))""",
+     """                if line.startswith(("+", "-")))""",
+     "test_review_failure"),
+    ("метрика: находка неизвестной тяжести молча считается minor",
+     "swarm/reviewer.py",
+     """            name = key.get(str(item.get("severity")))
+            if name:
+                counts[name] += 1""",
+     """            name = key.get(str(item.get("severity")), "minors")
+            counts[name] += 1""",
+     "test_review_failure"),
+
     # --- политика денег (spending.py) ---
     ("деньги: явно заданный потолок перестал быть старше режима",
      "swarm/spending.py",

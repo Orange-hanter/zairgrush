@@ -42,6 +42,7 @@ st = _load("state")
 lp = _load("loop")
 ag = _load("agents")
 pb = _load("promptbuilder")
+rv = _load("reviewer")
 
 
 class FakeClaudeProc:
@@ -99,6 +100,69 @@ def _diff_for(path, body_lines):
             f"+++ b/{path}\n"
             f"@@ -0,0 +1,{len(body_lines)} @@\n")
     return head + "".join(f"+{line}\n" for line in body_lines)
+
+
+class TestDiffSize(unittest.TestCase):
+    """Размер диффа — факт для метрик, поэтому считается без git."""
+
+    def test_empty_diff_is_zero(self):
+        self.assertEqual(rv.parsing_mod.diff_size(""), (0, 0))
+
+    def test_counts_files_and_changed_lines(self):
+        diff = (_diff_for("src/a.py", ["one", "two"])
+                + _diff_for("src/b.py", ["three"]))
+        self.assertEqual(rv.parsing_mod.diff_size(diff), (2, 3))
+
+    def test_file_headers_are_not_changes(self):
+        """`+++ b/x` и `--- /dev/null` начинаются с плюса и минуса, но
+        изменениями не являются: без отсечки каждый файл добавлял бы две
+        строки, и размер рос бы от числа файлов сам по себе."""
+        files, lines = rv.parsing_mod.diff_size(_diff_for("src/a.py", ["one"]))
+        self.assertEqual((files, lines), (1, 1))
+
+    def test_removed_lines_count_too(self):
+        diff = ("diff --git a/src/a.py b/src/a.py\n"
+                "--- a/src/a.py\n+++ b/src/a.py\n"
+                "@@ -1,2 +1,1 @@\n-was\n-gone\n+now\n")
+        self.assertEqual(rv.parsing_mod.diff_size(diff), (1, 3))
+
+    def test_measures_the_raw_diff_not_the_condensed_one(self):
+        """Замер берут ДО свёртки. Свёртка заменяет длинный файл сводкой,
+        и счёт по ней занизил бы ровно те диффы, ради которых размер и
+        считают, — крупные."""
+        raw = _diff_for("fixtures/golden.txt", [f"line {i}" for i in range(1000)])
+        self.assertEqual(rv.parsing_mod.diff_size(raw), (1, 1000))
+        _files, condensed_lines = rv.parsing_mod.diff_size(ag.condense_diff(raw))
+        self.assertLess(condensed_lines, 100,
+                        "свёрнутый дифф и обязан быть меньше — поэтому "
+                        "метрика на нём не считается")
+
+
+class TestSeverityCounts(unittest.TestCase):
+    """Разложение находок по тяжести: три minor и три blocker в строке
+    метрик выглядели одинаково, пока было только число находок."""
+
+    def test_no_verdict_gives_zeroes(self):
+        self.assertEqual(rv._severity_counts(None),
+                         {"blockers": 0, "majors": 0, "minors": 0})
+
+    def test_counts_each_severity(self):
+        verdict = {"findings": [{"severity": "blocker"}, {"severity": "major"},
+                                {"severity": "major"}, {"severity": "minor"}]}
+        self.assertEqual(rv._severity_counts(verdict),
+                         {"blockers": 1, "majors": 2, "minors": 1})
+
+    def test_finding_of_the_wrong_shape_does_not_break_the_metric(self):
+        """Журнал читается как данные: кривая запись не роняет замер и не
+        подменяет собой другую тяжесть — она просто не считается."""
+        verdict = {"findings": ["строка", 17, {"severity": "critical"},
+                                {"no": "severity"}, {"severity": "blocker"}]}
+        self.assertEqual(rv._severity_counts(verdict),
+                         {"blockers": 1, "majors": 0, "minors": 0})
+
+    def test_findings_not_a_list_is_survived(self):
+        self.assertEqual(rv._severity_counts({"findings": "нет"}),
+                         {"blockers": 0, "majors": 0, "minors": 0})
 
 
 class TestCondenseDiff(unittest.TestCase):
@@ -377,6 +441,51 @@ class TestBudgetExhausted(RepoCase):
         self.assertIsNotNone(agents.review(dict(self.TASK), "OK", 1))
         self.assertIsNone(agents.last_review_failure,
                           "прошлая неудача осталась висеть на удачном ревью")
+
+    def _review_rows(self):
+        text = self.state.metrics_path.read_text(encoding="utf-8")
+        rows = [json.loads(x) for x in text.splitlines() if x.strip()]
+        return [r for r in rows if r.get("phase") == "review"]
+
+    def test_metric_row_measures_the_raw_diff_not_the_condensed_one(self):
+        """Размер берут ДО свёртки.
+
+        Свёртка заменяет длинный файл сводкой; если мерить по ней, занижены
+        окажутся ровно крупные диффы — те, ради которых размер и считают.
+        Проверяется через строку метрик, а не через саму `diff_size`: дыру
+        даёт не функция, а то, какой дифф ей передали.
+        """
+        (self.root / "generated.txt").write_text(
+            "".join(f"строка {i}\n" for i in range(2000)))
+        agents = self._agents([{"structured_output": VALID,
+                                "total_cost_usd": 0.5}])
+        agents.review(dict(self.TASK), "OK", 1)
+        rows = self._review_rows()
+        self.assertTrue(rows, "строки ревью в метриках нет")
+        self.assertGreaterEqual(
+            rows[-1]["diff_lines"], 2000,
+            "размер посчитан по свёрнутому диффу — крупные занижены")
+        self.assertGreaterEqual(rows[-1]["diff_files"], 1)
+
+    def test_metric_row_carries_severity_split(self):
+        """Три minor и три blocker в строке метрик выглядели одинаково."""
+        verdict = {"verdict": "request_changes",
+                   "analysis": "разобрал дифф целиком и нашёл два дефекта",
+                   "summary": "нужны правки",
+                   "findings": [
+                       {"file": "mod.py", "severity": "blocker",
+                        "category": "correctness", "confidence": 0.9,
+                        "issue": "падает на пустом входе"},
+                       {"file": "mod.py", "severity": "minor",
+                        "category": "style", "confidence": 0.5,
+                        "issue": "имя переменной"}]}
+        agents = self._agents([{"structured_output": verdict,
+                                "total_cost_usd": 0.5}])
+        agents.review(dict(self.TASK), "OK", 1)
+        row = self._review_rows()[-1]
+        self.assertEqual((row["blockers"], row["majors"], row["minors"]),
+                         (1, 0, 1))
+        self.assertEqual(row["findings"], 2)
 
     def test_review_prompt_gets_condensed_diff(self):
         """Ревьюер не должен получать 336 КБ сгенерированных данных."""

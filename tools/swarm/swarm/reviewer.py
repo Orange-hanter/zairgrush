@@ -47,6 +47,35 @@ def load_module(name: str) -> ModuleType:
 log = load_module("obs").get_logger("agents")
 
 
+
+def _severity_counts(verdict: dict[str, Any] | None) -> dict[str, int]:
+    """Находки по тяжести — разложение, без которого счёт находок нем.
+
+    Строка метрик несла одно число `findings`, и «мажоров на доллар» из
+    неё не считался: три minor и три blocker выглядели одинаково. Порог
+    эскалации руки и цена принятой задачи опираются на тяжесть, а не на
+    количество, — значит тяжесть обязана быть в журнале, а не только в
+    вердикте.
+
+    Журнал читается как ДАННЫЕ (§9.3): находка не той формы (не словарь,
+    severity вне enum) не роняет замер и не подменяет собой другую
+    тяжесть — она просто не попадает ни в один счётчик. Поэтому сумма
+    трёх полей может быть меньше `findings`, и это честнее, чем ноль на
+    всей строке из-за одной кривой записи.
+    """
+    counts = {"blockers": 0, "majors": 0, "minors": 0}
+    key = {"blocker": "blockers", "major": "majors", "minor": "minors"}
+    findings = (verdict or {}).get("findings")
+    if not isinstance(findings, list):
+        return counts
+    for item in findings:
+        if isinstance(item, dict):
+            name = key.get(str(item.get("severity")))
+            if name:
+                counts[name] += 1
+    return counts
+
+
 def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: int,
            attempt: int = 1,
            verify_results: list[dict[str, Any]] | None = None,
@@ -55,7 +84,9 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     # Голый `git diff` не показывает созданные файлы: ревьюер получал
     # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
     # в историю. Единый источник — state.work_diff (intent-to-add).
-    diff = parsing_mod.condense_diff(agents.work_diff())
+    raw_diff = agents.work_diff()
+    diff = parsing_mod.condense_diff(raw_diff)
+    diff_files, diff_lines = parsing_mod.diff_size(raw_diff)
     schema = (SCHEMAS / "verdict-v1.schema.json").read_text()
     # Самый дорогой вызов системы шёл в обход слоя живости: голый
     # subprocess.run с жёстким таймаутом, который не отличал «думает»
@@ -149,6 +180,8 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                       run_reason=result.reason,
                       cost_usd=cost, verdict=(verdict or {}).get("verdict"),
                       findings=len((verdict or {}).get("findings", [])),
+                      **_severity_counts(verdict),
+                      diff_files=diff_files, diff_lines=diff_lines,
                       valid=valid, terminal_reason=terminal,
                       salvaged=salvaged or None,
                       confirming=confirming, rules_sha=rules_sha,

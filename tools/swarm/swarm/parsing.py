@@ -107,6 +107,31 @@ def repair_verdict(payload: Any) -> dict[str, Any] | None:
     return out
 
 
+def diff_size(diff: str) -> tuple[int, int]:
+    """Файлов и изменённых строк в диффе.
+
+    Меряется СЫРОЙ дифф, а не свёрнутый (`condense_diff`): свёртка
+    заменяет длинный файл сводкой, и счёт по ней занизил бы ровно те
+    диффы, ради которых размер и считают, — крупные. Замер обязан
+    называть работу, а не то, сколько её показали ревьюеру.
+
+    Строка `+++`/`---` — заголовок, а не изменение: без этой отсечки
+    каждый файл давал бы две лишние строки, и «размер» рос бы от числа
+    файлов сам по себе.
+
+    Зачем поле вообще: у ревьюерской строки метрик был счёт находок и
+    ни одного признака размера, поэтому «мажоров на доллар» из
+    metrics.jsonl не считался — ни для порога эскалации руки, ни для
+    цены принятой задачи.
+    """
+    files = sum(1 for line in diff.splitlines()
+                if line.startswith("diff --git "))
+    lines = sum(1 for line in diff.splitlines()
+                if (line.startswith(("+", "-"))
+                    and not line.startswith(("+++", "---"))))
+    return files, lines
+
+
 def condense_diff(diff: str, limit: int = DIFF_FILE_LIMIT,
                   excerpt: int = DIFF_EXCERPT) -> str:
     """Свернуть файлы диффа длиннее `limit` строк до сводки.
