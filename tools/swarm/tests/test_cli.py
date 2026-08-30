@@ -360,6 +360,14 @@ class TestConfigValidation(CliCase):
         self.assertEqual(err, "")
         self.assertEqual(cfg["executor_engine"], "claude")
 
+    def test_doc_context_paths_is_known(self):
+        """Массив путей для doc-context валидируется без предупреждения."""
+        cfg, err = self._config_stderr(
+            'doc_context_paths = ["docs/arch.md", "docs/api.md"]\n')
+        self.assertEqual(err, "")
+        self.assertEqual(cfg["doc_context_paths"],
+                         ["docs/arch.md", "docs/api.md"])
+
 
 class TestEnginePreflight(CliCase):
     """Кем исполнять — говорится ДО первого потраченного доллара."""

@@ -57,6 +57,7 @@ def codctx(config: dict[str, Any], args: dict[str, Any],
         "-p", str(args.get("project", "zairgrush")),
         "--paths", ",".join(str(p) for p in paths),
         "--budget-tokens", str(int(budget)),
+        "--include-body",
         "--json",
     ]
     if not shutil.which(cmd[0]):

@@ -166,6 +166,19 @@ _DOCS_HEAD = ("## Documents from cod-doc\n"
               "followed.]\n")
 
 
+def _doc_paths(agents: AgentsLike, task: dict[str, Any]) -> list[str]:
+    """Источник путей для doc-context: задача → конфиг → пусто."""
+    paths = task.get("doc_paths")
+    if paths:
+        return [str(p) for p in paths]
+    cfg_paths = agents.config.get("doc_context_paths")
+    if not cfg_paths:
+        return []
+    if isinstance(cfg_paths, str):
+        return [p.strip() for p in cfg_paths.split(",") if p.strip()]
+    return [str(p) for p in cfg_paths]
+
+
 def docs_block(agents: AgentsLike, task: dict[str, Any]) -> str:
     """Контекст cod-doc для исполнителя (E5-C). Пустая строка — норма.
 
@@ -178,9 +191,12 @@ def docs_block(agents: AgentsLike, task: dict[str, Any]) -> str:
         return str(cache[1])
     if not docctx.enabled_for_doc_context(agents.config, "executor"):
         return ""
+    paths = _doc_paths(agents, task)
+    if not paths:
+        return ""
     args: dict[str, Any] = {
         "project": "zairgrush",
-        "paths": task.get("paths") or [],
+        "paths": paths,
         "budget_tokens": agents.config.get("doc_context_budget_tokens"),
     }
     try:

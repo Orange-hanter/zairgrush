@@ -3,9 +3,12 @@ import importlib
 import importlib.util
 import json
 import pathlib
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
 spec = importlib.util.spec_from_file_location("docctx", ROOT_DIR / "docctx.py")
@@ -76,3 +79,32 @@ class TestCodctxFailOpen(unittest.TestCase):
         ok, out = docctx.codctx(self.config, self.args, timeout=1)
         self.assertTrue(ok)
         self.assertEqual(json.loads(out), payload)
+
+
+class TestCodctxCommand(unittest.TestCase):
+    """Команда к cod-doc строится корректно."""
+
+    def test_include_body_flag_is_passed(self):
+        """cod-doc теперь отдаёт body только по флагу --include-body."""
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, **_kw):
+            captured.append(list(cmd))
+            return type("R", (), {
+                "returncode": 0,
+                "stdout": json.dumps({"docs": [], "links_at_risk": [],
+                                       "token_estimate": 0}),
+                "stderr": "",
+            })()
+
+        config = {"cod_doc_bin": "cod-doc"}
+        args = {"project": "zairgrush", "paths": ["src/a.py"],
+                "budget_tokens": 500}
+        with (mock.patch.object(subprocess, "run", fake_run),
+              mock.patch.object(shutil, "which",
+                                return_value="/fake/cod-doc")):
+            ok, _out = docctx.codctx(config, args, timeout=1)
+        self.assertTrue(ok)
+        self.assertIn("--include-body", captured[0])
+        idx = captured[0].index("--include-body")
+        self.assertLess(idx, captured[0].index("--json"))

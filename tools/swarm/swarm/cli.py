@@ -68,6 +68,7 @@ KNOWN_CONFIG_KEYS = frozenset({
     "memory_db", "memory_budget_chars", "memory_top_k", "memory_embed_model",
     "memory_index",
     "doc_context_budget_tokens",
+    "doc_context_paths",
     "fill_num_predict",
     "spending", "unclear_model",
     "experiments",

@@ -190,7 +190,10 @@ class TestHandoff(AgentsCase):
                                                    docs=block or None))
 
     def _fail_open_doc_context(self, codctx_result):
-        self.agents.config = {"experiments": {"doc_context": "executor"}}
+        self.agents.config = {
+            "experiments": {"doc_context": "executor"},
+            "doc_context_paths": ["docs/x.md"],
+        }
         orig = ag.promptbuilder.docctx.codctx
         ag.promptbuilder.docctx.codctx = (
             lambda _config, _args, timeout=30: codctx_result)
