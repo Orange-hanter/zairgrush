@@ -180,6 +180,37 @@ class TestHandoff(AgentsCase):
         self.assertIn('"deviations"', text,
                       "контракт отчёта обязан объявлять поле для отступлений")
 
+    def test_doc_context_off_keeps_handoff_byte_identical(self):
+        """Дефолт E5-C: с выключенным флагом промпт исполнителя
+        байт-в-байт прежний — иначе A/B-замер меряет не doc_context."""
+        base = self.agents.handoff(TASK, None, None)
+        block = self.agents.docs_block(TASK)
+        self.assertEqual(block, "", "без флага doc_context не подмешивается")
+        self.assertEqual(base, self.agents.handoff(TASK, None, None,
+                                                   docs=block or None))
+
+    def _fail_open_doc_context(self, codctx_result):
+        self.agents.config = {"experiments": {"doc_context": "executor"}}
+        orig = ag.promptbuilder.docctx.codctx
+        ag.promptbuilder.docctx.codctx = (
+            lambda _config, _args, timeout=30: codctx_result)
+        self.addCleanup(lambda: setattr(ag.promptbuilder.docctx,
+                                        "codctx", orig))
+        with self.assertLogs("swarm.promptbuilder", level="WARNING") as cm:
+            block = self.agents.docs_block(TASK)
+        self.assertEqual(block, "")
+        self.assertEqual(len(cm.records), 1,
+                         "сбой cod-doc логируется ровно одним warning")
+
+    def test_doc_context_missing_binary_empty_block_and_warning(self):
+        self._fail_open_doc_context((False, "cod-doc binary not found"))
+
+    def test_doc_context_timeout_empty_block_and_warning(self):
+        self._fail_open_doc_context((False, "TimeoutExpired"))
+
+    def test_doc_context_garbage_json_empty_block_and_warning(self):
+        self._fail_open_doc_context((False, "invalid json: extra data"))
+
 
 class TestRepoMapPolicy(AgentsCase):
     """Карта прикладывается по условию (ADR-006), а не всегда."""

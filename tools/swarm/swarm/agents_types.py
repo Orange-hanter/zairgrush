@@ -20,6 +20,7 @@ class AgentsLike(Protocol):
     map_cache: tuple[tuple[str, int], str] | None
     memory_cache: tuple[str, str] | None
     norms_cache: tuple[str, str] | None
+    docs_cache: tuple[str, str] | None
     rng: random.Random
     last_tuning: dict[str, Any]
     last_implement_failure: dict[str, Any] | None

@@ -269,6 +269,12 @@ def commit(loop: LoopLike, task: dict[str, Any]) -> str | None:
         return None
     message = loop.agents.commit_message(task, loop.sh(["git", "diff",
                                                          "--cached"]).stdout)
+    # RFC 22 §3.4: машинные трейлеры связывают коммит с задачами петли
+    # и зеркалом в cod-doc; тема сообщения остаётся нетронутой.
+    codoc_task = task.get("codoc_task") or f"ZRG-{task['id']}"
+    message = (f"{message}\n\n"
+               f"Swarm-Task: {task['id']}\n"
+               f"Cod-Doc-Task: {codoc_task}")
     subprocess.run(["git", "commit", "-qm", message], cwd=loop.state.root,
                    check=True, env={**os.environ, **env})
         # Коммит оркестратора легален: сдвигаем базу, иначе следующая

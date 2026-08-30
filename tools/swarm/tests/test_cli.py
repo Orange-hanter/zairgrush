@@ -318,6 +318,17 @@ class TestConfigValidation(CliCase):
             '[experiments]\nmemory = "planner"\n')
         self.assertEqual(err, "")
 
+    def test_doc_context_mode_that_is_not_a_role_warns(self):
+        _cfg, err = self._config_stderr(
+            '[experiments]\ndoc_context = "planer"\n')
+        self.assertIn("не роль", err)
+        self.assertIn("executor", err, "подсказка обязана назвать роли")
+
+    def test_executor_doc_context_mode_is_a_role_and_stays_silent(self):
+        _cfg, err = self._config_stderr(
+            '[experiments]\ndoc_context = "executor"\n')
+        self.assertEqual(err, "")
+
     def test_engine_that_is_not_an_engine_warns(self):
         """Опечатка в имени движка дороже прочих: работа ушла бы не тому
         агенту, которого выбрал оператор, и плечо замера оказалось бы

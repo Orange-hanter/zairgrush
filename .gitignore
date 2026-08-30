@@ -45,3 +45,6 @@ experiments/e4/
 # Скратч браузерного инструмента и снимки доски — не артефакты проекта
 .playwright-mcp/
 current-board.png
+
+# COD-DOC
+.cod-doc/

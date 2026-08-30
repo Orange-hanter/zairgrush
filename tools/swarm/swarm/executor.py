@@ -63,7 +63,8 @@ def implement(agents: AgentsLike, task: dict[str, Any], feedback: str | None,
     prompt = promptbuilder.handoff(
         agents, task, feedback, promptbuilder.repo_map(agents, task),
         memory=promptbuilder.memory_block(agents, task) or None,
-        unclear=promptbuilder.unclear_block(agents, task) or None)
+        unclear=promptbuilder.unclear_block(agents, task) or None,
+        docs=promptbuilder.docs_block(agents, task) or None)
     cmd = engines.executor_argv(engine, model, prompt, agents.config,
                                 report_schema() if engine == "claude" else "")
     # Разборщик потока и способ достать отчёт — свойства ДВИЖКА, а не

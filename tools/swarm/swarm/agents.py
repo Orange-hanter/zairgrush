@@ -57,6 +57,7 @@ class Agents:
     # атрибут, ломал бы им ревью из-за опционального слоя памяти.
     memory_cache: tuple[str, str] | None = None
     norms_cache: tuple[str, str] | None = None
+    docs_cache: tuple[str, str] | None = None
     # Дерево, В КОТОРОМ работает исполнитель. Почти всегда это корень
     # состояния, и тогда всё как было. Отличается ровно в одном случае —
     # теневое плечо дуэли (duel.py) работает в git-worktree, чтобы два
@@ -86,6 +87,7 @@ class Agents:
         # префикс-кэш промпта (§8 — экономика порядка блоков).
         self.memory_cache: tuple[str, str] | None = None
         self.norms_cache: tuple[str, str] | None = None
+        self.docs_cache: tuple[str, str] | None = None
         # Почему ревью не состоялось: оркестратору нужен диагноз, а не
         # голое None. «Кончился бюджет» и «модель ответила мусором» —
         # разные болезни с разным лечением.
@@ -115,14 +117,20 @@ class Agents:
         """Делегат к `promptbuilder.memory_block`."""
         return promptbuilder.memory_block(self, task)
 
+    def docs_block(self, task: dict[str, Any]) -> str:
+        """Делегат к `promptbuilder.docs_block`."""
+        return promptbuilder.docs_block(self, task)
+
     def norms_for(self, task: dict[str, Any]) -> str:
         """Делегат к `promptbuilder.norms_for`."""
         return promptbuilder.norms_for(self, task)
 
     def handoff(self, task: dict[str, Any], feedback: str | None,
-                repo_map: str | None, memory: str | None = None) -> str:
+                repo_map: str | None, memory: str | None = None,
+                docs: str | None = None) -> str:
         """Делегат к `promptbuilder.handoff`."""
-        return promptbuilder.handoff(self, task, feedback, repo_map, memory)
+        return promptbuilder.handoff(self, task, feedback, repo_map, memory,
+                                     docs=docs)
 
 
     def implement(self, task: dict[str, Any], feedback: str | None,

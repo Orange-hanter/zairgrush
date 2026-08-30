@@ -67,6 +67,7 @@ KNOWN_CONFIG_KEYS = frozenset({
     "confirm_effort_pool", "confirm_lens",
     "memory_db", "memory_budget_chars", "memory_top_k", "memory_embed_model",
     "memory_index",
+    "doc_context_budget_tokens",
     "fill_num_predict",
     "spending", "unclear_model",
     "experiments",
@@ -81,13 +82,17 @@ SPENDING_MODES = frozenset({"money_bin", "capped"})
 KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
                                    "skeleton", "tester",
                                    "ambient", "ambient_seed", "duel",
-                                   "unclear"})
+                                   "unclear", "doc_context"})
 
 # Значения флага `[experiments] memory` — это имена ролей (см.
 # memory.enabled_for): каждая включается отдельно, чтобы замер шёл по
 # одному фактору за прогон, и "all" существует только для полного
 # включения после того, как роли замерены поодиночке.
 MEMORY_MODES = frozenset({"off", "executor", "reviewer", "planner", "all"})
+
+# Значения флага `[experiments] doc_context` — роли, которым подмешивается
+# блок документов из cod-doc (RFC 22 §3.4, E5-C).
+DOC_CONTEXT_MODES = frozenset({"off", "executor", "reviewer", "all"})
 
 # Значение `executor_engine` — имя движка (см. engines.ENGINES). Тот же
 # довод, что у режимов памяти, но цена ошибки выше: опечатка здесь молча
@@ -135,6 +140,12 @@ def load_config(root: str | pathlib.Path) -> dict[str, Any]:
                     print(f"ВНИМАНИЕ: {path}: [experiments] memory = "
                           f"{mem_mode!r} — не роль; память ВЫКЛЮЧЕНА. "
                           f"Допустимо: {', '.join(sorted(MEMORY_MODES))}",
+                          file=sys.stderr)
+                doc_mode = exp.get("doc_context")
+                if doc_mode is not None and doc_mode not in DOC_CONTEXT_MODES:
+                    print(f"ВНИМАНИЕ: {path}: [experiments] doc_context = "
+                          f"{doc_mode!r} — не роль; doc_context ВЫКЛЮЧЕН. "
+                          f"Допустимо: {', '.join(sorted(DOC_CONTEXT_MODES))}",
                           file=sys.stderr)
             gate_cmd = parsed.get("gate_command")
             if gate_cmd is not None and not (
