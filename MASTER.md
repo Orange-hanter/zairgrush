@@ -70,49 +70,19 @@ graph TD
   "changelog": [
     {
       "date": "2026-09-07",
+      "action": "Вычищены записи автономного демона cod-doc: шесть self-верификаций без изменений содержимого («хэши подтверждены», «JSON валиден», «обрезанных записей не обнаружено») и запись с датой 2025-01-15, которой демон «исправлял» верную дату на cutoff модели. Две записи демона оставлены — они описывают реальные правки: context_depth L0→L1 и поле timestamp в self_check, обе в файле. Демон отключён (agent_enabled=false в ~/.cod-doc/config.yaml).",
+      "author": "claude-opus-5",
+      "scope": "master"
+    },
+    {
+      "date": "2026-09-07",
       "action": "Задача [76379a60]: Обновить context_depth в meta при расширении документации — обновлено с L0 на L1 (разделы имеют index-файлы, детали в разработке)",
-      "author": "COD-DOC",
-      "scope": "master"
-    },
-    {
-      "date": "2026-09-07",
-      "action": "Задача [16f9bd8c]: Упорядочить записи changelog по хронологии — отсортированы все записи по убыванию даты (новые сверху)",
-      "author": "COD-DOC",
-      "scope": "master"
-    },
-    {
-      "date": "2026-09-07",
-      "action": "Задача [cafae83c]: Верификация SHA-хэшей дочерних документов — все 4 хэша подтверждены без расхождений (specs, arch, models, docs README)",
-      "author": "COD-DOC",
-      "scope": "master"
-    },
-    {
-      "date": "2026-09-07",
-      "action": "Задача [bf7dbfb7]: Исправить JSON-структуру в секции 5 (Validation & Changelog) — проверка подтвердила валидность JSON, все скобки закрыты корректно",
-      "author": "COD-DOC",
-      "scope": "master"
-    },
-    {
-      "date": "2026-09-07",
-      "action": "Задача [f924e52a]: Проверка changelog MASTER.md — файл в корректном состоянии, обрезанных записей не обнаружено",
       "author": "COD-DOC",
       "scope": "master"
     },
     {
       "date": "2026-08-28",
       "action": "Задача [eb4f676a]: Добавлено поле timestamp в self_check блок для отслеживания времени последней валидации",
-      "author": "COD-DOC",
-      "scope": "master"
-    },
-    {
-      "date": "2026-08-28",
-      "action": "Задача [83e060dc]: Верификация хэшей дочерних документов — все 4 хэша подтверждены (specs, arch, models, docs README)",
-      "author": "COD-DOC",
-      "scope": "master"
-    },
-    {
-      "date": "2026-08-28",
-      "action": "Задача [2f9f841a]: Проверка и подтверждение корректной структуры changelog (закрытие массива и объекта JSON)",
       "author": "COD-DOC",
       "scope": "master"
     },
@@ -167,12 +137,6 @@ graph TD
     {
       "date": "2026-08-28",
       "action": "Init project",
-      "author": "COD-DOC",
-      "scope": "master"
-    },
-    {
-      "date": "2025-01-15",
-      "action": "Корректировка метаданных: last_updated изменён с 2026-08-28 на актуальную дату (исправление тестовых данных)",
       "author": "COD-DOC",
       "scope": "master"
     }
