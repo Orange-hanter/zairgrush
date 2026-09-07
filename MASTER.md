@@ -1,6 +1,6 @@
 # 🧭 Project Navigator: zairgrush
 
-> 📊 Meta: `{"version": "0.1", "last_updated": "2026-09-07", "context_depth": "L0", "repo": "/Users/dakh/Git/_my/ZAIrgRush"}`
+> 📊 Meta: `{"version": "0.1", "last_updated": "2026-09-07", "context_depth": "L1", "repo": "/Users/dakh/Git/_my/ZAIrgRush"}`
 
 ## 1. 🎯 Executive Summary
 - **Цель:** Автоматизировать цикл разработки через петлю из двух ИИ-агентов (Исполнитель и Ревьюер), передающих задачи по кругу до сходимости кода.
@@ -63,11 +63,35 @@ graph TD
     "links_verified": true,
     "hashes_match": true,
     "no_hallucinations": true,
-    "context_depth": "L0",
+    "context_depth": "L1",
     "missing_info": [],
     "timestamp": "2026-09-07T00:00:00Z"
   },
   "changelog": [
+    {
+      "date": "2026-09-07",
+      "action": "Задача [76379a60]: Обновить context_depth в meta при расширении документации — обновлено с L0 на L1 (разделы имеют index-файлы, детали в разработке)",
+      "author": "COD-DOC",
+      "scope": "master"
+    },
+    {
+      "date": "2026-09-07",
+      "action": "Задача [16f9bd8c]: Упорядочить записи changelog по хронологии — отсортированы все записи по убыванию даты (новые сверху)",
+      "author": "COD-DOC",
+      "scope": "master"
+    },
+    {
+      "date": "2026-09-07",
+      "action": "Задача [cafae83c]: Верификация SHA-хэшей дочерних документов — все 4 хэша подтверждены без расхождений (specs, arch, models, docs README)",
+      "author": "COD-DOC",
+      "scope": "master"
+    },
+    {
+      "date": "2026-09-07",
+      "action": "Задача [bf7dbfb7]: Исправить JSON-структуру в секции 5 (Validation & Changelog) — проверка подтвердила валидность JSON, все скобки закрыты корректно",
+      "author": "COD-DOC",
+      "scope": "master"
+    },
     {
       "date": "2026-09-07",
       "action": "Задача [f924e52a]: Проверка changelog MASTER.md — файл в корректном состоянии, обрезанных записей не обнаружено",
@@ -95,12 +119,6 @@ graph TD
     {
       "date": "2026-08-28",
       "action": "Синхронизация дат: last_updated обновлён с 2025-01-15 на 2026-08-28 (соответствие последней записи changelog)",
-      "author": "COD-DOC",
-      "scope": "master"
-    },
-    {
-      "date": "2025-01-15",
-      "action": "Корректировка метаданных: last_updated изменён с 2026-08-28 на актуальную дату (исправление тестовых данных)",
       "author": "COD-DOC",
       "scope": "master"
     },
@@ -149,6 +167,12 @@ graph TD
     {
       "date": "2026-08-28",
       "action": "Init project",
+      "author": "COD-DOC",
+      "scope": "master"
+    },
+    {
+      "date": "2025-01-15",
+      "action": "Корректировка метаданных: last_updated изменён с 2026-08-28 на актуальную дату (исправление тестовых данных)",
       "author": "COD-DOC",
       "scope": "master"
     }
