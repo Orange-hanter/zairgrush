@@ -4,7 +4,7 @@ status: draft
 source_of_truth: true
 owner: cod-doc core
 created: 2026-08-28
-updated: 2026-09-12 (ADR-025: docs/adr — проекции, исключены из Documents)
+updated: 2026-09-13 (ADR-026: ревьюер и исполнитель — разные семейства, замерено E15)
 ---
 
 # 🏗️ Architecture
@@ -33,6 +33,7 @@ updated: 2026-09-12 (ADR-025: docs/adr — проекции, исключены 
 | ADR-023 | Качество на малых задачах решает рука ревьюера | accepted | [012](../experiments/adr/012-executor-engine-does-not-decide-quality.md) |
 | ADR-024 | Память между прогонами: файлы первичны, PG — индекс | accepted | [013](../experiments/adr/013-memory-architecture.md) |
 | ADR-025 | Каноникал ADR — таблица `adr` в DB; `docs/adr/` — проекции, не Documents (`import docs --exclude 'docs/adr'`) | accepted | только в DB (docs/adr/ADR-025.md) |
+| ADR-026 | Ревьюер и исполнитель — разные семейства моделей; совпадение — заявляемое исключение (замерено E15) | accepted | только в DB (docs/adr/ADR-026.md) |
 
 ## Исторические (superseded)
 
