@@ -1,0 +1,14 @@
+---
+description: Cursor MCP hosts for this repo — cod-doc (docs/tasks) and ai-reviewer (preview, not a merge gate).
+alwaysApply: true
+---
+
+# IDE MCP in ZAIrgRush
+
+Project slug for cod-doc is `zairgrush`. Prefer MCP tools over dumping markdown into context.
+
+- **cod-doc** (`user-cod-doc` or project `cod-doc`): docs, tasks, plans, ADRs. Session default: `set_default_project` with `zairgrush`. Source of truth is the DB, not the `.md` projection.
+- **ai-reviewer** / **ai-reviewer-structure**: review preview confined to `/Users/dakh/Git/_my/ZAIrgRush`. `previewWouldBlock` is advisory. Merge is blocked only by CI `pr-review`.
+- Config lives in `.cursor/mcp.json` (Cursor) and `.kimi-code/mcp.json` (Kimi Code). After changing either file, reload the window.
+
+Do not spawn a second cod-doc MCP from a plugin. Ignore a red `plugin-cod-doc-cod-doc` row.
