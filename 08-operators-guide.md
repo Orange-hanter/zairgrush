@@ -2,9 +2,9 @@
 title: "ZeusLogic — Рой агентов: руководство оператора"
 type: guide
 status: draft
-version: 0.21
+version: 0.23
 created: 2026-08-09
-updated: 2026-08-24
+updated: 2026-09-11
 related:
   - 05-agent-swarm.md
   - 07-experiments-journal.md
@@ -82,13 +82,14 @@ tree-sitter, и спор шёл о двух разных вещах.
 Теперь движок называется в `swarm.toml`:
 
 ```toml
-executor_engine = "claude"   # kimi (умолчание) | claude | ollama
+executor_engine = "claude"   # kimi (умолчание) | claude | ollama | zcode
 executor_model  = "sonnet"
 ```
+(про `zcode` — отдельный блок ниже; здесь речь о движке `claude`)
 
 Умолчание кода не менялось — `kimi`. Стенд, ничего не настроивший,
 работает ровно как вчера; это не осторожность, а условие сравнимости
-замеров (E8, E10).
+замеров (E8, E10). Этот репозиторий на `zcode` сам не переключается.
 
 Что меняется на движке `claude`, кроме имени процесса:
 
@@ -122,6 +123,58 @@ executor_model  = "sonnet"
 `swarm doctor` печатает выбранный движок первой строкой и проверяет
 именно его; отсутствие невыбранного CLI — не поломка, а другая
 конфигурация стенда.
+
+**Движок `zcode` (клиент Z.AI, замерено 0.16.5).** Третий CLI
+исполнителя, не ревьюер и не планировщик. Включается ключом, умолчание
+не трогает:
+
+```toml
+executor_engine = "zcode"
+executor_model  = "glm-5.3"   # пример имени: пишется в метрику, на argv не
+                              # кладётся; реальная модель — в ~/.zcode/cli/config.json
+```
+
+Как зовётся процесс. `which zcode` — если пусто, петля берёт бандл
+приложения: `node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`
+(путь macOS; на Linux/Windows фолбэка на бандл нет — там нужен
+официальный `zcode` CLI в PATH, см. сайт Z.AI).
+Не ставьте npm-пакет `zcode` / `zcode-app-cli` и не гоняйте GLM через
+Claude Code с `ANTHROPIC_BASE_URL` — это другие продукты.
+
+Флаги headless-вызова всегда явные, чтобы TUI-умолчания не протекли:
+`--prompt` (stdin драйвер и так глушит), `--json` (один объект, не
+NDJSON), `--mode yolo`, `--allowed-tools` /
+`--disallowed-tools` с git-deny
+(у zcode список шире, чем у claude: `--mode yolo` делает deny-list
+единственным барьером, поэтому туда добавлены `git revert`, `cherry-pick`,
+`clean -f`, `rm`, `branch`, `tag`; записи вида `Bash(git commit:*)` —
+**не** справочный пример `Bash(git *)`, тот закрыл бы даже `git diff`;
+точные списки — константы `CLAUDE_DENIED_TOOLS` / `ZCODE_DENIED_TOOLS` в
+`swarm/engines.py`), `--cwd` рабочего дерева, `--surface terminal`.
+`--browser-use` и `--verbose` не передаются: второе пачкает stdout.
+
+Модель живёт в `~/.zcode/cli/config.json`, не во флаге CLI: `--model`
+у 0.16 нет. `executor_model` выбирает движок префиксом `zcode:…`
+(например `executor_model = "zcode:glm-5.3"` в задаче плана — префикс
+старше ключа `executor_engine`; в примере выше префикс не нужен, движок
+уже задан ключом) и пишется в метрику; доктор при выбранном `zcode` и
+заданной модели печатает её имя в строке статуса движка. `zcode login`
+через OAuth на этой машине ненадёжен — рабочий путь: ключ Coding Plan
+или вход через GUI приложения.
+
+`--json` может молчать до конца вызова. Драйвер считает процесс живым,
+пока в stdout **или** stderr что-то пишется чаще, чем раз в
+`silence_timeout`; умолчание 600 секунд. Тишина на обоих потоках дольше
+таймаута = зависший процесс. Длинный прогон — поднимите ключ, иначе
+петля остановит живой процесс как зависший.
+
+Цена из конверта не приходит: токены (`inputTokens` /
+`outputTokens` / `cacheReadTokens`) в метрику идут, `cost_usd` петля
+не выдумывает. В `total_budget_usd` исполнитель на `zcode` не
+складывается, как на `kimi`. Отказ по квоте ZCode в механику пауз не
+заведён, пока нет замерённого текста отказа — то есть квотный отказ
+zcode придёт как мгновенная смерть процесса (симптом: раунд падает
+сразу, в журнале нет строки паузы), а не как ожидание сброса.
 
 ### Конфигурация прогона
 
@@ -158,14 +211,21 @@ quota_resume = "auto"    # квота кончилась — дождаться 
                          # quota_resume_max_wait_s = 21600 (дальше — человеку)
 plan_timeout = 900       # секунд на один вызов планировщика
 
-# КЕМ исполнять. Умолчание — kimi (как было всегда); claude и ollama
-# включаются здесь. executor_model — модель этого движка; префикс
-# ("claude:sonnet") старше ключа и нужен, когда движок задаётся на
-# ОТДЕЛЬНУЮ задачу в плане, а не на весь прогон.
-executor_engine = "claude"     # kimi | claude | ollama
+# КЕМ исполнять. Умолчание — kimi (как было всегда); claude, ollama и
+# zcode включаются здесь. executor_model — модель этого движка; префикс
+# ("claude:sonnet", "zcode:glm-5.3") старше ключа и нужен, когда движок
+# задаётся на ОТДЕЛЬНУЮ задачу в плане, а не на весь прогон.
+# У zcode хвост модели в метрике есть, на argv его нет (CLI 0.16).
+executor_engine = "claude"     # kimi | claude | ollama | zcode
 executor_model = "sonnet"
 executor_effort = "medium"     # только для claude; не задан — сессионный
 executor_budget_usd = 2.0      # только для claude; потолок на ОДИН вызов
+silence_timeout = 600          # секунд тишины на ОБОИХ потоках (stdout+stderr)
+                               # одного вызова ЛЮБОЙ CLI-роли — исполнителя,
+                               # ревьюера, планировщика (имя историческое:
+                               # ключ появился для исполнителя, действует на
+                               # всех); zcode --json молчит до финала —
+                               # не режьте
 ```
 
 **Режим траты денег: `spending`.** С 2026-08-24 умолчание —
@@ -366,6 +426,37 @@ unclear_model = "claude:haiku"   # необязательно; по умолча
 вместо своей задачи. Если в репозитории есть падающий тест, который вы
 чинить не собираетесь, исключите его в `gate_command` явно и напишите в
 комментарии почему.
+
+### MCP в Cursor и Kimi Code
+
+Это не петля и не гейт. Два внешних MCP, которые агент в IDE вызывает
+как инструменты: **cod-doc** (документы и задачи в БД, слаг `zairgrush`)
+и **ai-reviewer** (превью ревью по диффу этого репозитория). Merge по
+превью не блокируется — судья по-прежнему CI `pr-review`.
+
+Конфиги:
+
+- Cursor: [`.cursor/mcp.json`](.cursor/mcp.json) — `REVIEW_MCP_ROOT` задан
+  абсолютным путём этого клона. `${workspaceFolder}` в MCP-процессе Cursor
+  не раскрывается («No workspace folders found»).
+- Kimi Code: [`.kimi-code/mcp.json`](.kimi-code/mcp.json) — те же серверы,
+  корень задан абсолютным путём (Kimi не подставляет `${workspaceFolder}`).
+
+Оба файла запускают `cod-doc-mcp --profile standard` абсолютным путём
+к `.venv` клона `cod-doc` и лаунчеры `cursor-plugin/bin/*.sh` клона
+`ai-reviewer`. После правки — **Developer: Reload Window**. В Cursor
+новый сервер из проектного `mcp.json` нужно один раз подтвердить.
+
+Плагин `cod-doc` в `~/.cursor/plugins/local` даёт skills и slash-команды;
+MCP он не спавнит (рабочий namespace — `user-cod-doc` или проектный
+`cod-doc`). Плагин `ai-reviewer` уже ставит те же два сервера глобально:
+если в Customize видите красный `plugin-ai-reviewer-*` рядом с рабочим
+проектным — оставьте проектный, глобальный можно выключить. Превью
+смотрит в этот репозиторий, не в клон движка.
+
+Проверка без перезагрузки IDE: `cod-doc connect doctor` (handshake
+`cod-doc-mcp`) и в чате агента — `doc_list` / `review_prescan` по этому
+корню.
 
 ## 2. Постановка задач
 
@@ -825,6 +916,22 @@ swarm --root . impact <symbol>      # кто зовёт символ перед 
 §1 — оно не формальность.
 
 ## Журнал изменений
+
+### v0.23 (2026-09-11)
+
+- Движок исполнителя `zcode` (ZCode.app 0.16.5): PATH или
+  `node …/zcode.cjs`, `--mode yolo` и git-deny как у claude, модель в
+  `~/.zcode/cli/config.json` (CLI не принимает `--model`), `zcode login`
+  через OAuth ненадёжен — ключ Coding Plan или GUI. `--json` молчит до
+  финала: `silence_timeout` по умолчанию 600 с. Умолчание кода —
+  по-прежнему `kimi`; ревьюер — `claude`.
+
+### v0.22 (2026-09-11)
+
+- Новый подраздел «MCP в Cursor и Kimi Code»: проектный
+  `.cursor/mcp.json` и `.kimi-code/mcp.json` подключают `cod-doc`
+  (слаг `zairgrush`) и `ai-reviewer` с корнем этого репозитория.
+  Превью не merge-гейт.
 
 ### v0.21 (2026-08-24)
 
