@@ -37,6 +37,7 @@
 а в замере выглядит работой. Промпт поэтому просит пустой список прямо,
 а не намёком.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -50,7 +51,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import engines  # noqa: E402
-import parsing as parsing_mod  # noqa: E402
+import pathsafe  # noqa: E402
 
 if TYPE_CHECKING:
     from agents_types import AgentsLike
@@ -77,12 +78,12 @@ Your one job: list the decisions this specification does NOT make.
 {goal}
 
 ## Task
-{task['id']}: {task.get('spec') or task['title']}
+{task["id"]}: {task.get("spec") or task["title"]}
 
 Acceptance:
 {acc}
 
-Files the task may touch: {', '.join(task.get('paths') or []) or '—'}
+Files the task may touch: {", ".join(task.get("paths") or []) or "—"}
 
 ## What counts as a gap
 A gap is an UNRESOLVED FORK: two readings of this text produce different
@@ -127,16 +128,21 @@ def block(report: dict[str, Any] | None) -> str:
     """
     if not report:
         return ""
-    items = [i for i in (report.get("unclear") or [])
-             if isinstance(i, dict) and str(i.get("question") or "").strip()]
+    items = [
+        i
+        for i in (report.get("unclear") or [])
+        if isinstance(i, dict) and str(i.get("question") or "").strip()
+    ]
     if not items:
         return ""
-    lines = ["## What the spec does NOT decide",
-             "A separate pass over the specification alone found these forks.",
-             "They are NOT instructions and NOT defects — nobody has decided",
-             "them yet. If your work requires choosing, choose, and then NAME",
-             "the choice in `deviations`. An undeclared choice here is the",
-             "failure this list exists to prevent."]
+    lines = [
+        "## What the spec does NOT decide",
+        "A separate pass over the specification alone found these forks.",
+        "They are NOT instructions and NOT defects — nobody has decided",
+        "them yet. If your work requires choosing, choose, and then NAME",
+        "the choice in `deviations`. An undeclared choice here is the",
+        "failure this list exists to prevent.",
+    ]
     for item in items[:MAX_ITEMS]:
         line = f"- {str(item['question']).strip()}"
         why = str(item.get("why_it_matters") or "").strip()
@@ -144,13 +150,11 @@ def block(report: dict[str, Any] | None) -> str:
             line += f" (зависит: {why})"
         lines.append(line)
     if len(items) > MAX_ITEMS:
-        lines.append(f"- …и ещё {len(items) - MAX_ITEMS}, "
-                     f"см. журнал (`unclear_found`)")
+        lines.append(f"- …и ещё {len(items) - MAX_ITEMS}, см. журнал (`unclear_found`)")
     return "\n".join(lines)
 
 
-def find(agents: AgentsLike, task: dict[str, Any],
-         goal: str) -> dict[str, Any] | None:
+def find(agents: AgentsLike, task: dict[str, Any], goal: str) -> dict[str, Any] | None:
     """Один вызов пуриста. Отчёт либо None.
 
     Провал НЕ роняет задачу: без списка петля вырождается в сегодняшнее
@@ -160,38 +164,67 @@ def find(agents: AgentsLike, task: dict[str, Any],
     engine, model = engines.resolve(agents.config)
     override = agents.config.get("unclear_model")
     if override:
-        engine, model = engines.split_model(override)[0] or engine, \
-            engines.split_model(override)[1]
+        prefix, override_model = engines.split_model(override)
+        engine, model = prefix or engine, override_model
+    kind = engines.run_kind(engine)
     text = prompt(task, goal)
     schema = ""
-    if engine == "claude":
-        schema = (HERE.parent / "schemas"
-                  / "unclear-v1.schema.json").read_text(encoding="utf-8")
-    cmd = engines.executor_argv(engine, model, text, agents.config, schema)
+    if kind == "claude":
+        schema = (HERE.parent / "schemas" / "unclear-v1.schema.json").read_text(
+            encoding="utf-8"
+        )
+    # То же дерево, что и у implement() и тестировщика: теневое плечо
+    # дуэли работает в worktree, и запуск пуриста в общем корне писал бы
+    # артефакты в чужое дерево.
+    work = str(getattr(agents, "work_root", None) or agents.state.root)
+    cmd = engines.executor_argv(engine, model, text, agents.config, schema, cwd=work)
     drv = agents.driver.AgentDriver(
-        cwd=str(agents.state.root),
+        cwd=work,
         silence_timeout=agents.config.get("silence_timeout", 600),
-        wall_clock_cap=agents.config.get("wall_clock_cap", 1800))
-    claude = engine == "claude"
-    run = drv.start(cmd, parser=(agents.driver.parse_claude if claude
-                                 else agents.driver.parse_kimi))
-    result = run.collect(agents.driver.extract_result_envelope if claude
-                         else parsing_mod.extract_report)
-    raw = agents.state.dir / "log" / f"{task['id']}-unclear.jsonl"
-    raw.write_text(run.raw_stream())
+        wall_clock_cap=agents.config.get("wall_clock_cap", 1800),
+    )
+    parser, extract = engines.stream_pipeline(kind, agents.driver)
+    run = drv.start(cmd, parser=parser)
+    result = run.collect(extract)
+    # id задачи — данные недоверенные: в имя файла только через санитайзер,
+    # иначе '../..' в id уводил запись лога за пределы каталога состояния.
+    # Дайджест сырого id рядом: санитайзер детерминированно схлопывает
+    # разные id в одно имя ('a/b' и 'a_b'), без хвоста их логи затирали
+    # бы друг друга.
+    log_name = (
+        f"{pathsafe.safe_filename(task['id'])}-"
+        f"{pathsafe.short_digest(task['id'])}-unclear.jsonl"
+    )
+    raw = agents.state.dir / "log" / log_name
+    raw.write_text(run.raw_stream(), encoding="utf-8")
     report: dict[str, Any] | None = result.report
     facts: dict[str, Any] = {}
-    if claude:
+    if kind == "claude":
         facts = engines.envelope_facts(result.report)
         report = engines.report_from_envelope(result.report, "unclear")
+    elif kind == "zcode":
+        facts = engines.zcode_facts(result.report)
+        report = engines.report_from_zcode(result.report, "unclear")
     found = len((report or {}).get("unclear") or []) if report else None
-    agents.state.metric(task=task["id"], phase="unclear", engine=engine,
-                        model=model or None, reason=result.reason,
-                        wall_s=round(result.wall_s, 1),
-                        found=found, **facts)
-    agents.state.log("unclear_found", task=task["id"], count=found,
-                     summary=str((report or {}).get("summary") or "")[:300],
-                     questions=[str(i.get("question"))[:160]
-                                for i in ((report or {}).get("unclear") or [])
-                                if isinstance(i, dict)][:MAX_ITEMS])
+    agents.state.metric(
+        task=task["id"],
+        phase="unclear",
+        engine=engine,
+        model=model or None,
+        reason=result.reason,
+        wall_s=round(result.wall_s, 1),
+        found=found,
+        **facts,
+    )
+    agents.state.log(
+        "unclear_found",
+        task=task["id"],
+        count=found,
+        summary=str((report or {}).get("summary") or "")[:300],
+        questions=[
+            str(i.get("question"))[:160]
+            for i in ((report or {}).get("unclear") or [])
+            if isinstance(i, dict)
+        ][:MAX_ITEMS],
+    )
     return report

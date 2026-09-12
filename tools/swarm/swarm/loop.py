@@ -31,6 +31,7 @@ if _HERE not in sys.path:
 import ambient  # noqa: E402 — каталог добавлен строкой выше
 import board  # noqa: E402
 import duel  # noqa: E402
+import engines  # noqa: E402 — константы движков/плеч, кругов импорта нет
 import gitops  # noqa: E402
 import memory as memory_mod  # noqa: E402
 import obs  # noqa: E402
@@ -402,7 +403,7 @@ class Loop:
         import agents as agents_mod  # noqa: PLC0415 — круг импорта, см. выше
         arm_agents = agents_mod.Agents(self.state, shadow["config"])
         arm_agents.work_root = wt
-        arm_agents.log_tag = "-shadow"
+        arm_agents.log_tag = engines.SHADOW_LOG_TAG
         report = arm_agents.implement(task, feedback, iteration)
         facts: dict[str, Any] = {
             "arm": shadow["arm"], "report": bool(report),

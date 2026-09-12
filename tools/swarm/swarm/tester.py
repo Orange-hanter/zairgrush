@@ -20,15 +20,15 @@
 проверить, и знать об этом полезнее, чем получить тест, списанный с
 кода.
 """
+
 from __future__ import annotations
 
-import importlib.util
 import pathlib
 import sys
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from types import ModuleType
+    from agents_types import AgentsLike
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -38,31 +38,9 @@ if _HERE not in sys.path:
 
 import engines  # noqa: E402
 import modlock  # noqa: E402
-import parsing as parsing_mod  # noqa: E402
+import pathsafe  # noqa: E402
 
-if TYPE_CHECKING:
-    from agents_types import AgentsLike
-
-
-def load_module(name: str) -> ModuleType:
-    # Загрузка модулей — гонка, пока плечи дуэли идут в потоках:
-    # модуль публикуется в sys.modules ДО выполнения (иначе не сходятся
-    # круговые импорты), и сосед видит пустышку. Замок ОБЩИЙ на все
-    # загрузчики петли — см. modlock.py.
-    with modlock.LOCK:
-        cached = modlock.ready(name)
-        if cached is not None:
-            return cached
-        spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
-        if spec is None or spec.loader is None:
-            raise ImportError(f"не удалось загрузить модуль {name}")
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-
-
-log = load_module("obs").get_logger("tester")
+log = modlock.load_module("obs").get_logger("tester")
 
 # Тестовый файл узнаётся по имени, а не по списку в задаче: задача
 # перечисляет и код, и тесты в одном `paths`, и разделить их надо
@@ -77,9 +55,13 @@ def enabled(config: dict[str, Any]) -> bool:
 
 def test_paths(task: dict[str, Any]) -> list[str]:
     """Пути задачи, похожие на тесты. Пусто — задача не для плеча B."""
-    return [p for p in (task.get("paths") or [])
-            if isinstance(p, str) and not any(ch in p for ch in "*?[")
-            and any(m in p for m in _TEST_MARKERS)]
+    return [
+        p
+        for p in (task.get("paths") or [])
+        if isinstance(p, str)
+        and not any(ch in p for ch in "*?[")
+        and any(m in p for m in _TEST_MARKERS)
+    ]
 
 
 def wants_tester(config: dict[str, Any], task: dict[str, Any]) -> bool:
@@ -89,12 +71,14 @@ def wants_tester(config: dict[str, Any], task: dict[str, Any]) -> bool:
     Обычный `feature` тесты не несёт: их пишет соседняя задача или они
     уже есть, и звать тестировщика значило бы платить за пустой вызов.
     """
-    return (enabled(config) and str(task.get("type")) == "feature-tests"
-            and bool(test_paths(task)))
+    return (
+        enabled(config)
+        and str(task.get("type")) == "feature-tests"
+        and bool(test_paths(task))
+    )
 
 
-def prompt(task: dict[str, Any], goal: str, targets: list[str],
-           suite: str) -> str:
+def prompt(task: dict[str, Any], goal: str, targets: list[str], suite: str) -> str:
     """Промпт тестировщика: спецификация есть, реализации нет.
 
     Формулировка «напиши тесты, которые ПОЙМАЮТ неверную реализацию»
@@ -120,8 +104,8 @@ reply is parsed by machine.
 ## Goal
 {goal}
 
-## Task whose behaviour you must pin ({task['id']})
-{task.get('spec') or task.get('title', '')}
+## Task whose behaviour you must pin ({task["id"]})
+{task.get("spec") or task.get("title", "")}
 
 Acceptance:
 {acc}
@@ -169,8 +153,9 @@ Free text you write is read by a human — write it in RUSSIAN.
 """
 
 
-def write_tests(agents: AgentsLike, task: dict[str, Any],
-                goal: str, suite: str) -> dict[str, Any] | None:
+def write_tests(
+    agents: AgentsLike, task: dict[str, Any], goal: str, suite: str
+) -> dict[str, Any] | None:
     """Один вызов тестировщика. Возвращает отчёт либо None.
 
     Провал тестировщика НЕ обязан ронять задачу: плечо B без тестов
@@ -178,34 +163,62 @@ def write_tests(agents: AgentsLike, task: dict[str, Any],
     продолжать ли, принимает петля — здесь только факт.
     """
     targets = test_paths(task)
+    # resolve без task намеренно: канала executor_model уровня задачи у
+    # тестировщика нет (E11 видит спецификацию, а не маршрутизацию
+    # исполнителя) — открывать его значило бы дать задаче тайно менять
+    # движок чужой роли.
     engine, model = engines.resolve(agents.config)
+    kind = engines.run_kind(engine)
     text = prompt(task, goal, targets, suite)
     schema = ""
-    if engine == "claude":
+    if kind == "claude":
         schema = (HERE.parent / "schemas" / "tester-v1.schema.json").read_text(
-            encoding="utf-8")
-    cmd = engines.executor_argv(engine, model, text, agents.config, schema)
+            encoding="utf-8"
+        )
+    # То же дерево, что и у implement(): теневое плечо дуэли работает в
+    # worktree, и запуск тестировщика в общем корне переписал бы работу
+    # живого плеча — замер стал бы несравнимым.
+    work = str(getattr(agents, "work_root", None) or agents.state.root)
+    cmd = engines.executor_argv(engine, model, text, agents.config, schema, cwd=work)
     drv = agents.driver.AgentDriver(
-        cwd=str(agents.state.root),
+        cwd=work,
         silence_timeout=agents.config.get("silence_timeout", 600),
-        wall_clock_cap=agents.config.get("wall_clock_cap", 1800))
-    claude = engine == "claude"
-    run = drv.start(cmd, parser=(agents.driver.parse_claude if claude
-                                 else agents.driver.parse_kimi))
-    result = run.collect(agents.driver.extract_result_envelope if claude
-                         else parsing_mod.extract_report)
-    raw = agents.state.dir / "log" / f"{task['id']}-tester.jsonl"
-    raw.write_text(run.raw_stream())
+        wall_clock_cap=agents.config.get("wall_clock_cap", 1800),
+    )
+    parser, extract = engines.stream_pipeline(kind, agents.driver)
+    run = drv.start(cmd, parser=parser)
+    result = run.collect(extract)
+    # id задачи — данные недоверенные: в имя файла только через санитайзер,
+    # иначе '../..' в id уводил запись лога за пределы каталога состояния.
+    # Дайджест сырого id рядом: санитайзер детерминированно схлопывает
+    # разные id в одно имя ('a/b' и 'a_b'), без хвоста их логи затирали
+    # бы друг друга.
+    log_name = (
+        f"{pathsafe.safe_filename(task['id'])}-"
+        f"{pathsafe.short_digest(task['id'])}-tester.jsonl"
+    )
+    raw = agents.state.dir / "log" / log_name
+    raw.write_text(run.raw_stream(), encoding="utf-8")
     report: dict[str, Any] | None = result.report
     facts: dict[str, Any] = {}
-    if claude:
+    if kind == "claude":
         facts = engines.envelope_facts(result.report)
         report = engines.report_from_envelope(result.report)
-    agents.state.metric(task=task["id"], phase="tester", engine=engine,
-                        model=model or None, reason=result.reason,
-                        wall_s=round(result.wall_s, 1),
-                        report=bool(report), **facts)
+    elif kind == "zcode":
+        facts = engines.zcode_facts(result.report)
+        report = engines.report_from_zcode(result.report)
+    agents.state.metric(
+        task=task["id"],
+        phase="tester",
+        engine=engine,
+        model=model or None,
+        reason=result.reason,
+        wall_s=round(result.wall_s, 1),
+        report=bool(report),
+        **facts,
+    )
     if report is None:
-        log.warning("тестировщик не отдал отчёт", extra={
-            "swarm_task": str(task.get("id"))})
+        log.warning(
+            "тестировщик не отдал отчёт", extra={"swarm_task": str(task.get("id"))}
+        )
     return report

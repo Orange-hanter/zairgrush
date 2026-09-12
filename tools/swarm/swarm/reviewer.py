@@ -3,11 +3,9 @@
 (AgentsLike), класс держит делегаты — точки вызова не изменились.
 """
 import hashlib
-import importlib.util
 import json
 import pathlib
 import sys
-from types import ModuleType
 from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -19,32 +17,14 @@ if _HERE not in sys.path:
 
 import modlock  # noqa: E402
 import parsing as parsing_mod  # noqa: E402
+import pathsafe  # noqa: E402
 import promptbuilder  # noqa: E402
 import spending  # noqa: E402
 from agents_types import AgentsLike  # noqa: E402
 
-
-def load_module(name: str) -> ModuleType:
-    # Загрузка модулей — гонка, пока плечи дуэли идут в потоках:
-    # модуль публикуется в sys.modules ДО выполнения (иначе не сходятся
-    # круговые импорты), и сосед видит пустышку. Замок ОБЩИЙ на все
-    # загрузчики петли — см. modlock.py.
-    with modlock.LOCK:
-        cached = modlock.ready(name)
-        if cached is not None:
-            return cached
-        spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
-        if spec is None or spec.loader is None:
-            raise ImportError(f"не удалось загрузить модуль {name}")
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-
-
 # Имя логера оставлено "agents": журнал наблюдаемости — контракт,
 # переименование модуля не должно менять имена потоков.
-log = load_module("obs").get_logger("agents")
+log = modlock.load_module("obs").get_logger("agents")
 
 
 def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: int,
@@ -107,7 +87,12 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     # же файл и затирал первый вердикт — на пилоте так потерялся
     # валидный approve за $1.22, и разбираться было не по чему.
     phase = "v" if verify_results is not None else "a"
-    stem = f"{task['id']}-i{iteration}-{phase}{attempt}"
+    # id задачи — данные недоверенные: в stem он идёт только через
+    # санитайзер, иначе '../..' в id уводил запись лога за пределы
+    # каталога состояния (тот же вектор, что закрыт в tester/unclear).
+    # Для обычных id (aaaa, s1ch) санитайзер тождественен — доска и
+    # `swarm why` находят файлы по прежнему glob.
+    stem = f"{pathsafe.safe_filename(task['id'])}-i{iteration}-{phase}{attempt}"
     # Конверт — под прежним именем (его читают доска и `swarm why`);
     # полный поток — рядом, под именем, которое их глобы не ловят.
     # Поток — УЛИКА, и она не имеет права затираться. Задача, возвращённая
@@ -116,11 +101,31 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     # и надо было разбирать. Конверт остаётся под прежним именем (его
     # читают доска и `swarm why`), а поток уходит в свободное имя рядом —
     # глоб `*-review-stream.jsonl` ловит их все.
-    free_path(agents.state.dir / "log",
-              f"{stem}-review-stream", ".jsonl").write_text(run.raw_stream())
-    (agents.state.dir / "log" / f"{stem}-review.json").write_text(
-        json.dumps(env, ensure_ascii=False) if env is not None
-        else run.raw_stream())
+    stream_rel = f"log/{stem}-review-stream.jsonl"
+    if pathsafe.escapes_root(agents.state.dir, stream_rel):
+        # Симлинк log/ или state.dir наружу: угроза — не авария роли.
+        # Улика не пишется, но вердикт разбирается как обычно.
+        log.warning(
+            "поток ревью не записан: путь выходит за пределы каталога",
+            extra={"swarm_task": str(task.get("id"))},
+        )
+    else:
+        free_path(agents.state.dir / "log",
+                  f"{stem}-review-stream", ".jsonl").write_text(
+            run.raw_stream(), encoding="utf-8")
+    # Тот же containment для конверта: симлинк log/ увёл бы его наружу
+    # вместе с потоком — писать безусловно значило бы закрыть один
+    # вектор и оставить соседний на том же каталоге.
+    env_rel = f"log/{stem}-review.json"
+    if pathsafe.escapes_root(agents.state.dir, env_rel):
+        log.warning(
+            "конверт ревью не записан: путь выходит за пределы каталога",
+            extra={"swarm_task": str(task.get("id"))},
+        )
+    else:
+        (agents.state.dir / env_rel).write_text(
+            json.dumps(env, ensure_ascii=False) if env is not None
+            else run.raw_stream(), encoding="utf-8")
     verdict: dict[str, Any] | None = None
     cost: float | None = None
     terminal: str | None = None
@@ -197,7 +202,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     # задаче без milestone_close.
     if (requests and verify_results is None
             and wants_verification(agents, task)):
-        vf = load_module("verify")
+        vf = modlock.load_module("verify")
         try:
             before: set[str] | None = set(
                 vf.worktree_dirty(agents.state.root))
