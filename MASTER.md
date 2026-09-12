@@ -1,6 +1,6 @@
 # 🧭 Project Navigator: zairgrush
 
-> 📊 Meta: `{"version": "0.1", "last_updated": "2026-09-07", "context_depth": "L1", "repo": "/Users/dakh/Git/_my/ZAIrgRush"}`
+> 📊 Meta: `{"version": "0.1", "last_updated": "2026-09-12", "context_depth": "L1", "repo": "/Users/dakh/Git/_my/ZAIrgRush"}`
 
 ## 1. 🎯 Executive Summary
 - **Цель:** Автоматизировать цикл разработки через петлю из двух ИИ-агентов (Исполнитель и Ревьюер), передающих задачи по кругу до сходимости кода.
@@ -31,7 +31,7 @@ graph TD
 
 ### Architecture
 - **Описание:** Архитектурные решения, диаграммы компонентов и ADR проекта.
-- **Ссылка:** `📁 /arch/README.md | 🗃️ doc:arch_README_md | 🔑 sha:463d2a8d3a67`
+- **Ссылка:** `📁 /arch/README.md | 🗃️ doc:arch_README_md | 🔑 sha:bb9f49ef641e`
 - **Статус:** `🟢 VERIFIED`
 - **Ответственный агент:** `@Orchestrator`
 
@@ -48,9 +48,12 @@ graph TD
 - **Ответственный агент:** `@Orchestrator`
 
 ## 4. ⚡ Quick Actions & Handoffs
+
+> Планы и задачи живут в cod-doc DB (`.cod-doc/state.db`): `cod-doc plan show <scope> -p zairgrush`, `cod-doc task list -p zairgrush`. MCP-конфиги `.cursor/mcp.json` / `.kimi-code/mcp.json` содержат machine-local абсолютные пути — не переносимы между машинами.
+
 ```json
 {
-  "next_step": "Начать работу над детальными спецификациями компонентов или перейти к реализации",
+  "next_step": "Выполнить план hardening-2026-09 (живёт в cod-doc DB, scope `hardening-2026-09`, не файлом в репозитории): секция A — гигиена документов, B — ADR-процесс, C — бэклог; задачи HRD-001…HRD-008",
   "required_input": "Приоритетные компоненты для спецификации, выбор между docs-first или code-first подходом",
   "blocked_by": []
 }
@@ -69,6 +72,16 @@ graph TD
   },
   "changelog": [
     {
+      "date": "2026-09-12",
+      "action": "Цикл ai-reviewer над рабочим деревом (7 прогонов review_run): исправлены все critical/major — кластер path traversal (pathsafe.py: safe_filename + escapes_root), гонки modlock (_initializing, очистка sys.modules), денy-листы claude/zcode, exit-коды doctor, конверты zcode, логи с digest-суффиксом; docs: arch/README наполнен индексом ADR (DAG 015–024), ADR-003/007 получили разделы «Заменён», 06-ADR разрешено противоречие канареек, 08-гайд уточнён (zcode, silence_timeout, git-deny). Гейт tools/swarm/check.sh зелёный (1260 passed). Финальный прогон: 0 critical, 0 major, остаток minor/nit — в findings cod-doc.",
+      "author": "kimi-code",
+      "scope": "master"
+    },
+      "date": "2026-09-11",
+      "action": "Аудит и перевод планирования в cod-doc: документы 144/144 в sync (drift=0); legacy tasks.yaml (31 запись) мигрирован в DB как plan imported-legacy (LEG-001..031). Создан ADR-014 (cod-doc — единая поверхность планирования) и план hardening-2026-09 (HRD-001…008). Обновлён протухший sha arch/README.md; подключены MCP-серверы cod-doc и ai-reviewer (.kimi-code/mcp.json).",
+      "author": "kimi-code",
+      "scope": "master"
+    },
       "date": "2026-09-07",
       "action": "Вычищены записи автономного демона cod-doc: шесть self-верификаций без изменений содержимого («хэши подтверждены», «JSON валиден», «обрезанных записей не обнаружено») и запись с датой 2025-01-15, которой демон «исправлял» верную дату на cutoff модели. Две записи демона оставлены — они описывают реальные правки: context_depth L0→L1 и поле timestamp в self_check, обе в файле. Демон отключён (agent_enabled=false в ~/.cod-doc/config.yaml).",
       "author": "claude-opus-5",
