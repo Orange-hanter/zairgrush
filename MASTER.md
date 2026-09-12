@@ -75,15 +75,23 @@ graph TD
   "changelog": [
     {
       "date": "2026-09-12",
+      "action": "Hardening-прогон: HRD-001 (нормализация type: в frontmatter, import без warnings), HRD-002 (разделы specs/models/docs наполнены реальными индексами, VERIFIED честный), HRD-003 (ADR-025: каноникал ADR — таблица adr в DB, docs/adr — проекции, 24 дубля удалены из Documents), HRD-004 (routine weekly_drift_check), HRD-005 (ADR-014 связан с HRD-001..008), HRD-006 (6 failed legacy закрыты), HRD-007 (выборочная сверка LEG: найдена и исправлена битая JSON-структура changelog — две записи без открывающей скобки). Зарегистрирован эксперимент E15 (семейство ревьюера), план experiment-e15 (EXF-001..004). drift=0 (145 docs).",
+      "author": "kimi-code",
+      "scope": "master"
+    },
+    {
+      "date": "2026-09-12",
       "action": "Цикл ai-reviewer над рабочим деревом (7 прогонов review_run): исправлены все critical/major — кластер path traversal (pathsafe.py: safe_filename + escapes_root), гонки modlock (_initializing, очистка sys.modules), денy-листы claude/zcode, exit-коды doctor, конверты zcode, логи с digest-суффиксом; docs: arch/README наполнен индексом ADR (DAG 015–024), ADR-003/007 получили разделы «Заменён», 06-ADR разрешено противоречие канареек, 08-гайд уточнён (zcode, silence_timeout, git-deny). Гейт tools/swarm/check.sh зелёный (1260 passed). Финальный прогон: 0 critical, 0 major, остаток minor/nit — в findings cod-doc.",
       "author": "kimi-code",
       "scope": "master"
     },
+    {
       "date": "2026-09-11",
       "action": "Аудит и перевод планирования в cod-doc: документы 144/144 в sync (drift=0); legacy tasks.yaml (31 запись) мигрирован в DB как plan imported-legacy (LEG-001..031). Создан ADR-014 (cod-doc — единая поверхность планирования) и план hardening-2026-09 (HRD-001…008). Обновлён протухший sha arch/README.md; подключены MCP-серверы cod-doc и ai-reviewer (.kimi-code/mcp.json).",
       "author": "kimi-code",
       "scope": "master"
     },
+    {
       "date": "2026-09-07",
       "action": "Вычищены записи автономного демона cod-doc: шесть self-верификаций без изменений содержимого («хэши подтверждены», «JSON валиден», «обрезанных записей не обнаружено») и запись с датой 2025-01-15, которой демон «исправлял» верную дату на cutoff модели. Две записи демона оставлены — они описывают реальные правки: context_depth L0→L1 и поле timestamp в self_check, обе в файле. Демон отключён (agent_enabled=false в ~/.cod-doc/config.yaml).",
       "author": "claude-opus-5",
