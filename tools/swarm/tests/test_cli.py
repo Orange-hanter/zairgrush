@@ -3,6 +3,7 @@
 
 Агенты не вызываются: проверяется поведение оркестратора вокруг них.
 """
+
 import builtins
 import contextlib
 import importlib.util
@@ -26,12 +27,29 @@ spec.loader.exec_module(cli)
 # реальная команда `run`/`go` берёт `_board_open` из модуля clirun.
 clirun = sys.modules["clirun"]
 
-TASKS = {"goal": "тестовая цель", "tasks": [
-    {"id": "aaaa", "title": "первая", "type": "feature", "status": "pending",
-     "deps": [], "paths": ["src/a.py"], "acceptance": ["тесты проходят"]},
-    {"id": "bbbb", "title": "вторая", "type": "feature", "status": "pending",
-     "deps": ["aaaa"], "paths": ["src/b.py"], "acceptance": ["тесты проходят"]},
-]}
+TASKS = {
+    "goal": "тестовая цель",
+    "tasks": [
+        {
+            "id": "aaaa",
+            "title": "первая",
+            "type": "feature",
+            "status": "pending",
+            "deps": [],
+            "paths": ["src/a.py"],
+            "acceptance": ["тесты проходят"],
+        },
+        {
+            "id": "bbbb",
+            "title": "вторая",
+            "type": "feature",
+            "status": "pending",
+            "deps": ["aaaa"],
+            "paths": ["src/b.py"],
+            "acceptance": ["тесты проходят"],
+        },
+    ],
+}
 
 
 def run_cli(*argv):
@@ -54,11 +72,24 @@ class CliCase(unittest.TestCase):
         (self.root / "tests").mkdir()
         (self.root / "tests" / "test_a.py").write_text(
             "import unittest\n\n\nclass T(unittest.TestCase):\n"
-            "    def test_ok(self):\n        self.assertTrue(True)\n")
+            "    def test_ok(self):\n        self.assertTrue(True)\n"
+        )
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
-        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
-                        "commit", "-qm", "init"], cwd=self.root, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "init",
+            ],
+            cwd=self.root,
+            check=True,
+        )
         self.state = cli.state_mod.SwarmState(self.root)
         self.state.save_tasks(json.loads(json.dumps(TASKS)))
         # Автооткрытие доски (feature 2) реально дёргает macOS `open` —
@@ -69,8 +100,10 @@ class CliCase(unittest.TestCase):
         # иначе почти каждый тест тихо поднимал HTTP-сервер доски и
         # вызывал macOS `open`, что приводило к гонке с tearDown.
         self._real_board_open = clirun._board_open
-        clirun._board_open = (lambda root, cfg:
-                              (pathlib.Path(root) / ".swarm" / "board.html", None))
+        clirun._board_open = lambda root, cfg: (
+            pathlib.Path(root) / ".swarm" / "board.html",
+            None,
+        )
         self.addCleanup(setattr, clirun, "_board_open", self._real_board_open)
 
     def tearDown(self):
@@ -82,6 +115,7 @@ class CliCase(unittest.TestCase):
         Проверяется обвязка вокруг петли (коды возврата, итоговая
         строка), а не сама петля — живые агенты здесь не нужны.
         """
+
         class FakeLoop:
             def __init__(self, *a, **kw):
                 pass
@@ -108,15 +142,17 @@ class TestStatus(CliCase):
             self.assertIn("пуст", out)
 
     def test_reports_unfinished_steps_after_crash(self):
-        self.state.log("step_intent", step_id="aaaa:commit:1", task="aaaa",
-                       action="commit")
+        self.state.log(
+            "step_intent", step_id="aaaa:commit:1", task="aaaa", action="commit"
+        )
         _code, out = run_cli("--root", str(self.root), "status")
         self.assertIn("НЕЗАВЕРШЁННЫЕ", out)
         self.assertIn("resume", out)
 
     def test_shows_blocked_reason_and_stash(self):
-        self.state.set_status("aaaa", "blocked", reason="dispute",
-                              stash="swarm:aaaa-dispute")
+        self.state.set_status(
+            "aaaa", "blocked", reason="dispute", stash="swarm:aaaa-dispute"
+        )
         _, out = run_cli("--root", str(self.root), "status")
         self.assertIn("dispute", out)
         self.assertIn("swarm:aaaa-dispute", out)
@@ -127,8 +163,11 @@ class TestDryRun(CliCase):
         code, out = run_cli("--root", str(self.root), "run", "--dry-run")
         self.assertEqual(code, 0)
         self.assertIn("aaaa", out)
-        self.assertNotIn("bbbb", out, "задача с незакрытой зависимостью "
-                                      "не должна попадать в план прогона")
+        self.assertNotIn(
+            "bbbb",
+            out,
+            "задача с незакрытой зависимостью не должна попадать в план прогона",
+        )
 
     def test_shows_baseline_gate(self):
         _, out = run_cli("--root", str(self.root), "run", "--dry-run")
@@ -149,18 +188,20 @@ class TestDryRun(CliCase):
 
 class TestResume(CliCase):
     def test_unfinished_step_escalates(self):
-        self.state.log("step_intent", step_id="aaaa:commit:1", task="aaaa",
-                       action="commit")
+        self.state.log(
+            "step_intent", step_id="aaaa:commit:1", task="aaaa", action="commit"
+        )
         code, out = run_cli("--root", str(self.root), "resume", "--dry-run")
-        self.assertEqual(code, 2, "возобновление с незавершённым шагом "
-                                  "требует решения человека")
+        self.assertEqual(
+            code, 2, "возобновление с незавершённым шагом требует решения человека"
+        )
         self.assertIn("эскалация", out)
 
     def test_force_proceeds(self):
-        self.state.log("step_intent", step_id="aaaa:commit:1", task="aaaa",
-                       action="commit")
-        code, _ = run_cli("--root", str(self.root), "resume", "--dry-run",
-                          "--force")
+        self.state.log(
+            "step_intent", step_id="aaaa:commit:1", task="aaaa", action="commit"
+        )
+        code, _ = run_cli("--root", str(self.root), "resume", "--dry-run", "--force")
         self.assertEqual(code, 0)
 
     def test_clean_state_resumes_without_force(self):
@@ -177,8 +218,13 @@ class TestResumeReconciliation(CliCase):
     """
 
     def _intent(self, head):
-        self.state.log("step_intent", step_id="aaaa:commit:1", task="aaaa",
-                       action="commit", head=head)
+        self.state.log(
+            "step_intent",
+            step_id="aaaa:commit:1",
+            task="aaaa",
+            action="commit",
+            head=head,
+        )
 
     def _stub_run(self):
         """Хвост resume — обычный `run`; здесь проверяется реконсиляция,
@@ -188,21 +234,25 @@ class TestResumeReconciliation(CliCase):
         self.addCleanup(setattr, cli, "cmd_run", original)
 
     def _head(self):
-        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root,
-                              capture_output=True, text=True,
-                              check=True).stdout.strip()
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
 
     def test_no_commit_rolls_back_to_pending(self):
         self.state.set_status("aaaa", "in_progress")
-        self._intent(self._head())          # HEAD не сдвигался: коммита не было
+        self._intent(self._head())  # HEAD не сдвигался: коммита не было
         self._stub_run()
         code, out = run_cli("--root", str(self.root), "resume")
         self.assertEqual(code, 0, out)
         self.assertIn("реконсиляция", out)
-        task = next(t for t in self.state.load_tasks()["tasks"]
-                    if t["id"] == "aaaa")
-        self.assertEqual(task["status"], "pending",
-                         "интент без действия обязан откатиться в очередь")
+        task = next(t for t in self.state.load_tasks()["tasks"] if t["id"] == "aaaa")
+        self.assertEqual(
+            task["status"], "pending", "интент без действия обязан откатиться в очередь"
+        )
 
     def test_dry_run_previews_without_touching_state(self):
         """Сухой прогон обещает не трогать состояние — а реконсиляция
@@ -217,31 +267,44 @@ class TestResumeReconciliation(CliCase):
         code, out = run_cli("--root", str(self.root), "resume", "--dry-run")
         self.assertEqual(code, 0, out)
         self.assertIn("dry-run", out)
-        self.assertIn("вернётся в очередь", out,
-                      "оператору обязаны сказать, ЧТО сделает resume")
-        self.assertEqual(self.state.journal_path.read_text(), journal_before,
-                         "сухой прогон не имеет права писать в журнал")
-        self.assertEqual(self.state.tasks_path.read_text(), tasks_before,
-                         "сухой прогон не имеет права менять очередь")
+        self.assertIn(
+            "вернётся в очередь", out, "оператору обязаны сказать, ЧТО сделает resume"
+        )
+        self.assertEqual(
+            self.state.journal_path.read_text(),
+            journal_before,
+            "сухой прогон не имеет права писать в журнал",
+        )
+        self.assertEqual(
+            self.state.tasks_path.read_text(),
+            tasks_before,
+            "сухой прогон не имеет права менять очередь",
+        )
 
     def test_orchestrator_commit_completes_the_task(self):
         self.state.set_status("aaaa", "in_progress")
         self._intent(self._head())
         (self.root / "src" / "a.py").write_text("def a():\n    return 2\n")
-        env = {**os.environ,
-               "GIT_AUTHOR_NAME": "swarm-executor",
-               "GIT_AUTHOR_EMAIL": "executor@swarm.local",
-               "GIT_COMMITTER_NAME": "swarm-orchestrator",
-               "GIT_COMMITTER_EMAIL": "orchestrator@swarm.local"}
-        subprocess.run(["git", "commit", "-qam", "aaaa: работа"],
-                       cwd=self.root, env=env, check=True)
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "swarm-executor",
+            "GIT_AUTHOR_EMAIL": "executor@swarm.local",
+            "GIT_COMMITTER_NAME": "swarm-orchestrator",
+            "GIT_COMMITTER_EMAIL": "orchestrator@swarm.local",
+        }
+        subprocess.run(
+            ["git", "commit", "-qam", "aaaa: работа"],
+            cwd=self.root,
+            env=env,
+            check=True,
+        )
         self._stub_run()
         code, out = run_cli("--root", str(self.root), "resume")
         self.assertEqual(code, 0, out)
-        task = next(t for t in self.state.load_tasks()["tasks"]
-                    if t["id"] == "aaaa")
-        self.assertEqual(task["status"], "done",
-                         "коммит оркестратора найден — задачу надо доиграть")
+        task = next(t for t in self.state.load_tasks()["tasks"] if t["id"] == "aaaa")
+        self.assertEqual(
+            task["status"], "done", "коммит оркестратора найден — задачу надо доиграть"
+        )
         self.assertTrue(task.get("commit"), "sha коммита не записан в задачу")
         self.assertIn("step_done", self.state.journal_path.read_text())
 
@@ -250,9 +313,20 @@ class TestResumeReconciliation(CliCase):
         self.state.set_status("aaaa", "in_progress")
         self._intent(self._head())
         (self.root / "src" / "a.py").write_text("# правка человека\n")
-        subprocess.run(["git", "-c", "user.name=h", "-c", "user.email=h@h",
-                        "commit", "-qam", "человеческий коммит"],
-                       cwd=self.root, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=h",
+                "-c",
+                "user.email=h@h",
+                "commit",
+                "-qam",
+                "человеческий коммит",
+            ],
+            cwd=self.root,
+            check=True,
+        )
         code, out = run_cli("--root", str(self.root), "resume", "--dry-run")
         self.assertEqual(code, 2)
         self.assertIn("эскалация", out)
@@ -273,9 +347,17 @@ class TestQuotaExitCode(CliCase):
         def fake_run(argv, **kw):
             if not (argv and argv[0] == "claude"):
                 return orig_run(argv, **kw)
-            return type("R", (), {"stdout": json.dumps(
-                {"is_error": True, "result": "usage limit reached"}),
-                "stderr": "", "returncode": 1})()
+            return type(
+                "R",
+                (),
+                {
+                    "stdout": json.dumps(
+                        {"is_error": True, "result": "usage limit reached"}
+                    ),
+                    "stderr": "",
+                    "returncode": 1,
+                },
+            )()
 
         subprocess.run = fake_run
         self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
@@ -308,25 +390,21 @@ class TestConfigValidation(CliCase):
         """Значение флага памяти — имя роли. Опечатка в нём выключает
         подсистему целиком и ничем не отличима от `off`: замер «ноль
         вызовов эмбеддера за пилот» начинался ровно с такой тишины."""
-        _cfg, err = self._config_stderr(
-            '[experiments]\nmemory = "planer"\n')
+        _cfg, err = self._config_stderr('[experiments]\nmemory = "planer"\n')
         self.assertIn("не роль", err)
         self.assertIn("planner", err, "подсказка обязана назвать роли")
 
     def test_planner_mode_is_a_role_and_stays_silent(self):
-        _cfg, err = self._config_stderr(
-            '[experiments]\nmemory = "planner"\n')
+        _cfg, err = self._config_stderr('[experiments]\nmemory = "planner"\n')
         self.assertEqual(err, "")
 
     def test_doc_context_mode_that_is_not_a_role_warns(self):
-        _cfg, err = self._config_stderr(
-            '[experiments]\ndoc_context = "planer"\n')
+        _cfg, err = self._config_stderr('[experiments]\ndoc_context = "planer"\n')
         self.assertIn("не роль", err)
         self.assertIn("executor", err, "подсказка обязана назвать роли")
 
     def test_executor_doc_context_mode_is_a_role_and_stays_silent(self):
-        _cfg, err = self._config_stderr(
-            '[experiments]\ndoc_context = "executor"\n')
+        _cfg, err = self._config_stderr('[experiments]\ndoc_context = "executor"\n')
         self.assertEqual(err, "")
 
     def test_engine_that_is_not_an_engine_warns(self):
@@ -343,30 +421,36 @@ class TestConfigValidation(CliCase):
         становится ИМЕНЕМ файла, и задача уходит в blocked как «авария».
         Замерено живым прогоном 2026-08-22."""
         _cfg, err = self._config_stderr(
-            'gate_command = "python3 -m unittest discover -q"\n')
+            'gate_command = "python3 -m unittest discover -q"\n'
+        )
         self.assertIn("gate_command", err)
         self.assertIn("списком", err)
 
     def test_gate_command_as_a_list_stays_silent(self):
-        cfg, err = self._config_stderr(
-            'gate_command = ["python3", "-m", "pytest"]\n')
+        cfg, err = self._config_stderr('gate_command = ["python3", "-m", "pytest"]\n')
         self.assertEqual(err, "")
         self.assertEqual(cfg["gate_command"], ["python3", "-m", "pytest"])
 
     def test_engine_keys_are_known(self):
         cfg, err = self._config_stderr(
             'executor_engine = "claude"\nexecutor_effort = "low"\n'
-            "executor_budget_usd = 2.5\n")
+            "executor_budget_usd = 2.5\n"
+        )
         self.assertEqual(err, "")
         self.assertEqual(cfg["executor_engine"], "claude")
+
+    def test_zcode_engine_key_is_known(self):
+        cfg, err = self._config_stderr('executor_engine = "zcode"\n')
+        self.assertEqual(err, "")
+        self.assertEqual(cfg["executor_engine"], "zcode")
 
     def test_doc_context_paths_is_known(self):
         """Массив путей для doc-context валидируется без предупреждения."""
         cfg, err = self._config_stderr(
-            'doc_context_paths = ["docs/arch.md", "docs/api.md"]\n')
+            'doc_context_paths = ["docs/arch.md", "docs/api.md"]\n'
+        )
         self.assertEqual(err, "")
-        self.assertEqual(cfg["doc_context_paths"],
-                         ["docs/arch.md", "docs/api.md"])
+        self.assertEqual(cfg["doc_context_paths"], ["docs/arch.md", "docs/api.md"])
 
 
 class TestEnginePreflight(CliCase):
@@ -391,7 +475,8 @@ class TestEnginePreflight(CliCase):
         """Строка вывода — не украшение: прогон на чужом движке выглядит
         точно так же, как прогон на своём, пока никто не назвал движок."""
         (self.root / "swarm.toml").write_text(
-            'executor_engine = "claude"\nexecutor_model = "sonnet"\n')
+            'executor_engine = "claude"\nexecutor_model = "sonnet"\n'
+        )
         _code, out = run_cli("--root", str(self.root), "run")
         self.assertIn("исполнитель: claude (sonnet)", out)
 
@@ -401,7 +486,8 @@ class TestEnginePreflight(CliCase):
         молчать об этом нельзя."""
         (self.root / "swarm.toml").write_text(
             'executor_engine = "claude"\nexecutor_model = "sonnet"\n'
-            'review_model = "sonnet"\n')
+            'review_model = "sonnet"\n'
+        )
         _code, out = run_cli("--root", str(self.root), "run")
         self.assertIn("независимость судьи", out)
 
@@ -416,7 +502,8 @@ class TestEnginePreflight(CliCase):
 
     def test_diverged_confirming_round_stays_quiet(self):
         (self.root / "swarm.toml").write_text(
-            'confirmations = 2\nconfirm_effort = "medium"\n')
+            'confirmations = 2\nconfirm_effort = "medium"\n'
+        )
         _code, out = run_cli("--root", str(self.root), "run")
         self.assertNotIn("не разведён", out)
 
@@ -439,14 +526,23 @@ class TestDoctor(CliCase):
         машина без `kimi` получала красную строку за роль, которой на
         ней нет: диагноз говорил о чужой конфигурации."""
         (self.root / "swarm.toml").write_text(
-            'executor_engine = "claude"\nexecutor_model = "sonnet"\n')
+            'executor_engine = "claude"\nexecutor_model = "sonnet"\n'
+        )
         _code, out = run_cli("--root", str(self.root), "doctor")
         self.assertIn("движок исполнителя", out)
         self.assertIn("claude, модель sonnet", out)
 
-    def test_gate_command_shape_is_checked(self):
+    def test_names_zcode_when_selected(self):
         (self.root / "swarm.toml").write_text(
-            'gate_command = "python3 -m pytest"\n')
+            'executor_engine = "zcode"\nexecutor_model = "glm-5.3"\n'
+        )
+        _code, out = run_cli("--root", str(self.root), "doctor")
+        self.assertIn("движок исполнителя", out)
+        self.assertIn("zcode, модель glm-5.3", out)
+        self.assertIn("не принимает --model", out)
+
+    def test_gate_command_shape_is_checked(self):
+        (self.root / "swarm.toml").write_text('gate_command = "python3 -m pytest"\n')
         _code, out = run_cli("--root", str(self.root), "doctor")
         self.assertIn("ПРОБЛ", out)
         self.assertIn("СПИСОК", out)
@@ -472,13 +568,30 @@ class TestDoctor(CliCase):
         self.assertIn("изменённых файлов", out)
 
     def _patch_tree_sitter(self, present: set[str], clib: bool) -> None:
+        # find_spec подменяется ГЛОБАЛЬНО на время прогона doctor: у
+        # importlib один модуль-объект на процесс, «не глобально» не
+        # выйти. Связность осознанная: других потребителей find_spec
+        # внутри cmd_doctor нет, а addCleanup гарантирует возврат.
         original = cli.importlib.util.find_spec
-        cli.importlib.util.find_spec = (
-            lambda name: object() if name in present else None)
+        cli.importlib.util.find_spec = lambda name: (
+            object() if name in present else None
+        )
         self.addCleanup(setattr, cli.importlib.util, "find_spec", original)
-        original_clib = cli.tree_sitter_clib
-        cli.tree_sitter_clib = lambda: clib
-        self.addCleanup(setattr, cli, "_tree_sitter_clib", original_clib)
+        # Патчим namespace самой функции доктора, а не sys.modules:
+        # cli.py и climisc перезагружаются тестами по несколько раз, и
+        # sys.modules к моменту прогона может держать уже не ту копию.
+        # Связность хрупкая осознанно: работает, пока проверка tree-sitter
+        # живёт в теле cmd_doctor и имя разрешается из её globals —
+        # вынесение проверки в отдельную функцию потребует поправить
+        # только эту строчку.
+        doctor_ns = cli.cmd_doctor.__globals__
+        original_clib = doctor_ns["tree_sitter_clib"]
+
+        def restore_clib(ns=doctor_ns, orig=original_clib):
+            ns["tree_sitter_clib"] = orig
+
+        doctor_ns["tree_sitter_clib"] = lambda: clib
+        self.addCleanup(restore_clib)
 
     def test_missing_tree_sitter_is_reported_honestly(self):
         """find_spec сообщает об отсутствии top-level модуля значением
@@ -489,8 +602,9 @@ class TestDoctor(CliCase):
         _, out = run_cli("--root", str(self.root), "doctor")
         line = next(ln for ln in out.splitlines() if "tree-sitter" in ln)
         self.assertIn("не установлен", line)
-        self.assertIn("pip install tree-sitter tree-sitter-python "
-                      "tree-sitter-rust", line)
+        self.assertIn(
+            "pip install tree-sitter tree-sitter-python tree-sitter-rust", line
+        )
 
     def test_brew_clib_alone_is_named_not_denied(self):
         """brew-пакет tree-sitter — только C-библиотека. Доктор говорил
@@ -507,8 +621,9 @@ class TestDoctor(CliCase):
     def test_partial_bindings_name_the_missing_grammar(self):
         """tsindex требует обе грамматики: один модуль tree_sitter без
         них давал «доступен», а слой падал на импорте грамматик."""
-        self._patch_tree_sitter(present={"tree_sitter", "tree_sitter_python"},
-                                clib=False)
+        self._patch_tree_sitter(
+            present={"tree_sitter", "tree_sitter_python"}, clib=False
+        )
         _, out = run_cli("--root", str(self.root), "doctor")
         line = next(ln for ln in out.splitlines() if "tree-sitter" in ln)
         self.assertIn("неполные", line)
@@ -517,7 +632,8 @@ class TestDoctor(CliCase):
     def test_full_bindings_report_ok(self):
         self._patch_tree_sitter(
             present={"tree_sitter", "tree_sitter_python", "tree_sitter_rust"},
-            clib=False)
+            clib=False,
+        )
         _, out = run_cli("--root", str(self.root), "doctor")
         line = next(ln for ln in out.splitlines() if "tree-sitter" in ln)
         self.assertIn("[  ok ]", line)
@@ -543,8 +659,14 @@ class TestReportIsProse(CliCase):
     """Отчёт — первая команда в порядке диагностики, а не дамп jsonl."""
 
     def test_events_read_as_sentences(self):
-        self.state.log("round", task="aaaa", round=1, verdict="approve",
-                       findings=0, outcome="confirm")
+        self.state.log(
+            "round",
+            task="aaaa",
+            round=1,
+            verdict="approve",
+            findings=0,
+            outcome="confirm",
+        )
         _, out = run_cli("--root", str(self.root), "report")
         self.assertIn("раунд 1 → approve", out)
         self.assertIn("находок нет", out)
@@ -552,24 +674,23 @@ class TestReportIsProse(CliCase):
         self.assertNotIn('{"kind"', out, "проза, а не JSON")
 
     def test_groups_under_the_task_it_belongs_to(self):
-        self.state.log("round", task="aaaa", round=1, verdict="approve",
-                       findings=0)
+        self.state.log("round", task="aaaa", round=1, verdict="approve", findings=0)
         _, out = run_cli("--root", str(self.root), "report")
         self.assertIn("первая", out, "заголовок задачи берётся из очереди")
 
     def test_run_level_events_are_not_glued_to_a_task(self):
         # Событие прогона, приклеенное к задаче, объясняло бы остановку
         # очереди не тем.
-        self.state.log("budget_exhausted", spent=51, budget=50,
-                       stopped_before="aaaa")
+        self.state.log("budget_exhausted", spent=51, budget=50, stopped_before="aaaa")
         _, out = run_cli("--root", str(self.root), "report")
         self.assertIn("прогон в целом", out)
         self.assertIn("бюджет прогона исчерпан", out)
 
     def test_json_keeps_the_source_whole(self):
         """Проза — удобство; первоисточник обязан быть достижим целиком."""
-        self.state.log("round", task="aaaa", round=1, verdict="approve",
-                       findings=0, поле="x" * 400)
+        self.state.log(
+            "round", task="aaaa", round=1, verdict="approve", findings=0, поле="x" * 400
+        )
         _, out = run_cli("--root", str(self.root), "report", "--json")
         self.assertIn("x" * 400, out, "сырьё не обрезается")
         self.assertIn('"kind"', out)
@@ -585,12 +706,17 @@ class TestWhy(CliCase):
 
     def _stall(self):
         self.state.set_status(
-            "aaaa", "blocked", reason="max_iterations", iterations=3,
+            "aaaa",
+            "blocked",
+            reason="max_iterations",
+            iterations=3,
             stash="swarm:aaaa-max-iterations",
-            diagnosis="число находок не убывает — вероятны качели fix→break")
+            diagnosis="число находок не убывает — вероятны качели fix→break",
+        )
         for rnd in (1, 2, 3):
-            self.state.log("round", task="aaaa", round=rnd,
-                           verdict="request_changes", findings=3)
+            self.state.log(
+                "round", task="aaaa", round=rnd, verdict="request_changes", findings=3
+            )
 
     def test_explains_a_blocked_task(self):
         self._stall()
@@ -605,8 +731,9 @@ class TestWhy(CliCase):
         _, out = run_cli("--root", str(self.root), "why", "aaaa")
         self.assertIn("раунд 3 → request_changes", out)
         self.assertIn("стоит на месте", out)
-        self.assertNotIn("сходилась", out,
-                         "нельзя утверждать схождение под диагнозом о топтании")
+        self.assertNotIn(
+            "сходилась", out, "нельзя утверждать схождение под диагнозом о топтании"
+        )
 
     def test_offers_the_exact_command(self):
         self._stall()
@@ -621,8 +748,7 @@ class TestWhy(CliCase):
 
     def test_open_question_comes_with_its_answer_command(self):
         qid = self.state.ask("aaaa", "intent", "какой из двух путей верный?")
-        self.state.set_status("aaaa", "blocked", reason="ask_user",
-                              question_id=qid)
+        self.state.set_status("aaaa", "blocked", reason="ask_user", question_id=qid)
         _, out = run_cli("--root", str(self.root), "why", "aaaa")
         self.assertIn("какой из двух путей верный?", out)
         self.assertIn(f"answer {qid}", out)
@@ -762,16 +888,21 @@ class TestLoopOutputIsVisible(unittest.TestCase):
             cli.ui("    раунд 1")
         finally:
             builtins.print = real
-        self.assertEqual(seen, [True, True],
-                         "без flush вывод не доходит до файла до конца прогона")
+        self.assertEqual(
+            seen, [True, True], "без flush вывод не доходит до файла до конца прогона"
+        )
 
     def test_loop_gets_the_flushing_ui(self):
         """Проверка проводки: сам по себе `_ui` бесполезен, если петле
         по-прежнему передают голый `print`."""
-        src = (pathlib.Path(cli.__file__).read_text(encoding="utf-8")
-               if hasattr(cli, "__file__") else "")
-        self.assertNotIn("ui=print", src,
-                         "петля обязана получать печать со сбросом буфера")
+        src = (
+            pathlib.Path(cli.__file__).read_text(encoding="utf-8")
+            if hasattr(cli, "__file__")
+            else ""
+        )
+        self.assertNotIn(
+            "ui=print", src, "петля обязана получать печать со сбросом буфера"
+        )
 
 
 class TestRunExitCodes(CliCase):
@@ -840,20 +971,19 @@ class TestGoGoalGuard(CliCase):
     """
 
     def test_different_goal_is_refused_loudly(self):
-        code, out = run_cli("--root", str(self.root), "go",
-                            "--goal", "совсем другая цель")
+        code, out = run_cli(
+            "--root", str(self.root), "go", "--goal", "совсем другая цель"
+        )
         self.assertEqual(code, 2)
         self.assertIn("тестовая цель", out, "старая цель названа")
         self.assertIn("совсем другая цель", out, "новая цель названа")
         self.assertIn("plan --goal", out, "выход подсказан")
         goal = cli.state_mod.SwarmState(self.root).load_tasks()["goal"]
-        self.assertEqual(goal, "тестовая цель",
-                         "цель не должна подменяться молча")
+        self.assertEqual(goal, "тестовая цель", "цель не должна подменяться молча")
 
     def test_same_goal_proceeds(self):
         self.fake_loop({"aaaa": "done", "bbbb": "done"})
-        code, out = run_cli("--root", str(self.root), "go",
-                            "--goal", "тестовая цель")
+        code, out = run_cli("--root", str(self.root), "go", "--goal", "тестовая цель")
         self.assertEqual(code, 0, out)
         self.assertIn("планирование пропущено", out)
 
@@ -980,8 +1110,9 @@ class TestNextStepAfterCrash(CliCase):
     def test_unfinished_step_outranks_done_review(self):
         for tid in ("aaaa", "bbbb"):
             self.state.set_status(tid, "done")
-        self.state.log("step_intent", step_id="aaaa:commit:1", task="aaaa",
-                       action="commit")
+        self.state.log(
+            "step_intent", step_id="aaaa:commit:1", task="aaaa", action="commit"
+        )
         _, out = run_cli("--root", str(self.root), "status")
         tail = out.split("дальше:")[1]
         self.assertIn("resume", tail)
@@ -1018,15 +1149,19 @@ class TestStatusSurvivesHandEditedQueue(CliCase):
     """
 
     def test_broken_rows_degrade_not_crash(self):
-        raw = {"goal": "тестовая цель", "tasks": [
-            {"id": "aaaa", "title": "первая", "status": "pending"},
-            {"id": "xxxx", "title": "опечатка", "status": "half-done"},
-            {"id": "yyyy", "status": "pending"},
-            {"title": "без id и статуса"},
-            "просто строка",
-        ]}
+        raw = {
+            "goal": "тестовая цель",
+            "tasks": [
+                {"id": "aaaa", "title": "первая", "status": "pending"},
+                {"id": "xxxx", "title": "опечатка", "status": "half-done"},
+                {"id": "yyyy", "status": "pending"},
+                {"title": "без id и статуса"},
+                "просто строка",
+            ],
+        }
         self.state.tasks_path.write_text(
-            json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            json.dumps(raw, ensure_ascii=False), encoding="utf-8"
+        )
         code, out = run_cli("--root", str(self.root), "status")
         self.assertEqual(code, 0, out)
         self.assertIn("задач: 5", out)
@@ -1041,16 +1176,22 @@ class TestPolicyCli(CliCase):
     def test_add_without_text_is_refused(self):
         """nargs="?" с умолчанием "" пропускал пустую политику: pid
         занят, в журнале запись, а решения в ней нет."""
-        code, out = run_cli("--root", str(self.root), "policy", "add",
-                            "--match", "release")
+        code, out = run_cli(
+            "--root", str(self.root), "policy", "add", "--match", "release"
+        )
         self.assertEqual(code, 2)
         self.assertIn("текст", out)
 
     def test_string_match_is_not_scattered_into_letters(self):
         """`", ".join` строку рассыпает в буквы: match="release" из
         старого журнала печатался как «r, e, l, e, a, s, e»."""
-        self.state.log("policy", pid="p001", text="release notes не трогаем",
-                       match="release", goal="тестовая цель")
+        self.state.log(
+            "policy",
+            pid="p001",
+            text="release notes не трогаем",
+            match="release",
+            goal="тестовая цель",
+        )
         code, out = run_cli("--root", str(self.root), "policy", "list")
         self.assertEqual(code, 0, out)
         self.assertIn("совпадение по: release", out)
@@ -1065,8 +1206,7 @@ class TestReportRunLevelBlock(CliCase):
         прогона хоронил под собой редкие события — бюджет, план. Доска
         фильтрует его через BOOKKEEPING_KINDS — отчёт обязан так же;
         сырьё через --json остаётся полным."""
-        self.state.log("budget_exhausted", spent=51, budget=50,
-                       stopped_before="aaaa")
+        self.state.log("budget_exhausted", spent=51, budget=50, stopped_before="aaaa")
         _, out = run_cli("--root", str(self.root), "report")
         self.assertIn("бюджет прогона исчерпан", out)
         self.assertNotIn("состояние записано", out)
@@ -1076,8 +1216,9 @@ class TestReportRunLevelBlock(CliCase):
     def test_plan_failed_lands_in_run_block(self):
         """Фильтр блока открытый — «запись без задачи», не список видов:
         закрытый перечень молча терял plan_failed (как когда-то доска)."""
-        self.state.log("plan_failed", mode="plan", reason="invalid",
-                       errors=["схема не прошла"])
+        self.state.log(
+            "plan_failed", mode="plan", reason="invalid", errors=["схема не прошла"]
+        )
         _, out = run_cli("--root", str(self.root), "report")
         self.assertIn("прогон в целом", out)
         self.assertIn("планирование не удалось", out)

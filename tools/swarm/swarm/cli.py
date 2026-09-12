@@ -22,6 +22,7 @@
 половина дефектов программы экспериментов была не в петле, а в среде —
 не тот ctags, отсутствующий языковой сервер, старая версия CLI.
 """
+
 import argparse
 import importlib.util
 import inspect
@@ -52,27 +53,59 @@ log = load_mod("obs").get_logger("cli")
 # Все ключи, которые петля где-либо читает. Список закрытый намеренно:
 # опечатка в имени ключа (`max_iteration` без s) молча включала умолчание,
 # и оператор был уверен, что его настройка действует.
-KNOWN_CONFIG_KEYS = frozenset({
-    "gate_command", "protected_paths", "max_iterations", "confirmations",
-    "gate_timeout", "silence_timeout", "wall_clock_cap", "executor_model",
-    "executor_engine", "executor_effort", "executor_budget_usd",
-    "review_budget_usd", "verification", "total_budget_usd", "live_board",
-    "board_open", "board_port", "map_budget", "tuning_seed", "quota_backoff_s",
-    "quota_resume", "quota_resume_max", "quota_resume_max_wait_s",
-    "max_futile_rounds",
-    "quota_resume_fallback_s",
-    "plan_budget_usd", "plan_model", "plan_effort", "plan_timeout",
-    "review_model", "review_effort", "review_model_pool", "review_effort_pool",
-    "confirm_model", "confirm_effort", "confirm_model_pool",
-    "confirm_effort_pool", "confirm_lens",
-    "memory_db", "memory_budget_chars", "memory_top_k", "memory_embed_model",
-    "memory_index",
-    "doc_context_budget_tokens",
-    "doc_context_paths",
-    "fill_num_predict",
-    "spending", "unclear_model",
-    "experiments",
-})
+KNOWN_CONFIG_KEYS = frozenset(
+    {
+        "gate_command",
+        "protected_paths",
+        "max_iterations",
+        "confirmations",
+        "gate_timeout",
+        "silence_timeout",
+        "wall_clock_cap",
+        "executor_model",
+        "executor_engine",
+        "executor_effort",
+        "executor_budget_usd",
+        "review_budget_usd",
+        "verification",
+        "total_budget_usd",
+        "live_board",
+        "board_open",
+        "board_port",
+        "map_budget",
+        "tuning_seed",
+        "quota_backoff_s",
+        "quota_resume",
+        "quota_resume_max",
+        "quota_resume_max_wait_s",
+        "max_futile_rounds",
+        "quota_resume_fallback_s",
+        "plan_budget_usd",
+        "plan_model",
+        "plan_effort",
+        "plan_timeout",
+        "review_model",
+        "review_effort",
+        "review_model_pool",
+        "review_effort_pool",
+        "confirm_model",
+        "confirm_effort",
+        "confirm_model_pool",
+        "confirm_effort_pool",
+        "confirm_lens",
+        "memory_db",
+        "memory_budget_chars",
+        "memory_top_k",
+        "memory_embed_model",
+        "memory_index",
+        "doc_context_budget_tokens",
+        "doc_context_paths",
+        "fill_num_predict",
+        "spending",
+        "unclear_model",
+        "experiments",
+    }
+)
 
 # Режимы траты денег (см. spending.MODES). Продублировано строкой по той
 # же причине, что и список движков: cli грузится раньше плоских модулей.
@@ -80,10 +113,19 @@ SPENDING_MODES = frozenset({"money_bin", "capped"})
 
 # Экспериментальные флаги (06-док, §1): та же семантика, что у основного
 # списка, — опечатка в имени флага молча включала бы умолчание.
-KNOWN_EXPERIMENT_KEYS = frozenset({"memory", "memory_llm_consolidation",
-                                   "skeleton", "tester",
-                                   "ambient", "ambient_seed", "duel",
-                                   "unclear", "doc_context"})
+KNOWN_EXPERIMENT_KEYS = frozenset(
+    {
+        "memory",
+        "memory_llm_consolidation",
+        "skeleton",
+        "tester",
+        "ambient",
+        "ambient_seed",
+        "duel",
+        "unclear",
+        "doc_context",
+    }
+)
 
 # Значения флага `[experiments] memory` — это имена ролей (см.
 # memory.enabled_for): каждая включается отдельно, чтобы замер шёл по
@@ -101,7 +143,7 @@ DOC_CONTEXT_MODES = frozenset({"off", "executor", "reviewer", "all"})
 # «плечо A» замера оказалось бы плечом B. Список продублирован строкой,
 # а не импортом: cli грузится раньше плоских модулей петли, а расхождение
 # двух списков ловится тестом.
-EXECUTOR_ENGINES = frozenset({"kimi", "claude", "ollama"})
+EXECUTOR_ENGINES = frozenset({"kimi", "claude", "ollama", "zcode"})
 
 
 def load_config(root: str | pathlib.Path) -> dict[str, Any]:
@@ -113,78 +155,102 @@ def load_config(root: str | pathlib.Path) -> dict[str, Any]:
         except (tomllib.TOMLDecodeError, OSError) as e:
             # Молчать нельзя: дальше петля пойдёт на умолчаниях, а оператор
             # будет уверен, что его настройки применились.
-            print(f"ВНИМАНИЕ: {path} не прочитан ({e}); "
-                  f"работаем на умолчаниях", file=sys.stderr)
+            print(
+                f"ВНИМАНИЕ: {path} не прочитан ({e}); работаем на умолчаниях",
+                file=sys.stderr,
+            )
         else:
             unknown = sorted(set(parsed) - KNOWN_CONFIG_KEYS)
             if unknown:
                 # Предупреждение, а не отказ: ключ может быть нужен
                 # будущей версии или чужому инструменту, читающему тот же
                 # файл. Но молчать нельзя — см. историю с умолчаниями выше.
-                print(f"ВНИМАНИЕ: {path}: незнакомые ключи "
-                      f"({', '.join(unknown)}) — петля их не читает; "
-                      f"если это настройка петли, проверь имя",
-                      file=sys.stderr)
+                print(
+                    f"ВНИМАНИЕ: {path}: незнакомые ключи "
+                    f"({', '.join(unknown)}) — петля их не читает; "
+                    f"если это настройка петли, проверь имя",
+                    file=sys.stderr,
+                )
             exp = parsed.get("experiments")
             if isinstance(exp, dict):
                 unknown_exp = sorted(set(exp) - KNOWN_EXPERIMENT_KEYS)
                 if unknown_exp:
-                    print(f"ВНИМАНИЕ: {path}: незнакомые флаги "
-                          f"[experiments] ({', '.join(unknown_exp)}) — "
-                          f"петля их не читает", file=sys.stderr)
+                    print(
+                        f"ВНИМАНИЕ: {path}: незнакомые флаги "
+                        f"[experiments] ({', '.join(unknown_exp)}) — "
+                        f"петля их не читает",
+                        file=sys.stderr,
+                    )
                 # Значение флага памяти — имя РОЛИ, и опечатка в нём
                 # молча выключает подсистему целиком: `memory = "planer"`
                 # неотличим от `"off"` ни в одном выводе. Тот же довод,
                 # что и у закрытого списка ключей.
                 mem_mode = exp.get("memory")
                 if mem_mode is not None and mem_mode not in MEMORY_MODES:
-                    print(f"ВНИМАНИЕ: {path}: [experiments] memory = "
-                          f"{mem_mode!r} — не роль; память ВЫКЛЮЧЕНА. "
-                          f"Допустимо: {', '.join(sorted(MEMORY_MODES))}",
-                          file=sys.stderr)
+                    print(
+                        f"ВНИМАНИЕ: {path}: [experiments] memory = "
+                        f"{mem_mode!r} — не роль; память ВЫКЛЮЧЕНА. "
+                        f"Допустимо: {', '.join(sorted(MEMORY_MODES))}",
+                        file=sys.stderr,
+                    )
                 doc_mode = exp.get("doc_context")
                 if doc_mode is not None and doc_mode not in DOC_CONTEXT_MODES:
-                    print(f"ВНИМАНИЕ: {path}: [experiments] doc_context = "
-                          f"{doc_mode!r} — не роль; doc_context ВЫКЛЮЧЕН. "
-                          f"Допустимо: {', '.join(sorted(DOC_CONTEXT_MODES))}",
-                          file=sys.stderr)
+                    print(
+                        f"ВНИМАНИЕ: {path}: [experiments] doc_context = "
+                        f"{doc_mode!r} — не роль; doc_context ВЫКЛЮЧЕН. "
+                        f"Допустимо: {', '.join(sorted(DOC_CONTEXT_MODES))}",
+                        file=sys.stderr,
+                    )
             gate_cmd = parsed.get("gate_command")
             if gate_cmd is not None and not (
-                    isinstance(gate_cmd, list)
-                    and all(isinstance(x, str) for x in gate_cmd)):
+                isinstance(gate_cmd, list)
+                and len(gate_cmd) > 0
+                and all(isinstance(x, str) for x in gate_cmd)
+            ):
                 # Строкой этот ключ выглядит естественнее всего, и именно
                 # так его пишут. Петля же передаёт его в exec без шелла:
-                # строка становится ИМЕНЕМ файла, и прогон падает
-                # FileNotFoundError посреди первой задачи, объявив её
-                # аварийной. Ошибка конфига обязана называться до старта.
-                print(f"ВНИМАНИЕ: {path}: gate_command обязан быть списком "
-                      f"аргументов, а не строкой — иначе петля ищет файл с "
-                      f'таким именем. Пример: ["python3", "-m", "pytest"]',
-                      file=sys.stderr)
+                # строка становится ИМЕНЕМ файла, а пустой список зовёт
+                # exec без аргументов (all() на нём истинен вакуумно —
+                # проверка на непустоть обязана жить в этом же условии).
+                # Предупреждение здесь, отказ — в clirun._engine_preflight
+                # до старта прогона: значение остаётся в cfg нетронутым,
+                # чтобы доктор видел его красным.
+                print(
+                    f"ВНИМАНИЕ: {path}: gate_command обязан быть непустым "
+                    f"списком аргументов, а не строкой или [] — иначе "
+                    f"петля ищет файл с таким именем. Пример: "
+                    f'["python3", "-m", "pytest"]',
+                    file=sys.stderr,
+                )
             spend = parsed.get("spending")
             if spend is not None and spend not in SPENDING_MODES:
                 # Опечатка в режиме денег не имеет права молча включить
                 # противоположную политику: «capped» и «money_bin»
                 # отличаются наличием потолка у самой дорогой роли.
-                print(f"ВНИМАНИЕ: {path}: spending = {spend!r} — неизвестный "
-                      f"режим траты; прогон откажется стартовать. "
-                      f"Допустимо: {', '.join(sorted(SPENDING_MODES))}",
-                      file=sys.stderr)
+                print(
+                    f"ВНИМАНИЕ: {path}: spending = {spend!r} — неизвестный "
+                    f"режим траты; прогон откажется стартовать. "
+                    f"Допустимо: {', '.join(sorted(SPENDING_MODES))}",
+                    file=sys.stderr,
+                )
             engine = parsed.get("executor_engine")
             if engine is not None and engine not in EXECUTOR_ENGINES:
                 # Предупреждение здесь, отказ — на старте прогона
                 # (`clirun._engine_preflight`): читателем конфига
                 # пользуются и команды, которым исполнитель не нужен
                 # (`status`, `report`), и ронять их незачем.
-                print(f"ВНИМАНИЕ: {path}: executor_engine = {engine!r} — "
-                      f"не движок. Допустимо: "
-                      f"{', '.join(sorted(EXECUTOR_ENGINES))}",
-                      file=sys.stderr)
+                print(
+                    f"ВНИМАНИЕ: {path}: executor_engine = {engine!r} — "
+                    f"не движок. Допустимо: "
+                    f"{', '.join(sorted(EXECUTOR_ENGINES))}",
+                    file=sys.stderr,
+                )
             cfg.update(parsed)
     return cfg
 
 
 # --- команды -------------------------------------------------------------
+
 
 def ui(*args: object) -> None:
     """Печать хода петли с немедленным сбросом буфера.
@@ -197,11 +263,18 @@ def ui(*args: object) -> None:
     """
     print(*args, flush=True)
 
+
 # Тесты перезагружают cli.py через importlib.util; без принудительной
 # перезагрузки плоских модулей они остались бы привязаны к предыдущей
 # копии cli, и патчи `cli.load_mod` / `cli.loop_mod` новой копии не брались бы.
-for _cli_mod in ("cliexplain", "cliinbox", "climemory", "climisc",
-                 "clireport", "clirun"):
+for _cli_mod in (
+    "cliexplain",
+    "cliinbox",
+    "climemory",
+    "climisc",
+    "clireport",
+    "clirun",
+):
     sys.modules.pop(_cli_mod, None)
 
 from cliexplain import (  # noqa: E402,F401
@@ -313,64 +386,86 @@ confirm_lens, board_open/board_port. Опечатку в имени ключа �
 """
 
 
-
 def main(argv: list[str] | None = None) -> int:
     # Карта команд с порядком применения жила в докстринге модуля, то есть
     # была видна кому угодно, кроме того, кто набрал `swarm --help`.
     ap = argparse.ArgumentParser(
-        prog="swarm", description="петля агентов: исполнитель ↔ ревьюер",
-        epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
+        prog="swarm",
+        description="петля агентов: исполнитель ↔ ревьюер",
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("--root", default=".", help="корень целевого репозитория")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("run", help="прогнать очередь")
-    p.add_argument("--limit", type=int,
-                   help="взять из очереди не больше N задач")
-    p.add_argument("--dry-run", action="store_true",
-                   help="показать план без вызова агентов")
-    p.add_argument("--force", action="store_true",
-                   help="запуститься на грязном дереве (риск потери работы)")
+    p.add_argument("--limit", type=int, help="взять из очереди не больше N задач")
+    p.add_argument(
+        "--dry-run", action="store_true", help="показать план без вызова агентов"
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="запуститься на грязном дереве (риск потери работы)",
+    )
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("resume", help="продолжить после падения")
-    p.add_argument("--limit", type=int,
-                   help="взять из очереди не больше N задач")
-    p.add_argument("--dry-run", action="store_true",
-                   help="показать решения реконсиляции, ничего не меняя")
-    p.add_argument("--force", action="store_true",
-                   help="продолжить, несмотря на незавершённый шаг")
+    p.add_argument("--limit", type=int, help="взять из очереди не больше N задач")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="показать решения реконсиляции, ничего не меняя",
+    )
+    p.add_argument(
+        "--force", action="store_true", help="продолжить, несмотря на незавершённый шаг"
+    )
     p.set_defaults(func=cmd_resume)
 
     p = sub.add_parser("plan", help="декомпозиция цели в задачи")
     p.add_argument("--goal", required=True, help="цель прогона одной фразой")
-    p.add_argument("--dry-run", action="store_true",
-                   help="показать план-дифф, не применяя его к очереди")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="показать план-дифф, не применяя его к очереди",
+    )
     p.set_defaults(func=cmd_plan)
 
     p = sub.add_parser("replan", help="пересмотр плана по спору исполнителя")
     p.add_argument("task", help="id задачи, вокруг которой спор")
     p.add_argument("--dispute", help="файл с dispute исполнителя")
-    p.add_argument("--dry-run", action="store_true",
-                   help="показать план-дифф, не применяя его к очереди")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="показать план-дифф, не применяя его к очереди",
+    )
     p.set_defaults(func=cmd_plan)
 
     p = sub.add_parser("go", help="от А до Я: рой планирует сам и исполняет")
     p.add_argument("--goal", help="цель; без неё берётся существующая очередь")
-    p.add_argument("--limit", type=int,
-                   help="взять из очереди не больше N задач")
-    p.add_argument("--force", action="store_true",
-                   help="запуститься на грязном дереве (риск потери работы)")
+    p.add_argument("--limit", type=int, help="взять из очереди не больше N задач")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="запуститься на грязном дереве (риск потери работы)",
+    )
     p.set_defaults(func=cmd_go)
 
     p = sub.add_parser("board", help="доска прогона одной страницей")
     p.add_argument("--out", help="куда писать (по умолчанию .swarm/board.html)")
     p.add_argument("--open", action="store_true", help="открыть в браузере")
-    p.add_argument("--serve", action="store_true",
-                   help="живой сервер доски на переднем плане (Ctrl+C — "
-                        "остановить); с --open открывает адрес, а не файл")
-    p.add_argument("--port", type=int, default=None,
-                   help="порт живого сервера (по умолчанию board_port из "
-                        "swarm.toml или 7433)")
+    p.add_argument(
+        "--serve",
+        action="store_true",
+        help="живой сервер доски на переднем плане (Ctrl+C — "
+        "остановить); с --open открывает адрес, а не файл",
+    )
+    p.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="порт живого сервера (по умолчанию board_port из swarm.toml или 7433)",
+    )
     p.set_defaults(func=cmd_board)
 
     p = sub.add_parser("status", help="состояние очереди")
@@ -380,20 +475,28 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("map", help="карта символов репозитория")
-    p.add_argument("--budget", type=int, default=25,
-                   help="сколько символов включить в карту")
-    p.add_argument("--tree-sitter", action="store_true",
-                   help="добавить слой tree-sitter (Rust и другие языки "
-                        "без точного разрешателя; нужны python-биндинги, "
-                        "см. doctor)")
-    p.add_argument("--verbose", action="store_true",
-                   help="печатать источники слоёв и сырой JSON карты")
+    p.add_argument(
+        "--budget", type=int, default=25, help="сколько символов включить в карту"
+    )
+    p.add_argument(
+        "--tree-sitter",
+        action="store_true",
+        help="добавить слой tree-sitter (Rust и другие языки "
+        "без точного разрешателя; нужны python-биндинги, "
+        "см. doctor)",
+    )
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="печатать источники слоёв и сырой JSON карты",
+    )
     p.set_defaults(func=cmd_map)
 
     p = sub.add_parser("impact", help="кто вызывает символ")
     p.add_argument("symbol", help="имя функции/класса или файл::имя")
-    p.add_argument("--tree-sitter", action="store_true",
-                   help="добавить слой tree-sitter (см. map)")
+    p.add_argument(
+        "--tree-sitter", action="store_true", help="добавить слой tree-sitter (см. map)"
+    )
     p.set_defaults(func=cmd_impact)
 
     p = sub.add_parser("inbox", help="вопросы к человеку")
@@ -402,76 +505,112 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("answer", help="ответить на вопрос петли")
     p.add_argument("qid", help="id вопроса из inbox (например q015)")
-    p.add_argument("text",
-                   help="текст решения — попадёт исполнителю в новый раунд")
-    p.add_argument("--add-path", action="append", default=[],
-                   help="расширить границы задачи (можно повторять)")
-    p.add_argument("--force", action="store_true",
-                   help="файл лишь упомянут в объяснении, а не задан к правке")
+    p.add_argument("text", help="текст решения — попадёт исполнителю в новый раунд")
+    p.add_argument(
+        "--add-path",
+        action="append",
+        default=[],
+        help="расширить границы задачи (можно повторять)",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="файл лишь упомянут в объяснении, а не задан к правке",
+    )
     p.set_defaults(func=cmd_answer)
 
     p = sub.add_parser("policy", help="политики прогона")
     p.add_argument("action", choices=["list", "add", "remove"])
-    p.add_argument("text", nargs="?", default="",
-                   help="текст политики (add) или её id (remove)")
-    p.add_argument("--match", action="append", default=[],
-                   help="ключевое слово для сопоставления (можно повторять)")
+    p.add_argument(
+        "text", nargs="?", default="", help="текст политики (add) или её id (remove)"
+    )
+    p.add_argument(
+        "--match",
+        action="append",
+        default=[],
+        help="ключевое слово для сопоставления (можно повторять)",
+    )
     p.set_defaults(func=cmd_policy)
 
     p = sub.add_parser("retry", help="вернуть заблокированную задачу в очередь")
     p.add_argument("task", help="id заблокированной задачи")
     p.add_argument("--note", help="указание исполнителю")
-    p.add_argument("--add-path", action="append", default=[],
-                   help="расширить границы задачи (можно повторять)")
+    p.add_argument(
+        "--add-path",
+        action="append",
+        default=[],
+        help="расширить границы задачи (можно повторять)",
+    )
     p.set_defaults(func=cmd_retry)
 
     p = sub.add_parser("memory", help="память между прогонами (E9)")
     mem_sub = p.add_subparsers(dest="mem_cmd", required=True)
     mp = mem_sub.add_parser("add", help="записать урок вручную")
     mp.add_argument("text", help="текст урока (до 700 символов)")
-    mp.add_argument("--outcome", choices=["useful", "dead_end", "corrected"],
-                    default="useful",
-                    help="класс урока: полезный / тупик / исправленное "
-                         "заблуждение (по умолчанию useful)")
-    mp.add_argument("--anchor", action="append", default=[],
-                    help="якорь: путь, коммит или id задачи (можно повторять)")
+    mp.add_argument(
+        "--outcome",
+        choices=["useful", "dead_end", "corrected"],
+        default="useful",
+        help="класс урока: полезный / тупик / исправленное "
+        "заблуждение (по умолчанию useful)",
+    )
+    mp.add_argument(
+        "--anchor",
+        action="append",
+        default=[],
+        help="якорь: путь, коммит или id задачи (можно повторять)",
+    )
     mp = mem_sub.add_parser("search", help="поиск по урокам")
-    mp.add_argument("query",
-                    help="запрос: FTS первым, вектор сетью охвата")
-    mp.add_argument("-k", type=int, default=5,
-                    help="сколько уроков вернуть")
-    mp.add_argument("--json", action="store_true",
-                    help="сырые записи вместо прозы")
+    mp.add_argument("query", help="запрос: FTS первым, вектор сетью охвата")
+    mp.add_argument("-k", type=int, default=5, help="сколько уроков вернуть")
+    mp.add_argument("--json", action="store_true", help="сырые записи вместо прозы")
     mp = mem_sub.add_parser("show", help="урок целиком по id")
     mp.add_argument("id", help="id урока (печатает search)")
     mp = mem_sub.add_parser("forget", help="затомбстоунить урок")
     mp.add_argument("id", help="id урока (печатает search)")
     mem_sub.add_parser("reflect", help="пересобрать дайджест LESSONS.md")
     mem_sub.add_parser("reindex", help="пересобрать PG-индекс из файлов")
-    mem_sub.add_parser("sync", help="досыпать индекс до файлов: строки и "
-                                    "вектора (инкрементально, без DELETE)")
+    mem_sub.add_parser(
+        "sync",
+        help="досыпать индекс до файлов: строки и вектора (инкрементально, без DELETE)",
+    )
     p.set_defaults(func=cmd_memory)
 
-    p = sub.add_parser("ab", help="сводка по рукам замера (модель/усилие)",
-                       description=inspect.getdoc(cmd_ab),
-                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = sub.add_parser(
+        "ab",
+        help="сводка по рукам замера (модель/усилие)",
+        description=inspect.getdoc(cmd_ab),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--run", help="только строки одного прогона (run_id)")
     p.set_defaults(func=cmd_ab)
 
-    p = sub.add_parser("report", help="хроника прогона связным текстом",
-                       description=inspect.getdoc(cmd_report),
-                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = sub.add_parser(
+        "report",
+        help="хроника прогона связным текстом",
+        description=inspect.getdoc(cmd_report),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--task", help="только события одной задачи")
-    p.add_argument("--json", action="store_true",
-                   help="сырые записи журнала без обрезки, по строке на запись")
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="сырые записи журнала без обрезки, по строке на запись",
+    )
     p.set_defaults(func=cmd_report)
 
-    p = sub.add_parser("why", help="почему задача встала и что делать дальше",
-                       description=inspect.getdoc(cmd_why),
-                       formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("task", nargs="?",
-                   help="id задачи или его начало; без аргумента — та, "
-                        "что первой требует внимания")
+    p = sub.add_parser(
+        "why",
+        help="почему задача встала и что делать дальше",
+        description=inspect.getdoc(cmd_why),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument(
+        "task",
+        nargs="?",
+        help="id задачи или его начало; без аргумента — та, "
+        "что первой требует внимания",
+    )
     p.set_defaults(func=cmd_why)
 
     args = ap.parse_args(argv)
@@ -496,7 +635,6 @@ def main(argv: list[str] | None = None) -> int:
         raise
     else:
         return code
-
 
 
 if __name__ == "__main__":

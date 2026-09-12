@@ -81,6 +81,22 @@ def _engine_preflight(cfg: dict[str, Any]) -> bool:
     except ValueError as e:
         print(f"режим траты не выбран: {e}", file=sys.stderr)
         return False
+    # gate_command — то же правило «отказ до первой задачи»: строкой или
+    # пустым списком он падает FileNotFoundError посреди работы и выглядит
+    # аварией задачи. Проверка дублирует предупреждение чтения конфига
+    # намеренно: там — диагноз при каждом обращении, здесь — страж прогона.
+    gate_cmd = cfg.get("gate_command")
+    if gate_cmd is not None and not (
+        isinstance(gate_cmd, list)
+        and len(gate_cmd) > 0
+        and all(isinstance(x, str) for x in gate_cmd)
+    ):
+        print(
+            f"gate_command задан неверно ({gate_cmd!r}) — нужен непустой "
+            'список аргументов, напр. ["python3", "-m", "pytest"]',
+            file=sys.stderr,
+        )
+        return False
     # Фоновый замер: незнакомый фактор и конфликт с явным флагом —
     # отказ ДО работы. Испорченную выборку не видно ни в одном выводе,
     # и заметить её можно было бы только по несходящимся числам через
