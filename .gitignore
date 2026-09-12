@@ -48,3 +48,7 @@ current-board.png
 
 # COD-DOC
 .cod-doc/
+
+# --- ai-review / scratch артефакты (рабочие выгрузки, не деливеребл) ---
+.ai-review/
+.scratch/
