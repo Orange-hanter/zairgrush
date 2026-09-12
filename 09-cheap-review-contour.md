@@ -2,9 +2,9 @@
 title: "ZeusLogic — Cheap models in the review path: a plan"
 type: design
 status: draft
-version: 0.5
+version: 0.6
 created: 2026-08-20
-updated: 2026-08-22
+updated: 2026-09-12
 related:
   - 05-agent-swarm.md
   - 06-knowledge-infra-experiments.md
@@ -403,6 +403,12 @@ confirm it, and both are cheap.
 ---
 
 ## Журнал изменений
+
+### v0.6 (2026-09-12)
+
+- Рабочие шаги перенесены в cod-doc: план `swarm-review-path` (REV-001…REV-005,
+  `cod-doc plan show swarm-review-path -p zairgrush`). Этот документ остаётся
+  обоснованием и контекстом; статусы исполнения — в DB (ADR-014).
 
 ### v0.5 (2026-08-22)
 
