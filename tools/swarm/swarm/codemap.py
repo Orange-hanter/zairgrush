@@ -20,13 +20,11 @@
 «возможно, зовут» должны выглядеть по-разному, иначе ревьюер построит на
 догадке finding, а исполнитель — правку.
 """
-import importlib.util
 import json
 import pathlib
 import shutil
 import subprocess
 import sys
-from types import ModuleType
 from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -42,28 +40,13 @@ NAME_GUESS = "name-guess"    # догадка ast-слоя: единственн
 NAME_MATCH = "name-match"    # совпадение по голому имени, возможны ложные
 
 
-def _load(name: str, filename: str) -> ModuleType:
-    # Общий замок загрузчиков: два плеча дуэли грузят модули из
-    # потоков, и без него сосед видит наполовину выполненный модуль
-    # (см. modlock.py — поймано первым же настоящим прогоном).
-    with modlock.LOCK:
-        cached = modlock.ready(name)
-        if cached is not None:
-            return cached
-        spec = importlib.util.spec_from_file_location(name, HERE / filename)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"не удалось загрузить {filename}")
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
 
 
-obs = _load("obs", "obs.py")
+obs = modlock.load_module("obs")
 log = obs.get_logger("codemap")
 # Общий набор исключаемых каталогов живёт в pyindex: обходы дерева обязаны
 # совпадать у всех слоёв, иначе ctags индексирует .venv, который ast не видит.
-pyindex = _load("pyindex", "pyindex.py")
+pyindex = modlock.load_module("pyindex")
 
 
 def have_ctags() -> str | None:
@@ -192,7 +175,7 @@ class HybridIndex:
 
     def _tree_sitter(self) -> None:
         try:
-            ts = _load("tsindex", "tsindex.py")
+            ts = modlock.load_module("tsindex")
             symbols, calls = ts.index_project(self.root)
         except Exception:
             log.warning("слой tree-sitter не отработал", exc_info=True)

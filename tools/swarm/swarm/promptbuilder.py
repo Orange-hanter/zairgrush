@@ -4,11 +4,9 @@
 держит делегаты — точки вызова не изменились.
 """
 import hashlib
-import importlib.util
 import json
 import pathlib
 import sys
-from types import ModuleType
 from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -19,29 +17,9 @@ if _HERE not in sys.path:
 
 import docctx  # noqa: E402
 import modlock  # noqa: E402
-
-
-def load_module(name: str) -> ModuleType:
-    # Загрузка модулей — гонка, пока плечи дуэли идут в потоках:
-    # модуль публикуется в sys.modules ДО выполнения (иначе не сходятся
-    # круговые импорты), и сосед видит пустышку. Замок ОБЩИЙ на все
-    # загрузчики петли — см. modlock.py.
-    with modlock.LOCK:
-        cached = modlock.ready(name)
-        if cached is not None:
-            return cached
-        spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
-        if spec is None or spec.loader is None:
-            raise ImportError(f"не удалось загрузить модуль {name}")
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-
-
 from agents_types import AgentsLike  # noqa: E402
 
-log = load_module("obs").get_logger("promptbuilder")
+log = modlock.load_module("obs").get_logger("promptbuilder")
 
 
 
@@ -89,7 +67,7 @@ def repo_map(agents: AgentsLike, task: dict[str, Any]) -> str | None:
     if len(paths) < 2 and task.get("type") != "feature-tests":
         return None
     if agents.codemap is None:
-        agents.codemap = load_module("codemap")
+        agents.codemap = modlock.load_module("codemap")
     budget = agents.config.get("map_budget", 25)
     # Карта строится по всему дереву: на 3.2k файлов это ~16 с и
     # сотни мегабайт. Между итерациями одной задачи дерево меняется
@@ -143,7 +121,7 @@ def memory_block(agents: AgentsLike, task: dict[str, Any]) -> str:
     tid = str(task.get("id") or "")
     if agents.memory_cache is not None and agents.memory_cache[0] == tid:
         return agents.memory_cache[1]
-    mem = load_module("memory")
+    mem = modlock.load_module("memory")
     block: str = mem.inject_block("executor", task, agents.state, agents.config)
     agents.memory_cache = (tid, block)
     return block
@@ -154,7 +132,7 @@ def norms_for(agents: AgentsLike, task: dict[str, Any]) -> str:
     tid = str(task.get("id") or "")
     if agents.norms_cache is not None and agents.norms_cache[0] == tid:
         return agents.norms_cache[1]
-    mem = load_module("memory")
+    mem = modlock.load_module("memory")
     block: str = mem.norms_block(agents.state, agents.config, task)
     agents.norms_cache = (tid, block)
     return block

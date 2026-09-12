@@ -5,11 +5,14 @@
 квоте, карта символов в handoff по условию (ADR-006), хелпер
 коммит-сообщений (§7.2).
 """
-import importlib.util
 import pathlib
 import random
 import sys
-from types import ModuleType
+
+# Runtime-импорт намеренно: аннотации self.x: ModuleType в __init__
+# вычисляются В RUNTIME (complex-target rule), перенос под TYPE_CHECKING
+# дал бы NameError при первом инстанциировании — TC003 здесь ложноположит.
+from types import ModuleType  # noqa: TC003
 from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -25,26 +28,7 @@ import parsing as parsing_mod  # noqa: E402
 import promptbuilder  # noqa: E402
 import reviewer  # noqa: E402
 
-
-def _load(name: str) -> ModuleType:
-    # Загрузка модулей — гонка, пока плечи дуэли идут в потоках:
-    # модуль публикуется в sys.modules ДО выполнения (иначе не сходятся
-    # круговые импорты), и сосед видит пустышку. Замок ОБЩИЙ на все
-    # загрузчики петли — см. modlock.py.
-    with modlock.LOCK:
-        cached = modlock.ready(name)
-        if cached is not None:
-            return cached
-        spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
-        if spec is None or spec.loader is None:
-            raise ImportError(f"не удалось загрузить модуль {name}")
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-
-
-log = _load("obs").get_logger("agents")
+log = modlock.load_module("obs").get_logger("agents")
 
 # Парсинг ответов вынесен в parsing.py; здесь shim для потребителей.
 condense_diff = parsing_mod.condense_diff
@@ -77,8 +61,8 @@ class Agents:
         self.state = state
         self.config = config
         self.work_root = state.root
-        self.driver = _load("driver")
-        self.loop_mod = _load("loop")
+        self.driver = modlock.load_module("driver")
+        self.loop_mod = modlock.load_module("loop")
         self.helpers: ModuleType | None = None
         self.codemap: ModuleType | None = None
         self.map_cache: tuple[tuple[str, int], str] | None = None
@@ -216,7 +200,7 @@ class Agents:
         fallback = f"{task['id']}: {task['title']}"
         if self.helpers is None:
             try:
-                self.helpers = _load("helpers")
+                self.helpers = modlock.load_module("helpers")
             except Exception:
                 log.warning("хелперы недоступны, сообщение коммита по шаблону",
                             exc_info=True)
