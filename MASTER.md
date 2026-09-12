@@ -31,7 +31,7 @@ graph TD
 
 ### Architecture
 - **Описание:** Архитектурные решения, диаграммы компонентов и ADR проекта.
-- **Ссылка:** `📁 /arch/README.md | 🗃️ doc:arch_README_md | 🔑 sha:bb9f49ef641e`
+- **Ссылка:** `📁 /arch/README.md | 🗃️ doc:arch_README_md | 🔑 sha:fabb51b321eb`
 - **Статус:** `🟢 VERIFIED`
 - **Ответственный агент:** `@Orchestrator`
 
@@ -50,6 +50,8 @@ graph TD
 ## 4. ⚡ Quick Actions & Handoffs
 
 > Планы и задачи живут в cod-doc DB (`.cod-doc/state.db`): `cod-doc plan show <scope> -p zairgrush`, `cod-doc task list -p zairgrush`. MCP-конфиги `.cursor/mcp.json` / `.kimi-code/mcp.json` содержат machine-local абсолютные пути — не переносимы между машинами.
+>
+> ADR (ADR-025): каноникал — таблица `adr` в cod-doc DB (`cod-doc adr list -p zairgrush`); `docs/adr/ADR-NNN.md` — генерируемые проекции (`cod-doc adr export`), руками не править; `experiments/adr/` — исторические оригиналы. `cod-doc import docs` запускать с `--exclude 'docs/adr'`.
 
 ```json
 {
