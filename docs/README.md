@@ -1,27 +1,45 @@
+---
+type: guide
+status: active
+created: 2026-08-28
+updated: 2026-09-12
+---
+
 # Документация проекта
 
-> 📊 Meta: `{"section": "docs", "type": "section-index", "status": "draft"}`
+> Централизованное хранилище: ADR-проекции, гайды, журналы экспериментов.
 
 ## Описание
 
-Централизованное хранилище документации проекта: гайды, отчёты, ADR, onboarding-материалы.
+Точка входа в документацию zairgrush. Источник истины по ADR — таблица `adr`
+в cod-doc DB (ADR-025); файлы в `docs/adr/` — генерируемые проекции, руками не
+править.
 
 ## Структура
 
 ```
 /docs/
 ├── README.md          # этот файл — индекс секции
-├── system/            # системная документация (MASTER, стандарты, capabilities)
-├── guides/            # пользовательские гайды и туториалы
-├── adr/               # Architectural Decision Records
-└── reports/           # отчёты (audit, benchmarks, experiments)
+└── adr/               # ADR-NNN.md — проекции из cod-doc DB (adr export)
 ```
+
+Основной корпус документов живёт в корне репозитория:
+
+| Документ | Содержание |
+|----------|------------|
+| [MASTER.md](../MASTER.md) | Мастер-документ: секции, handoff, changelog |
+| [05-agent-swarm.md](../05-agent-swarm.md) | Системная спецификация петли |
+| [06-knowledge-infra-experiments.md](../06-knowledge-infra-experiments.md) | Программа экспериментов E1–E15 |
+| [07-experiments-journal.md](../07-experiments-journal.md) | Журнал прогонов (нарративный) |
+| [08-operators-guide.md](../08-operators-guide.md) | Гайд оператора: движки, конфиги, подводные камни |
+| [10-decision-briefs.md](../10-decision-briefs.md) | Брифы решений |
+| [arch/README.md](../arch/README.md) | Индекс ADR с DAG замещений |
+| [site/](../site/index.html) | Публичная страница проекта |
 
 ## Статус
 
-- **Статус секции:** `🟡 DRAFT`
+- **Статус секции:** `🟢 VERIFIED` (индекс соответствует содержимому)
 - **Ответственный агент:** `@Orchestrator`
 
 ---
-
-*Файл создан как заготовка секции /docs/ для MASTER.md*
+*Раздел наполнен 2026-09-12 (HRD-002): вымышленная структура system/guides/reports заменена реальной.*

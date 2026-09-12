@@ -25,7 +25,7 @@ graph TD
 
 ### Specifications
 - **Описание:** Спецификации API, контракты агентов, форматы данных и протоколы взаимодействия.
-- **Ссылка:** `📁 /specs/README.md | 🗃️ doc:specs_README_md | 🔑 sha:27c261a80fc3`
+- **Ссылка:** `📁 /specs/README.md | 🗃️ doc:specs_README_md | 🔑 sha:cfada21718c2`
 - **Статус:** `🟢 VERIFIED`
 - **Ответственный агент:** `@Orchestrator`
 
@@ -37,13 +37,13 @@ graph TD
 
 ### Models
 - **Описание:** Модели данных, схемы сущностей, JSON-контракты и форматы состояния агентов.
-- **Ссылка:** `📁 /models/README.md | 🗃️ doc:models_README_md | 🔑 sha:a3040ad6f912`
+- **Ссылка:** `📁 /models/README.md | 🗃️ doc:models_README_md | 🔑 sha:d418ea2ff59c`
 - **Статус:** `🟢 VERIFIED`
 - **Ответственный агент:** `@Orchestrator`
 
 ### Documentation
 - **Описание:** Централизованное хранилище документации: гайды, отчёты, ADR, onboarding-материалы.
-- **Ссылка:** `📁 /docs/README.md | 🗃️ doc:docs_README_md | 🔑 sha:d1afbdc7a61b`
+- **Ссылка:** `📁 /docs/README.md | 🗃️ doc:docs_README_md | 🔑 sha:33464b13c988`
 - **Статус:** `🟢 VERIFIED`
 - **Ответственный агент:** `@Orchestrator`
 
