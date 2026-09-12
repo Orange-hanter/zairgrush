@@ -6,6 +6,7 @@
 исключением, а тихо меняет поведение агента: потерянный путь в
 Constraints стоил трёх итераций на приёмке.
 """
+
 import contextlib
 import importlib.util
 import io
@@ -27,9 +28,14 @@ st = importlib.util.module_from_spec(st_spec)
 sys.modules["state"] = st
 st_spec.loader.exec_module(st)
 
-TASK = {"id": "t1", "title": "заголовок", "spec": "сделай хорошо",
-        "type": "feature", "paths": ["src/a.py", "src/b.py"],
-        "acceptance": ["тесты проходят", "docstring на месте"]}
+TASK = {
+    "id": "t1",
+    "title": "заголовок",
+    "spec": "сделай хорошо",
+    "type": "feature",
+    "paths": ["src/a.py", "src/b.py"],
+    "acceptance": ["тесты проходят", "docstring на месте"],
+}
 
 
 class AgentsCase(unittest.TestCase):
@@ -74,12 +80,11 @@ class TestHandoff(AgentsCase):
         message = self.agents.commit_message(TASK, "diff --git a/x b/x")
         self.assertEqual(message, f"{TASK['id']}: {TASK['title']}")
         target = self.state.dir / "helper-metrics.jsonl"
-        self.assertTrue(target.exists(),
-                        "метрика хелпера обязана жить в .swarm стенда")
-        package_stray = (pathlib.Path(ag.__file__).resolve().parent
-                         / "metrics.jsonl")
-        self.assertFalse(package_stray.exists(),
-                         "каталог пакета — не место для метрик прогона")
+        self.assertTrue(target.exists(), "метрика хелпера обязана жить в .swarm стенда")
+        package_stray = pathlib.Path(ag.__file__).resolve().parent / "metrics.jsonl"
+        self.assertFalse(
+            package_stray.exists(), "каталог пакета — не место для метрик прогона"
+        )
 
     def test_memory_off_keeps_handoff_byte_identical(self):
         """Дефолт эксперимента E9: с выключенным флагом промпт исполнителя
@@ -87,13 +92,14 @@ class TestHandoff(AgentsCase):
         base = self.agents.handoff(TASK, None, None)
         block = self.agents.memory_block(TASK)
         self.assertEqual(block, "", "без флага память не подмешивается")
-        self.assertEqual(base, self.agents.handoff(TASK, None, None,
-                                                   memory=block or None))
+        self.assertEqual(
+            base, self.agents.handoff(TASK, None, None, memory=block or None)
+        )
 
     def test_memory_block_sits_between_goal_and_task(self):
         text = self.agents.handoff(
-            TASK, None, None,
-            memory="## Project memory\n[DATA]\n- (id1) урок")
+            TASK, None, None, memory="## Project memory\n[DATA]\n- (id1) урок"
+        )
         self.assertLess(text.index("## Goal"), text.index("## Project memory"))
         self.assertLess(text.index("## Project memory"), text.index("## Task"))
 
@@ -102,22 +108,26 @@ class TestHandoff(AgentsCase):
         плавающий префикс переписывает промпт-кэш на каждом раунде (§8)."""
         self.agents.memory_cache = (TASK["id"], "СТАБИЛЬНЫЙ БЛОК")
         self.assertEqual(self.agents.memory_block(TASK), "СТАБИЛЬНЫЙ БЛОК")
-        self.assertEqual(self.agents.memory_block(dict(TASK, id="t2")), "",
-                         "смена задачи обязана пересчитать блок")
+        self.assertEqual(
+            self.agents.memory_block(dict(TASK, id="t2")),
+            "",
+            "смена задачи обязана пересчитать блок",
+        )
 
     def test_review_prompt_unchanged_without_norms(self):
         """Дефолт E9: без блока норм промпт ревьюера байт-в-байт прежний."""
         base = self.agents.review_prompt(TASK, "OK", "diff")
-        self.assertEqual(base,
-                         self.agents.review_prompt(TASK, "OK", "diff",
-                                                   memory=""))
+        self.assertEqual(base, self.agents.review_prompt(TASK, "OK", "diff", memory=""))
 
     def test_norms_sit_before_diff(self):
         """Нормы стабильны в пределах задачи и стоят ДО диффа: самый
         изменчивый блок остаётся последним (§8, кэш)."""
         text = self.agents.review_prompt(
-            TASK, "OK", "diff",
-            memory="## Нормы этого репозитория (память прошлых прогонов)\nx")
+            TASK,
+            "OK",
+            "diff",
+            memory="## Нормы этого репозитория (память прошлых прогонов)\nx",
+        )
         self.assertLess(text.index("## Задача"), text.index("## Нормы"))
         self.assertLess(text.index("## Нормы"), text.index("## Diff"))
 
@@ -127,8 +137,9 @@ class TestHandoff(AgentsCase):
         аргументация исполнителя доезжала до оператора одним усечённым
         предложением summary."""
         text = self.agents.handoff(TASK, None, None)
-        self.assertIn('"dispute"', text,
-                      "контракт отчёта обязан объявлять поле для спора")
+        self.assertIn(
+            '"dispute"', text, "контракт отчёта обязан объявлять поле для спора"
+        )
 
     def test_test_task_forbids_production_code(self):
         text = self.agents.handoff(dict(TASK, type="test-task"), None, None)
@@ -140,8 +151,7 @@ class TestHandoff(AgentsCase):
         self.assertIn("tests NOT listed are off-limits", text)
 
     def test_feedback_included(self):
-        text = self.agents.handoff(TASK, {"findings": [{"issue": "поправь X"}]},
-                                   None)
+        text = self.agents.handoff(TASK, {"findings": [{"issue": "поправь X"}]}, None)
         self.assertIn("Feedback", text)
         self.assertIn("поправь X", text)
 
@@ -177,8 +187,11 @@ class TestHandoff(AgentsCase):
         иначе она всплывает только на ревью, постфактум и без объяснения,
         зачем правка вышла за рамки acceptance."""
         text = self.agents.handoff(TASK, None, None)
-        self.assertIn('"deviations"', text,
-                      "контракт отчёта обязан объявлять поле для отступлений")
+        self.assertIn(
+            '"deviations"',
+            text,
+            "контракт отчёта обязан объявлять поле для отступлений",
+        )
 
     def test_doc_context_off_keeps_handoff_byte_identical(self):
         """Дефолт E5-C: с выключенным флагом промпт исполнителя
@@ -186,8 +199,9 @@ class TestHandoff(AgentsCase):
         base = self.agents.handoff(TASK, None, None)
         block = self.agents.docs_block(TASK)
         self.assertEqual(block, "", "без флага doc_context не подмешивается")
-        self.assertEqual(base, self.agents.handoff(TASK, None, None,
-                                                   docs=block or None))
+        self.assertEqual(
+            base, self.agents.handoff(TASK, None, None, docs=block or None)
+        )
 
     def _fail_open_doc_context(self, codctx_result):
         self.agents.config = {
@@ -195,15 +209,16 @@ class TestHandoff(AgentsCase):
             "doc_context_paths": ["docs/x.md"],
         }
         orig = ag.promptbuilder.docctx.codctx
-        ag.promptbuilder.docctx.codctx = (
-            lambda _config, _args, timeout=30: codctx_result)
-        self.addCleanup(lambda: setattr(ag.promptbuilder.docctx,
-                                        "codctx", orig))
+        ag.promptbuilder.docctx.codctx = lambda _config, _args, timeout=30: (
+            codctx_result
+        )
+        self.addCleanup(lambda: setattr(ag.promptbuilder.docctx, "codctx", orig))
         with self.assertLogs("swarm.promptbuilder", level="WARNING") as cm:
             block = self.agents.docs_block(TASK)
         self.assertEqual(block, "")
-        self.assertEqual(len(cm.records), 1,
-                         "сбой cod-doc логируется ровно одним warning")
+        self.assertEqual(
+            len(cm.records), 1, "сбой cod-doc логируется ровно одним warning"
+        )
 
     def test_doc_context_missing_binary_empty_block_and_warning(self):
         self._fail_open_doc_context((False, "cod-doc binary not found"))
@@ -225,8 +240,7 @@ class TestRepoMapPolicy(AgentsCase):
         # карта может не построиться на пустом репо, но условие пройдено:
         # важно, что метод не отсекает задачу по числу путей
         task = dict(TASK, paths=["src/a.py", "src/b.py"])
-        self.assertEqual(self.agents.repo_map(task),
-                         self.agents.repo_map(task))
+        self.assertEqual(self.agents.repo_map(task), self.agents.repo_map(task))
 
     def test_feature_tests_gets_map_regardless_of_paths(self):
         task = dict(TASK, type="feature-tests", paths=["src/a.py"])
@@ -253,8 +267,9 @@ class TestReviewPrompt(AgentsCase):
         self.assertIn("НЕ оспариваются", text)
 
     def test_no_decision_no_section(self):
-        self.assertNotIn("Решения человека",
-                         self.agents.review_prompt(TASK, "OK", "diff"))
+        self.assertNotIn(
+            "Решения человека", self.agents.review_prompt(TASK, "OK", "diff")
+        )
 
 
 class TestReportExtraction(AgentsCase):
@@ -269,7 +284,8 @@ class TestReportExtraction(AgentsCase):
             {"role": "assistant", "content": '{"status": "dispute", "summary": "s"}'},
             {"role": "tool", "content": "OK"},
             {"role": "assistant", "content": '{"status": "done", "summary": "s"}'},
-            {"role": "meta", "session_id": "x"})
+            {"role": "meta", "session_id": "x"},
+        )
         self.assertEqual(self.agents._extract_report(stream)["status"], "done")
 
     def test_prose_ignored(self):
@@ -287,30 +303,43 @@ class TestReportExtraction(AgentsCase):
         его фразой «готово, тесты зелёные». На приёмке v3st из-за этого
         потеряла три круга и заблокировалась при сделанной работе.
         """
-        stream = self._stream({"role": "assistant", "content":
-                               "Валидация уже реализована, сьют зелёный.\n\n"
-                               '{"status": "done", "summary": "готово"}'})
+        stream = self._stream(
+            {
+                "role": "assistant",
+                "content": "Валидация уже реализована, сьют зелёный.\n\n"
+                '{"status": "done", "summary": "готово"}',
+            }
+        )
         r = self.agents._extract_report(stream)
         self.assertIsNotNone(r)
         self.assertEqual(r["status"], "done")
 
     def test_prose_after_report_still_found(self):
-        stream = self._stream({"role": "assistant", "content":
-                               '{"status": "done", "summary": "s"}\n\nГотово!'})
+        stream = self._stream(
+            {
+                "role": "assistant",
+                "content": '{"status": "done", "summary": "s"}\n\nГотово!',
+            }
+        )
         self.assertEqual(self.agents._extract_report(stream)["status"], "done")
 
     def test_json_example_in_preamble_does_not_win(self):
         """Случайный объект в тексте не должен подменять отчёт."""
-        stream = self._stream({"role": "assistant", "content":
-                               'Схема была {"status": "мусор", "x": 1}, '
-                               'но результат такой:\n'
-                               '{"status": "done", "summary": "настоящий"}'})
+        stream = self._stream(
+            {
+                "role": "assistant",
+                "content": 'Схема была {"status": "мусор", "x": 1}, '
+                "но результат такой:\n"
+                '{"status": "done", "summary": "настоящий"}',
+            }
+        )
         r = self.agents._extract_report(stream)
         self.assertEqual(r["summary"], "настоящий")
 
     def test_object_without_status_ignored_in_text(self):
-        stream = self._stream({"role": "assistant", "content":
-                               'Итог: {"summary": "без статуса"}'})
+        stream = self._stream(
+            {"role": "assistant", "content": 'Итог: {"summary": "без статуса"}'}
+        )
         self.assertIsNone(self.agents._extract_report(stream))
 
     def test_broken_stream_survived(self):
@@ -322,9 +351,12 @@ class TestReportExtraction(AgentsCase):
     def test_tool_events_do_not_confuse(self):
         stream = self._stream(
             {"role": "tool", "content": '{"status": "done"}'},
-            {"role": "assistant", "content": "текст"})
-        self.assertIsNone(self.agents._extract_report(stream),
-                          "отчёт берётся только из assistant-событий")
+            {"role": "assistant", "content": "текст"},
+        )
+        self.assertIsNone(
+            self.agents._extract_report(stream),
+            "отчёт берётся только из assistant-событий",
+        )
 
 
 def _fake_process(stdout="", stderr="", returncode=0):
@@ -336,11 +368,18 @@ def _fake_process(stdout="", stderr="", returncode=0):
     стоимости. Пока двойник умел только ноль, эта ветка была
     непроверяема, и петля звала обрыв по деньгам крахом процесса.
     """
-    return type("P", (), {
-        "stdout": io.StringIO(stdout), "stderr": io.StringIO(stderr),
-        "returncode": returncode, "poll": lambda s: returncode,
-        "wait": lambda s, timeout=None: returncode,
-        "kill": lambda s: None})()
+    return type(
+        "P",
+        (),
+        {
+            "stdout": io.StringIO(stdout),
+            "stderr": io.StringIO(stderr),
+            "returncode": returncode,
+            "poll": lambda s: returncode,
+            "wait": lambda s, timeout=None: returncode,
+            "kill": lambda s: None,
+        },
+    )()
 
 
 CLAUDE_DONE = {"status": "done", "summary": "сделано"}
@@ -352,14 +391,37 @@ def _claude_stream(**envelope):
     Конверт — то, ради чего движок claude вообще читается иначе: у kimi
     в потоке нет ни цены, ни токенов, ни списка отклонённых вызовов.
     """
-    env = {"type": "result", "subtype": "success", "is_error": False,
-           "terminal_reason": "completed", "total_cost_usd": 0.055,
-           "usage": {"input_tokens": 8, "output_tokens": 492},
-           "structured_output": dict(CLAUDE_DONE)}
+    env = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "terminal_reason": "completed",
+        "total_cost_usd": 0.055,
+        "usage": {"input_tokens": 8, "output_tokens": 492},
+        "structured_output": dict(CLAUDE_DONE),
+    }
     env.update(envelope)
-    return ("\n".join([json.dumps({"type": "assistant"}),
-                       json.dumps({"type": "user"}),
-                       json.dumps(env)]) + "\n")
+    return (
+        "\n".join(
+            [
+                json.dumps({"type": "assistant"}),
+                json.dumps({"type": "user"}),
+                json.dumps(env),
+            ]
+        )
+        + "\n"
+    )
+
+
+def _zcode_stream(response=None, **extra):
+    body = json.dumps(response or {"status": "done", "summary": "сделано"})
+    env = {
+        "sessionId": "sess_x",
+        "response": body,
+        "usage": {"inputTokens": 10, "outputTokens": 20, "cacheReadTokens": 3},
+    }
+    env.update(extra)
+    return json.dumps(env) + "\n"
 
 
 class TestExecutorEngineWiring(AgentsCase):
@@ -375,7 +437,17 @@ class TestExecutorEngineWiring(AgentsCase):
         orig = subprocess.Popen
 
         def fake(argv, **kw):
-            if not (argv and argv[0] in ("kimi", "claude")):
+            head = argv[0] if argv else ""
+            # zcode вне PATH идёт как `node …/zcode.cjs`: имя бинаря
+            # сверяем ТОЧНО (basename == "node"), а не суффиксом строки —
+            # суффикс ловил бы любой бинарь на «node». Опознавание по
+            # форме argv, а не патчем движка: подмена сработает и тогда,
+            # когда модули петли загружены в нескольких копиях.
+            is_zcode = head == "zcode" or (
+                pathlib.Path(head).name == "node"
+                and any(str(a).endswith("zcode.cjs") for a in argv[1:])
+            )
+            if not (argv and (head in ("kimi", "claude") or is_zcode)):
                 return orig(argv, **kw)
             seen["argv"] = argv
             return _fake_process(stdout=stdout, returncode=returncode)
@@ -388,8 +460,8 @@ class TestExecutorEngineWiring(AgentsCase):
 
     def test_engine_key_sends_work_to_claude(self):
         argv, report, _ = self._spawn(
-            {"executor_engine": "claude", "executor_model": "sonnet"},
-            _claude_stream())
+            {"executor_engine": "claude", "executor_model": "sonnet"}, _claude_stream()
+        )
         self.assertEqual(argv[0], "claude")
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(report["status"], "done")
@@ -405,18 +477,20 @@ class TestExecutorEngineWiring(AgentsCase):
         Смена движка не имеет права его тронуть, иначе плечи мерят
         разное, а не разных исполнителей."""
         kimi_argv, _r, _a = self._spawn({}, "")
-        claude_argv, _r2, _a2 = self._spawn({"executor_engine": "claude"},
-                                            _claude_stream())
-        self.assertEqual(kimi_argv[kimi_argv.index("-p") + 1],
-                         claude_argv[claude_argv.index("-p") + 1])
+        claude_argv, _r2, _a2 = self._spawn(
+            {"executor_engine": "claude"}, _claude_stream()
+        )
+        self.assertEqual(
+            kimi_argv[kimi_argv.index("-p") + 1],
+            claude_argv[claude_argv.index("-p") + 1],
+        )
 
     def test_cost_of_the_executor_is_finally_counted(self):
         """Слепое пятно бюджета было про ДВИЖОК, а не про роль: поток
         kimi цены не содержит, конверт claude содержит. Не считать её —
         значит врать `total_budget_usd`."""
         self._spawn({"executor_engine": "claude"}, _claude_stream())
-        rows = [json.loads(x) for x in
-                self.state.metrics_path.read_text().splitlines()]
+        rows = [json.loads(x) for x in self.state.metrics_path.read_text().splitlines()]
         impl = [r for r in rows if r.get("phase") == "implement"]
         self.assertEqual(impl[-1]["cost_usd"], 0.055)
         self.assertEqual(impl[-1]["engine"], "claude")
@@ -425,8 +499,7 @@ class TestExecutorEngineWiring(AgentsCase):
 
     def test_kimi_run_claims_no_price_it_does_not_know(self):
         self._spawn({}, "")
-        rows = [json.loads(x) for x in
-                self.state.metrics_path.read_text().splitlines()]
+        rows = [json.loads(x) for x in self.state.metrics_path.read_text().splitlines()]
         impl = [r for r in rows if r.get("phase") == "implement"][-1]
         self.assertEqual(impl["engine"], "kimi")
         self.assertNotIn("cost_usd", impl)
@@ -434,9 +507,11 @@ class TestExecutorEngineWiring(AgentsCase):
     def test_denied_tool_call_is_journaled(self):
         """Запрет, который сработал, обязан быть виден: иначе неизвестно,
         ПЫТАЛСЯ ли исполнитель выйти за правило."""
-        stream = _claude_stream(permission_denials=[
-            {"tool_name": "Bash",
-             "tool_input": {"command": "git commit -am wip"}}])
+        stream = _claude_stream(
+            permission_denials=[
+                {"tool_name": "Bash", "tool_input": {"command": "git commit -am wip"}}
+            ]
+        )
         _argv, report, _ = self._spawn({"executor_engine": "claude"}, stream)
         self.assertEqual(report["status"], "done")
         journal = self.state.journal_path.read_text()
@@ -447,8 +522,11 @@ class TestExecutorEngineWiring(AgentsCase):
         """Квота лечится ожиданием (§5.3), а не блокировкой задачи: у
         петли для этого есть механика, и исполнитель обязан в неё
         попадать так же, как ревьюер."""
-        stream = _claude_stream(is_error=True, structured_output=None,
-                                result="You've hit your session limit")
+        stream = _claude_stream(
+            is_error=True,
+            structured_output=None,
+            result="You've hit your session limit",
+        )
         with self.assertRaises(Exception) as cm:
             self._spawn({"executor_engine": "claude"}, stream)
         self.assertEqual(type(cm.exception).__name__, "QuotaExceededError")
@@ -456,13 +534,12 @@ class TestExecutorEngineWiring(AgentsCase):
     def test_truncated_by_budget_is_not_bad_work(self):
         """Обрыв по деньгам — раунд, в котором работу не о чем судить.
         Назвать его «нет отчёта» значило бы стереть причину (§5.3)."""
-        stream = _claude_stream(structured_output=None, result="…",
-                                terminal_reason="budget_exhausted")
-        _argv, report, agents = self._spawn({"executor_engine": "claude"},
-                                            stream)
+        stream = _claude_stream(
+            structured_output=None, result="…", terminal_reason="budget_exhausted"
+        )
+        _argv, report, agents = self._spawn({"executor_engine": "claude"}, stream)
         self.assertIsNone(report)
-        self.assertEqual(agents.last_implement_failure["reason"],
-                         "budget_exhausted")
+        self.assertEqual(agents.last_implement_failure["reason"], "budget_exhausted")
 
     def test_budget_truncation_survives_a_nonzero_exit(self):
         """Слово конверта сильнее кода возврата.
@@ -474,34 +551,41 @@ class TestExecutorEngineWiring(AgentsCase):
         чтобы поднять потолок. Замерено на плечах E9 (2026-08-24) — оба
         потеряли первый раунд на потолке в $3 и оба сказали «крах».
         """
-        stream = _claude_stream(structured_output=None, result="…",
-                                is_error=True,
-                                subtype="error_max_budget_usd",
-                                terminal_reason="budget_exhausted")
-        _argv, report, agents = self._spawn({"executor_engine": "claude"},
-                                            stream, returncode=1)
+        stream = _claude_stream(
+            structured_output=None,
+            result="…",
+            is_error=True,
+            subtype="error_max_budget_usd",
+            terminal_reason="budget_exhausted",
+        )
+        _argv, report, agents = self._spawn(
+            {"executor_engine": "claude"}, stream, returncode=1
+        )
         self.assertIsNone(report)
-        self.assertEqual(agents.last_implement_failure["reason"],
-                         "budget_exhausted")
+        self.assertEqual(agents.last_implement_failure["reason"], "budget_exhausted")
 
     def test_subtype_alone_is_enough_to_name_the_truncation(self):
         """Потолок называется двумя словами, и совпадают они не всегда:
         читать одно `terminal_reason` — значит зависеть от того, какое
         из полей CLI заполнит в этой версии."""
-        stream = _claude_stream(structured_output=None, result="…",
-                                is_error=True,
-                                subtype="error_max_budget_usd")
-        _argv, _report, agents = self._spawn({"executor_engine": "claude"},
-                                             stream, returncode=1)
-        self.assertEqual(agents.last_implement_failure["reason"],
-                         "budget_exhausted")
+        stream = _claude_stream(
+            structured_output=None,
+            result="…",
+            is_error=True,
+            subtype="error_max_budget_usd",
+        )
+        _argv, _report, agents = self._spawn(
+            {"executor_engine": "claude"}, stream, returncode=1
+        )
+        self.assertEqual(agents.last_implement_failure["reason"], "budget_exhausted")
 
     def test_real_crash_is_still_a_crash(self):
         """Ненулевой код БЕЗ конверта — смерть процесса, и звать её
         обрывом по деньгам нельзя: настоящая авария конверта не
         оставляет вовсе, на этом и держится различение."""
-        _argv, report, agents = self._spawn({"executor_engine": "claude"},
-                                            "", returncode=1)
+        _argv, report, agents = self._spawn(
+            {"executor_engine": "claude"}, "", returncode=1
+        )
         self.assertIsNone(report)
         self.assertEqual(agents.last_implement_failure["reason"], "crash")
 
@@ -516,9 +600,35 @@ class TestExecutorEngineWiring(AgentsCase):
         task = dict(TASK, executor_model="claude:sonnet")
         argv, _r, _a = self._spawn({}, "", task=task)
         self.assertEqual(argv[0], "kimi")
-        argv2, _r2, _a2 = self._spawn({"experiments": {"skeleton": True}},
-                                      _claude_stream(), task=task)
+        argv2, _r2, _a2 = self._spawn(
+            {"experiments": {"skeleton": True}}, _claude_stream(), task=task
+        )
         self.assertEqual(argv2[0], "claude")
+
+    def test_engine_key_sends_work_to_zcode(self):
+        argv, report, _ = self._spawn({"executor_engine": "zcode"}, _zcode_stream())
+        self.assertIn("--json", argv)
+        self.assertEqual(argv[argv.index("--mode") + 1], "yolo")
+        self.assertEqual(report["status"], "done")
+        self.assertNotIn("--model", argv)
+
+    def test_zcode_does_not_claim_a_price_it_does_not_know(self):
+        self._spawn({"executor_engine": "zcode"}, _zcode_stream())
+        rows = [json.loads(x) for x in self.state.metrics_path.read_text().splitlines()]
+        impl = [r for r in rows if r.get("phase") == "implement"][-1]
+        self.assertEqual(impl["engine"], "zcode")
+        self.assertEqual(impl["tokens_out"], 20)
+        self.assertNotIn("cost_usd", impl)
+
+    def test_prompt_is_the_same_for_zcode(self):
+        kimi_argv, _r, _a = self._spawn({}, "")
+        zcode_argv, _r2, _a2 = self._spawn(
+            {"executor_engine": "zcode"}, _zcode_stream()
+        )
+        self.assertEqual(
+            kimi_argv[kimi_argv.index("-p") + 1],
+            zcode_argv[zcode_argv.index("--prompt") + 1],
+        )
 
     def test_unknown_engine_never_reaches_a_cli(self):
         """Отказ до первого потраченного доллара: молча выбранное
@@ -571,13 +681,15 @@ class TestExecutorModelRouting(AgentsCase):
     def test_flag_on_field_overrides_run_wide_model(self):
         argv = self._kimi_argv(
             {"experiments": {"skeleton": True}, "executor_model": "kimi-k2"},
-            dict(TASK, executor_model="claude-opus-5"))
+            dict(TASK, executor_model="claude-opus-5"),
+        )
         self.assertIn("-m", argv)
         self.assertEqual(argv[argv.index("-m") + 1], "claude-opus-5")
 
     def test_flag_on_without_field_keeps_run_wide_model(self):
         argv = self._kimi_argv(
-            {"experiments": {"skeleton": True}, "executor_model": "kimi-k2"}, TASK)
+            {"experiments": {"skeleton": True}, "executor_model": "kimi-k2"}, TASK
+        )
         self.assertEqual(argv[argv.index("-m") + 1], "kimi-k2")
 
     def test_flag_on_ollama_prefix_never_reaches_kimi_cli(self):
@@ -598,10 +710,11 @@ class TestExecutorModelRouting(AgentsCase):
         task = dict(TASK, paths=["nope.py"], executor_model="ollama:m")
         report = agents.implement(task, None, 1)
         self.assertIsNone(report)
-        self.assertEqual(agents.last_implement_failure["reason"],
-                         "fill_misconfigured")
-        self.assertFalse(any(a and a[0] == "kimi" for a in called),
-                         "ollama: обязан уйти в chat-fill, не в CLI kimi")
+        self.assertEqual(agents.last_implement_failure["reason"], "fill_misconfigured")
+        self.assertFalse(
+            any(a and a[0] == "kimi" for a in called),
+            "ollama: обязан уйти в chat-fill, не в CLI kimi",
+        )
 
 
 class ChatFillCase(AgentsCase):
@@ -612,8 +725,9 @@ class ChatFillCase(AgentsCase):
         self.agents = ag.Agents(self.state, {"experiments": {"skeleton": True}})
         self.target = self.root / "mod.py"
         self.target.write_text("def f():\n    pass\n")
-        self.task = dict(TASK, id="f1", paths=["mod.py"],
-                         executor_model="ollama:gpt-oss:120b")
+        self.task = dict(
+            TASK, id="f1", paths=["mod.py"], executor_model="ollama:gpt-oss:120b"
+        )
 
     def fake_helpers(self, reply):
         """Двойник swarm/helpers.py: без сети, с записью аргументов вызова."""
@@ -623,10 +737,17 @@ class ChatFillCase(AgentsCase):
             def configure(self, path):
                 pass
 
-            def ollama_chat(self, prompt, name, max_tokens=400,
-                            temperature=0.0, model=None):
-                calls.append({"prompt": prompt, "name": name,
-                             "max_tokens": max_tokens, "model": model})
+            def ollama_chat(
+                self, prompt, name, max_tokens=400, temperature=0.0, model=None
+            ):
+                calls.append(
+                    {
+                        "prompt": prompt,
+                        "name": name,
+                        "max_tokens": max_tokens,
+                        "model": model,
+                    }
+                )
                 return reply
 
         self.agents.helpers = Fake()
@@ -637,13 +758,21 @@ class TestChatFillHappyPath(ChatFillCase):
     def test_writes_the_returned_fence_and_reports_done(self):
         calls = self.fake_helpers("```python\ndef f():\n    return 1\n```")
         report = self.agents._implement_fill(self.task, None, 1)
-        self.assertEqual(report, {"status": "done",
-                                  "summary": "заполнение по контракту применено",
-                                  "fill": True})
+        self.assertEqual(
+            report,
+            {
+                "status": "done",
+                "summary": "заполнение по контракту применено",
+                "fill": True,
+            },
+        )
         self.assertEqual(self.target.read_text(), "def f():\n    return 1")
         self.assertIsNone(self.agents.last_implement_failure)
-        self.assertEqual(calls[0]["model"], "gpt-oss:120b",
-                         "префикс ollama: обязан быть срезан перед вызовом API")
+        self.assertEqual(
+            calls[0]["model"],
+            "gpt-oss:120b",
+            "префикс ollama: обязан быть срезан перед вызовом API",
+        )
 
     def test_raw_reply_is_logged(self):
         self.fake_helpers("```python\ndef f():\n    return 2\n```")
@@ -654,8 +783,7 @@ class TestChatFillHappyPath(ChatFillCase):
     def test_metric_row_on_success(self):
         self.fake_helpers("```python\ndef f():\n    return 1\n```")
         self.agents._implement_fill(self.task, None, 1)
-        rows = [json.loads(x) for x in
-                self.state.metrics_path.read_text().splitlines()]
+        rows = [json.loads(x) for x in self.state.metrics_path.read_text().splitlines()]
         row = next(r for r in rows if r.get("phase") == "implement")
         self.assertEqual(row["reason"], "done")
         self.assertIs(row["report"], True)
@@ -674,8 +802,9 @@ class TestChatFillHappyPath(ChatFillCase):
         self.assertIn("def f():\n    pass", calls[0]["prompt"])
 
     def test_multiple_fences_take_the_last_when_nothing_else_is_around(self):
-        self.fake_helpers("```python\nстарое\n```\n"
-                          "```python\ndef f():\n    return 9\n```")
+        self.fake_helpers(
+            "```python\nстарое\n```\n```python\ndef f():\n    return 9\n```"
+        )
         report = self.agents._implement_fill(self.task, None, 1)
         self.assertEqual(report["status"], "done")
         self.assertEqual(self.target.read_text(), "def f():\n    return 9")
@@ -688,26 +817,28 @@ class TestChatFillFailures(ChatFillCase):
     def test_multiple_paths_is_misconfigured(self):
         task = dict(self.task, paths=["mod.py", "src/a.py"])
         self.assertIsNone(self.agents._implement_fill(task, None, 1))
-        self.assertEqual(self.agents.last_implement_failure["reason"],
-                         "fill_misconfigured")
+        self.assertEqual(
+            self.agents.last_implement_failure["reason"], "fill_misconfigured"
+        )
 
     def test_glob_path_is_misconfigured(self):
         task = dict(self.task, paths=["*.py"])
         self.assertIsNone(self.agents._implement_fill(task, None, 1))
-        self.assertEqual(self.agents.last_implement_failure["reason"],
-                         "fill_misconfigured")
+        self.assertEqual(
+            self.agents.last_implement_failure["reason"], "fill_misconfigured"
+        )
 
     def test_missing_file_is_misconfigured(self):
         task = dict(self.task, paths=["missing.py"])
         self.assertIsNone(self.agents._implement_fill(task, None, 1))
-        self.assertEqual(self.agents.last_implement_failure["reason"],
-                         "fill_misconfigured")
+        self.assertEqual(
+            self.agents.last_implement_failure["reason"], "fill_misconfigured"
+        )
 
     def test_no_reply_is_a_failure(self):
         self.fake_helpers(None)
         self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
-        self.assertEqual(self.agents.last_implement_failure["reason"],
-                         "fill_no_reply")
+        self.assertEqual(self.agents.last_implement_failure["reason"], "fill_no_reply")
 
     def test_prose_outside_fence_is_a_failure(self):
         """Преамбула вроде «Вот файл:» — не «почти прошло»: контракт не
@@ -715,20 +846,17 @@ class TestChatFillFailures(ChatFillCase):
         без этой проверки тихо проглотил бы её."""
         self.fake_helpers("Вот файл:\n```python\ndef f():\n    return 1\n```")
         self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
-        self.assertEqual(self.agents.last_implement_failure["reason"],
-                         "fill_no_fence")
+        self.assertEqual(self.agents.last_implement_failure["reason"], "fill_no_fence")
 
     def test_no_fence_at_all_is_a_failure(self):
         self.fake_helpers("def f():\n    return 1")
         self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
-        self.assertEqual(self.agents.last_implement_failure["reason"],
-                         "fill_no_fence")
+        self.assertEqual(self.agents.last_implement_failure["reason"], "fill_no_fence")
 
     def test_syntax_error_is_a_failure(self):
         self.fake_helpers("```python\ndef f(\n```")
         self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
-        self.assertEqual(self.agents.last_implement_failure["reason"],
-                         "fill_syntax")
+        self.assertEqual(self.agents.last_implement_failure["reason"], "fill_syntax")
 
     def test_syntax_check_skipped_for_non_python_files(self):
         """Контракт ast.parse — «для .py файлов»: применять его к чужому
@@ -751,6 +879,7 @@ class TestChatFillFailures(ChatFillCase):
         """§7.3 в отражении chat-fill: сбой самого вызова хелпера — тоже
         НЕ повод ронять петлю, даже если ollama_chat нарушил контракт
         fail-open и бросил исключение сам."""
+
         class Boom:
             def configure(self, path):
                 pass
@@ -760,8 +889,7 @@ class TestChatFillFailures(ChatFillCase):
 
         self.agents.helpers = Boom()
         self.assertIsNone(self.agents._implement_fill(self.task, None, 1))
-        self.assertEqual(self.agents.last_implement_failure["reason"],
-                         "fill_no_reply")
+        self.assertEqual(self.agents.last_implement_failure["reason"], "fill_no_reply")
 
 
 if __name__ == "__main__":
