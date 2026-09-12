@@ -1,5 +1,5 @@
 ---
-type: section-index
+type: guide
 status: draft
 source_of_truth: true
 owner: cod-doc core
