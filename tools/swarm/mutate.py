@@ -322,6 +322,15 @@ MUTATIONS = [
         """        "cost_usd": env.get("total_cost_usd") or 0.0,""",
         "test_engines",
     ),
+    (
+        "промпт: промпт снова едет целиком в argv (E2BIG на спавне)",
+        "swarm/engines.py",
+        """    if engine in STDIN_PROMPT_ENGINES:
+        yield PromptDelivery((), prompt)""",
+        """    if engine in STDIN_PROMPT_ENGINES:
+        yield PromptDelivery((prompt,), None)""",
+        "test_prompt_channel",
+    ),
     # --- спасение вердикта (§4.2.1) ---
     (
         "вердикт: неразобравшийся список находок стал пустым",

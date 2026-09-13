@@ -25,6 +25,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
@@ -61,6 +62,9 @@ class FakeClaudeProc:
                               ensure_ascii=False)
             self.stdout = io.StringIO(line + "\n")
         self.stderr = io.StringIO("")
+        # Промпт с NXT-006 едет через stdin (ARG_MAX), и двойник обязан
+        # принять запись потока-кормильца драйвера.
+        self.stdin = _RecordingStdin()
         self.returncode = returncode
 
     def poll(self):
@@ -73,19 +77,53 @@ class FakeClaudeProc:
         pass
 
 
+class _RecordingStdin(io.StringIO):
+    """stdin двойника, читаемый ПОСЛЕ close(): драйвер закрывает канал
+    после записи промпта (EOF для CLI), а тест обязан видеть, что
+    доехало."""
+
+    _saved = ""
+
+    def close(self):
+        self._saved = super().getvalue()
+        super().close()
+
+    def getvalue(self):
+        try:
+            return super().getvalue()
+        except ValueError:
+            return self._saved
+
+
+def _fed_prompt(proc, timeout=5.0):
+    """Промпт из stdin двойника: с NXT-006 он едет потоком, а не в argv
+    (ARG_MAX). Пишет поток-кормилец драйвера — ждём запись."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        text = proc.stdin.getvalue()
+        if text:
+            return text
+        time.sleep(0.01)
+    raise AssertionError("промпт не доехал до stdin процесса")
+
+
 def patch_claude_popen(testcase, reply):
     """Перехват ТОЛЬКО вызова ревьюера: остальные Popen идут по-настоящему.
 
     `reply(argv)` возвращает dict конверта. Подменяется внешний CLI, путь
     review остаётся настоящим — тот же принцип, что у прежнего перехвата
-    subprocess.run.
+    subprocess.run. Двойники процессов складываются в testcase.claude_procs:
+    промпт теперь надо читать из их stdin, а не из argv.
     """
     orig = subprocess.Popen
+    testcase.claude_procs = []
 
     def fake_popen(argv, **kw):
         if not (argv and argv[0] == "claude"):
             return orig(argv, **kw)
-        return FakeClaudeProc(reply(argv))
+        proc = FakeClaudeProc(reply(argv))
+        testcase.claude_procs.append(proc)
+        return proc
 
     subprocess.Popen = fake_popen
     testcase.addCleanup(lambda: setattr(subprocess, "Popen", orig))
@@ -494,7 +532,7 @@ class TestBudgetExhausted(RepoCase):
         agents = self._agents([{"structured_output": VALID,
                                 "total_cost_usd": 0.5}])
         agents.review(dict(self.TASK), "OK", 1)
-        prompt = self.calls[0][self.calls[0].index("-p") + 1]
+        prompt = _fed_prompt(self.claude_procs[0])
         self.assertIn("свернул", prompt)
         self.assertNotIn("строка 1900", prompt,
                          "сгенерированный файл ушёл ревьюеру целиком")
@@ -556,6 +594,7 @@ class StreamProc:
         self.stdout = io.StringIO("".join(
             json.dumps(x, ensure_ascii=False) + "\n" for x in lines))
         self.stderr = io.StringIO("")
+        self.stdin = _RecordingStdin()
         self.returncode = 0
 
     def poll(self):
@@ -594,19 +633,27 @@ class TestVerdictSalvagedFromStream(RepoCase):
             "paths": ["mod.py"], "type": "feature"}
 
     def _patch(self, streams):
-        self.prompts = []
+        self.procs = []
         orig = subprocess.Popen
 
         def fake(argv, **kw):
             if not (argv and argv[0] == "claude"):
                 return orig(argv, **kw)
-            self.prompts.append(argv[argv.index("-p") + 1])
-            lines = streams[min(len(self.prompts), len(streams)) - 1]
-            return StreamProc(lines)
+            # Индекс потока — по НОМЕРУ вызова (первый — streams[0]):
+            # считаем до добавления двойника в procs.
+            proc = StreamProc(streams[min(len(self.procs) + 1, len(streams)) - 1])
+            self.procs.append(proc)
+            return proc
 
         subprocess.Popen = fake
         self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
         return ag.Agents(self.state, {})
+
+    @property
+    def prompts(self):
+        """Промпты вызовов, прочитанные из канала доставки (NXT-006):
+        в argv их больше нет — ревьюер отдаёт промпт через stdin."""
+        return [_fed_prompt(p) for p in self.procs]
 
     def test_crammed_verdict_is_recovered(self):
         agents = self._patch([[_tool_call(CRAMMED),

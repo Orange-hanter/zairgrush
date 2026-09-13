@@ -179,7 +179,8 @@ class Run:
 
     def __init__(self, cmd: list[str], cwd: str | pathlib.Path,
                  parser: Callable[[str], Event | None],
-                 silence_timeout: float, wall_clock_cap: float) -> None:
+                 silence_timeout: float, wall_clock_cap: float,
+                 stdin_text: str | None = None) -> None:
         self.cmd = cmd
         self.parser = parser
         self.silence_timeout = silence_timeout
@@ -189,15 +190,26 @@ class Run:
         self._last_activity = time.time()
         self._started = time.time()
         self._lines: list[str] = []
-        # stdin ЗАКРЫТ, а не унаследован. Два разных дефекта одним
-        # аргументом: агент, у которого stdin — терминал оператора, читает
-        # его нажатия (мы запускаем его молча, отвечать ему некому), а
-        # агент, запущенный из фона без терминала, ЖДЁТ ввода — claude
-        # тратит на это 3 секунды каждого вызова и говорит об этом в
-        # stderr. Оба исхода — про канал, которым петля не пользуется.
-        self.proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, text=True, bufsize=1)
+        # stdin ЗАКРЫТ (DEVNULL), а не унаследован — кроме случая, когда
+        # промпт едет через него (stdin_text, см. engines.prompt_delivery).
+        # Два разных дефекта одним аргументом: агент, у которого stdin —
+        # терминал оператора, читает его нажатия (мы запускаем его молча,
+        # отвечать ему некому), а агент, запущенный из фона без терминала,
+        # ЖДЁТ ввода — claude тратит на это 3 секунды каждого вызова и
+        # говорит об этом в stderr. Оба исхода — про канал, которым петля
+        # не пользуется.
+        self.proc = subprocess.Popen(
+            cmd, cwd=cwd,
+            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, bufsize=1)
+        if stdin_text is not None:
+            # Писать в stdin должен отдельный поток: 3.7 млн символов не
+            # влезают в буфер канала (~64 КБ), и синхронная запись здесь
+            # встала бы навстречу процессу, который ещё не начал читать.
+            threading.Thread(
+                target=self._feed, args=(stdin_text,), daemon=True
+            ).start()
         self._err: list[str] = []
         self._reader = threading.Thread(target=self._pump, daemon=True)
         self._reader.start()
@@ -208,6 +220,21 @@ class Run:
         # задачах приёмки это не проявлялось.
         self._err_reader = threading.Thread(target=self._drain_err, daemon=True)
         self._err_reader.start()
+
+    def _feed(self, text: str) -> None:
+        """Запись промпта в stdin процесса. Падение канала (агент умер,
+        не дочитав) — не авария драйвера: читающая сторона увидит конец
+        потока сама, а тут падать в фоновом потоке молча нельзя."""
+        try:
+            # getattr, а не прямой доступ: тестовые двойники процесса
+            # (FakeClaudeProc и др.) канала stdin не имеют, и падение
+            # было бы в фоновом потоке и молча.
+            pipe = getattr(self.proc, "stdin", None)
+            if pipe is not None:
+                pipe.write(text)
+                pipe.close()
+        except (OSError, ValueError):
+            pass
 
     def _pump(self) -> None:
         try:
@@ -245,8 +272,10 @@ class Run:
 
     def _close_pipes(self) -> None:
         """Без этого длинный прогон течёт дескрипторами: каждый убитый
-        агент оставляет открытыми stdout/stderr."""
-        for pipe in (self.proc.stdout, self.proc.stderr):
+        агент оставляет открытыми stdout/stderr (и stdin, если промпт
+        ехал через него)."""
+        for pipe in (self.proc.stdout, self.proc.stderr,
+                     getattr(self.proc, "stdin", None)):
             try:
                 if pipe and not pipe.closed:
                     pipe.close()
@@ -341,5 +370,7 @@ class AgentDriver:
         self.wall_clock_cap = wall_clock_cap
 
     def start(self, cmd: list[str],
-              parser: Callable[[str], Event | None] = parse_kimi) -> Run:
-        return Run(cmd, self.cwd, parser, self.silence_timeout, self.wall_clock_cap)
+              parser: Callable[[str], Event | None] = parse_kimi,
+              stdin_text: str | None = None) -> Run:
+        return Run(cmd, self.cwd, parser, self.silence_timeout,
+                   self.wall_clock_cap, stdin_text=stdin_text)

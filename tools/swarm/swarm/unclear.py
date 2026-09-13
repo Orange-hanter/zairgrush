@@ -178,7 +178,6 @@ def find(agents: AgentsLike, task: dict[str, Any], goal: str) -> dict[str, Any] 
     # дуэли работает в worktree, и запуск пуриста в общем корне писал бы
     # артефакты в чужое дерево.
     work = str(getattr(agents, "work_root", None) or agents.state.root)
-    cmd = engines.executor_argv(engine, model, text, agents.config, schema, cwd=work)
     drv = agents.driver.AgentDriver(
         cwd=work,
         silence_timeout=agents.config.get("silence_timeout", 600),
@@ -188,8 +187,12 @@ def find(agents: AgentsLike, task: dict[str, Any], goal: str) -> dict[str, Any] 
     # Пурист едет на argv исполнителя — и под потолком его вызова.
     spending.guard(agents.config, agents.state, "unclear",
                    "executor_budget_usd")
-    run = drv.start(cmd, parser=parser)
-    result = run.collect(extract)
+    # Канал промпта — как у исполнителя (NXT-006): в argv не едет.
+    with engines.prompt_delivery(engine, text) as dlv:
+        cmd = engines.executor_argv(engine, model, dlv, agents.config, schema,
+                                    cwd=work)
+        run = drv.start(cmd, parser=parser, stdin_text=dlv.stdin)
+        result = run.collect(extract)
     # id задачи — данные недоверенные: в имя файла только через санитайзер,
     # иначе '../..' в id уводил запись лога за пределы каталога состояния.
     # Дайджест сырого id рядом: санитайзер детерминированно схлопывает

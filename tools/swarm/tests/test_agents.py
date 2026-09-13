@@ -13,9 +13,11 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
@@ -397,6 +399,9 @@ def _fake_process(stdout="", stderr="", returncode=0):
         "P",
         (),
         {
+            # Промпт с NXT-006 едет через stdin (у claude): двойник
+            # обязан принять запись потока-кормильца драйвера.
+            "stdin": _RecordingStdin(),
             "stdout": io.StringIO(stdout),
             "stderr": io.StringIO(stderr),
             "returncode": returncode,
@@ -405,6 +410,36 @@ def _fake_process(stdout="", stderr="", returncode=0):
             "kill": lambda s: None,
         },
     )()
+
+
+class _RecordingStdin(io.StringIO):
+    """stdin двойника, читаемый ПОСЛЕ close(): драйвер закрывает канал
+    после записи промпта (EOF для CLI), а тест обязан видеть, что
+    доехало."""
+
+    _saved = ""
+
+    def close(self):
+        self._saved = super().getvalue()
+        super().close()
+
+    def getvalue(self):
+        try:
+            return super().getvalue()
+        except ValueError:
+            return self._saved
+
+
+def _fed_stdin(proc, timeout=5.0):
+    """Промпт из stdin двойника: с NXT-006 он едет потоком, а не в argv
+    (ARG_MAX). Пишет поток-кормилец драйвера — ждём запись."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        text = proc.stdin.getvalue()
+        if text:
+            return text
+        time.sleep(0.01)
+    raise AssertionError("промпт не доехал до stdin процесса")
 
 
 CLAUDE_DONE = {"status": "done", "summary": "сделано"}
@@ -475,12 +510,28 @@ class TestExecutorEngineWiring(AgentsCase):
             if not (argv and (head in ("kimi", "claude") or is_zcode)):
                 return orig(argv, **kw)
             seen["argv"] = argv
-            return _fake_process(stdout=stdout, returncode=returncode)
+            # Канал промпта (NXT-006): у kimi/zcode временный файл живёт
+            # только на время вызова, поэтому его содержимое снимается
+            # при спавне; у claude промпт едет в stdin двойника и
+            # читается после прогона (см. _fed_stdin).
+            m = re.search(r"(/\S*swarm-prompt-\S+\.txt)", " ".join(argv))
+            if m:
+                seen["prompt"] = pathlib.Path(m.group(1)).read_text(
+                    encoding="utf-8")
+            proc = _fake_process(stdout=stdout, returncode=returncode)
+            seen["proc"] = proc
+            return proc
 
         subprocess.Popen = fake
         self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
         agents = ag.Agents(self.state, config)
         report = agents.implement(task or TASK, None, 1)
+        if "prompt" in seen:
+            self.delivered_prompt = seen["prompt"]
+        elif seen.get("argv"):
+            self.delivered_prompt = _fed_stdin(seen["proc"])
+        else:
+            self.delivered_prompt = ""
         return seen.get("argv", []), report, agents
 
     def test_orchestrator_stamps_the_diffstat_itself(self):
@@ -536,15 +587,14 @@ class TestExecutorEngineWiring(AgentsCase):
     def test_prompt_is_the_same_for_both_engines(self):
         """Промпт исполнителя — предмет замера (E8/E10) и кэша провайдера.
         Смена движка не имеет права его тронуть, иначе плечи мерят
-        разное, а не разных исполнителей."""
-        kimi_argv, _r, _a = self._spawn({}, "")
-        claude_argv, _r2, _a2 = self._spawn(
-            {"executor_engine": "claude"}, _claude_stream()
-        )
-        self.assertEqual(
-            kimi_argv[kimi_argv.index("-p") + 1],
-            claude_argv[claude_argv.index("-p") + 1],
-        )
+        разное, а не разных исполнителей. С NXT-006 сравнивается
+        ДОСТАВЛЕННЫЙ текст (stdin у claude, временный файл у kimi):
+        в argv промпта больше нет (ARG_MAX)."""
+        self._spawn({}, "")
+        kimi_prompt = self.delivered_prompt
+        self._spawn({"executor_engine": "claude"}, _claude_stream())
+        self.assertTrue(kimi_prompt, "промпт kimi не снят с канала")
+        self.assertEqual(kimi_prompt, self.delivered_prompt)
 
     def test_cost_of_the_executor_is_finally_counted(self):
         """Слепое пятно бюджета было про ДВИЖОК, а не про роль: поток
@@ -682,14 +732,11 @@ class TestExecutorEngineWiring(AgentsCase):
         self.assertNotIn("cost_usd", impl)
 
     def test_prompt_is_the_same_for_zcode(self):
-        kimi_argv, _r, _a = self._spawn({}, "")
-        zcode_argv, _r2, _a2 = self._spawn(
-            {"executor_engine": "zcode"}, _zcode_stream()
-        )
-        self.assertEqual(
-            kimi_argv[kimi_argv.index("-p") + 1],
-            zcode_argv[zcode_argv.index("--prompt") + 1],
-        )
+        self._spawn({}, "")
+        kimi_prompt = self.delivered_prompt
+        self._spawn({"executor_engine": "zcode"}, _zcode_stream())
+        self.assertTrue(kimi_prompt, "промпт kimi не снят с канала")
+        self.assertEqual(kimi_prompt, self.delivered_prompt)
 
     def test_unknown_engine_never_reaches_a_cli(self):
         """Отказ до первого потраченного доллара: молча выбранное
@@ -707,6 +754,17 @@ class TestExecutorEngineWiring(AgentsCase):
         with self.assertRaises(ValueError):
             agents.implement(TASK, None, 1)
         self.assertEqual(called, [])
+
+
+def _norm_prompt_slot(argv):
+    """Слот промпта несёт указатель с именем временного файла (NXT-006),
+    случайным от вызова к вызову: для сравнения скелета argv он
+    заменяется меткой."""
+    out = list(argv)
+    for flag in ("-p", "--prompt"):
+        if flag in out:
+            out[out.index(flag) + 1] = "<промпт>"
+    return out
 
 
 class TestExecutorModelRouting(AgentsCase):
@@ -736,7 +794,8 @@ class TestExecutorModelRouting(AgentsCase):
         бы поведение не с сегодняшним, а с частично изменённым."""
         with_field = self._kimi_argv({}, dict(TASK, executor_model="claude-opus-5"))
         without_field = self._kimi_argv({}, TASK)
-        self.assertEqual(with_field, without_field)
+        self.assertEqual(_norm_prompt_slot(with_field),
+                         _norm_prompt_slot(without_field))
         self.assertTrue(with_field, "cmd вообще обязан был собраться")
 
     def test_flag_on_field_overrides_run_wide_model(self):

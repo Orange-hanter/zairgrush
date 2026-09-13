@@ -19,6 +19,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import boundarynote  # noqa: E402
+import engines  # noqa: E402
 import modlock  # noqa: E402
 import parsing as parsing_mod  # noqa: E402
 import pathsafe  # noqa: E402
@@ -135,17 +136,17 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                              usedforsecurity=False).hexdigest()[:12]
     task_sha = hashlib.sha1(task_part.encode(),
                             usedforsecurity=False).hexdigest()[:12]
-    cmd = ["claude", "-p", rules_part + task_part + tail_part,
-           "--output-format", "stream-json", "--verbose",
-           "--include-partial-messages",
-           "--json-schema", schema,
-           "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
-           # Потолок вызова — политика денег, а не деталь argv ревьюера.
-           # Умолчание $1 жило здесь и срабатывало: «ревьюер обрублен по
-           # бюджету» — штатный диагноз петли. В режиме money_bin флага
-           # нет вовсе, явно заданный — действует (см. spending.py).
-           *spending.budget_flags(agents.config, "review_budget_usd"),
-           *promptbuilder.tuning(agents, "review", confirming)]
+    cmd_tail = [
+        "--output-format", "stream-json", "--verbose",
+        "--include-partial-messages",
+        "--json-schema", schema,
+        "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
+        # Потолок вызова — политика денег, а не деталь argv ревьюера.
+        # Умолчание $1 жило здесь и срабатывало: «ревьюер обрублен по
+        # бюджету» — штатный диагноз петли. В режиме money_bin флага
+        # нет вовсе, явно заданный — действует (см. spending.py).
+        *spending.budget_flags(agents.config, "review_budget_usd"),
+        *promptbuilder.tuning(agents, "review", confirming)]
     drv = agents.driver.AgentDriver(
         cwd=str(agents.state.root),
         silence_timeout=agents.config.get("silence_timeout", 600),
@@ -154,8 +155,14 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     # хода, и до стража он уходил даже с уже пробитым бюджетом.
     spending.guard(agents.config, agents.state, "review",
                    "review_budget_usd")
-    run = drv.start(cmd, parser=agents.driver.parse_claude)
-    result = run.collect(agents.driver.extract_result_envelope)
+    # Промпт ревьюера (правила + задача + дифф) — самый длинный в петле:
+    # в argv он не едет (ARG_MAX, NXT-006), у claude канал — stdin.
+    with engines.prompt_delivery(
+            "claude", rules_part + task_part + tail_part) as dlv:
+        cmd = ["claude", "-p", *dlv.tokens, *cmd_tail]
+        run = drv.start(cmd, parser=agents.driver.parse_claude,
+                        stdin_text=dlv.stdin)
+        result = run.collect(agents.driver.extract_result_envelope)
     env: dict[str, Any] | None = result.report
     # Фаза входит в имя: второй проход (после верификации) писал в тот
     # же файл и затирал первый вердикт — на пилоте так потерялся

@@ -33,6 +33,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
@@ -655,17 +656,37 @@ class TestConfirmLensGating(unittest.TestCase):
     тем же правилом, что confirm_model/confirm_effort в _tuning."""
 
     def _prompt_sent(self, config, confirming):
-        seen: dict[str, list[str]] = {}
+        seen: dict[str, object] = {}
         orig = subprocess.Popen
+
+        class RecordingStdin(io.StringIO):
+            """stdin двойника, читаемый ПОСЛЕ close(): драйвер закрывает
+            канал после записи промпта (EOF для CLI)."""
+
+            _saved = ""
+
+            def close(self):
+                self._saved = super().getvalue()
+                super().close()
+
+            def getvalue(self):
+                try:
+                    return super().getvalue()
+                except ValueError:
+                    return self._saved
 
         def fake(argv, **kw):
             if not (argv and argv[0] == "claude"):
                 return orig(argv, **kw)
-            seen["argv"] = argv
-            return type("P", (), {
+            # Промпт с NXT-006 едет через stdin (ARG_MAX): двойник обязан
+            # принять запись потока-кормильца драйвера.
+            proc = type("P", (), {
+                "stdin": RecordingStdin(),
                 "stdout": io.StringIO(""), "stderr": io.StringIO(""),
                 "returncode": 0, "poll": lambda s: 0,
                 "wait": lambda s, timeout=None: 0, "kill": lambda s: None})()
+            seen["proc"] = proc
+            return proc
 
         subprocess.Popen = fake
         self.addCleanup(lambda: setattr(subprocess, "Popen", orig))
@@ -685,8 +706,17 @@ class TestConfirmLensGating(unittest.TestCase):
         with contextlib.suppress(Exception):
             a.review({"id": "t1", "title": "t", "spec": "s",
                       "acceptance": ["ок"]}, "OK", 1, confirming=confirming)
-        argv = seen.get("argv", [])
-        return argv[2] if len(argv) > 2 else ""
+        proc = seen.get("proc")
+        if proc is None:
+            return ""
+        # Пишет поток-кормилец драйвера — ждём запись.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            text = proc.stdin.getvalue()
+            if text:
+                return text
+            time.sleep(0.01)
+        raise AssertionError("промпт не доехал до stdin процесса")
 
     def test_lens_absent_on_normal_round_even_with_config(self):
         prompt = self._prompt_sent({"confirm_lens": "security"}, confirming=False)
