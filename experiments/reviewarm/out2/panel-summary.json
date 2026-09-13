@@ -1,0 +1,195 @@
+{
+ "by_model": {
+  "deepseek-v4-flash:0731": {
+   "calls": 14,
+   "wall_s": 42.63337174808839,
+   "cands": 60,
+   "off_diff": 0,
+   "refused": 0,
+   "majors": 7
+  },
+  "glm-5.1": {
+   "calls": 14,
+   "wall_s": 61.87867733393796,
+   "cands": 38,
+   "off_diff": 0,
+   "refused": 1,
+   "majors": 16
+  },
+  "qwen3.5:397b": {
+   "calls": 14,
+   "wall_s": 69.72233203996439,
+   "cands": 51,
+   "off_diff": 0,
+   "refused": 0,
+   "majors": 24
+  },
+  "gpt-oss:120b": {
+   "calls": 14,
+   "wall_s": 30.748626502929255,
+   "cands": 22,
+   "off_diff": 0,
+   "refused": 0,
+   "majors": 10
+  },
+  "kimi-k2.7-code": {
+   "calls": 14,
+   "wall_s": 42.470033789169975,
+   "cands": 46,
+   "off_diff": 0,
+   "refused": 0,
+   "majors": 7
+  }
+ },
+ "by_task": [
+  {
+   "task": "p1fn",
+   "files": 1,
+   "raw": 4,
+   "merged": 4,
+   "paid_files": 0,
+   "shared_files": 0,
+   "truncated": false
+  },
+  {
+   "task": "g1nt",
+   "files": 2,
+   "raw": 23,
+   "merged": 23,
+   "paid_files": 1,
+   "shared_files": 1,
+   "truncated": true
+  },
+  {
+   "task": "g2pf",
+   "files": 1,
+   "raw": 6,
+   "merged": 6,
+   "paid_files": 1,
+   "shared_files": 1,
+   "truncated": false
+  },
+  {
+   "task": "e4kb",
+   "files": 10,
+   "raw": 18,
+   "merged": 18,
+   "paid_files": 3,
+   "shared_files": 2,
+   "truncated": false
+  },
+  {
+   "task": "e5dq",
+   "files": 3,
+   "raw": 13,
+   "merged": 13,
+   "paid_files": 2,
+   "shared_files": 2,
+   "truncated": false
+  },
+  {
+   "task": "e6cx",
+   "files": 3,
+   "raw": 14,
+   "merged": 14,
+   "paid_files": 2,
+   "shared_files": 1,
+   "truncated": false
+  },
+  {
+   "task": "e9tf",
+   "files": 4,
+   "raw": 17,
+   "merged": 17,
+   "paid_files": 3,
+   "shared_files": 3,
+   "truncated": false
+  },
+  {
+   "task": "e2op",
+   "files": 3,
+   "raw": 14,
+   "merged": 11,
+   "paid_files": 1,
+   "shared_files": 1,
+   "truncated": false
+  },
+  {
+   "task": "e7in",
+   "files": 1,
+   "raw": 11,
+   "merged": 11,
+   "paid_files": 1,
+   "shared_files": 1,
+   "truncated": false
+  },
+  {
+   "task": "k3ad",
+   "files": 7,
+   "raw": 18,
+   "merged": 14,
+   "paid_files": 5,
+   "shared_files": 4,
+   "truncated": false
+  },
+  {
+   "task": "m6pe",
+   "files": 5,
+   "raw": 17,
+   "merged": 17,
+   "paid_files": 4,
+   "shared_files": 2,
+   "truncated": false
+  },
+  {
+   "task": "c4rp",
+   "files": 3,
+   "raw": 21,
+   "merged": 21,
+   "paid_files": 2,
+   "shared_files": 1,
+   "truncated": true
+  },
+  {
+   "task": "s2ky",
+   "files": 13,
+   "raw": 20,
+   "merged": 20,
+   "paid_files": 7,
+   "shared_files": 6,
+   "truncated": false
+  },
+  {
+   "task": "z8ck",
+   "files": 4,
+   "raw": 21,
+   "merged": 20,
+   "paid_files": 2,
+   "shared_files": 2,
+   "truncated": false
+  }
+ ],
+ "roster": [
+  [
+   "deepseek-v4-flash:0731",
+   "correctness"
+  ],
+  [
+   "glm-5.1",
+   "duplication"
+  ],
+  [
+   "qwen3.5:397b",
+   "tests"
+  ],
+  [
+   "gpt-oss:120b",
+   "contract"
+  ],
+  [
+   "kimi-k2.7-code",
+   "safety"
+  ]
+ ],
+ "cap": 5
+}
