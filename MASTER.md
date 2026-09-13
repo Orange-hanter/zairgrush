@@ -74,6 +74,12 @@ graph TD
   },
   "changelog": [
     {
+      "date": "2026-09-14",
+      "action": "Секция C плана next-2026-09 — волна из 6 агентов: NXT-013 done (B7 digest-as-navigation: REJECT на частичных данных n=5, $0.48/$3, +17% цена, tail 2/7 — причина не цитаты, а чужая карта; report-rev006, журнал §32), NXT-014 done (B8: quote_check.py — детерминированный 3-уровневый верификатор, офлайн-анализ: фильтр режет 130/291=45%; report-rev005). Prep-половины (бесплатные) сделаны у NXT-009 (панель out2 перегенерирована Ollama $0, adjudicate.py --contract switch, пререг; ждёт ~$10), NXT-017 (docmap.toml + docmap.py + swarm docmap, 16 тестов; бесплатный replay: recall ×2 при равном шуме), NXT-018 (ложная посылка тестера добита: loop.py+06 §E11, +4 теста; rerun ~$5-10 в §31), NXT-019 (goldset/e13/: критерии K1-K3, 15 кандидатов, якорь s2ky; trial ~$10). Мержи 79a8cbb/7886e0e/9b46957/b471187/68dc170/1b51a2e, гейт 1424 green, drift=0 (187 docs). Платная волна C (~$40: B2 $10, B3 $15, B4 $5, E11r2 $10, E13 trial $10, E3-C $15-20) ждёт NXT-026. План: 11/28 done.",
+      "author": "kimi-code",
+      "scope": "master"
+    },
+    {
       "date": "2026-09-13",
       "action": "Секция B плана next-2026-09 закрыта: NXT-005 (budget kill-switch — spending.guard вокруг каждого LLM-вызова, единый terminal _budget_stop; caveat: kimi без cost в stream), NXT-006 (PromptDelivery: claude=stdin, zcode=tempfile+--attach, kimi=tempfile+Read-pointer; argv чист, E2BIG закрыт), NXT-007 (P1 triage band по ADR-027: triage.py, маршруты cheap|skip|full fail-open, canary-запрет через triage=false, 25 тестов + replay REV-002; замер экономии открыт — нужны живые прогоны, журнал §30). Мержи 1a0c188 + 6d2ab30, гейт 1404 green. План: 9/28 done (A 4/4, B 4/4, C 1/12).",
       "author": "kimi-code",
