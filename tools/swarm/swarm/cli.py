@@ -11,6 +11,8 @@
     swarm plan --goal "цель"            декомпозиция цели в задачи (план-дифф)
     swarm replan <task> --dispute файл  пересмотр плана по спору исполнителя
     swarm policy add "текст" --match .. решение уровня прогона, а не задачи
+    swarm task add/split/close/list   очередь задач руками, но через валидатор (E2)
+    swarm task check                  целостность tasks.json и схема §4.3
     swarm why [задача]                  почему встала и что делать дальше
     swarm report [--task ID] [--json]   хроника прогона связным текстом
     swarm board [--open]                доска прогона одной страницей (HTML)
@@ -308,6 +310,7 @@ for _cli_mod in (
     "climisc",
     "clireport",
     "clirun",
+    "clitask",
 ):
     sys.modules.pop(_cli_mod, None)
 
@@ -357,6 +360,7 @@ from clirun import (  # noqa: E402,F401
     cmd_resume,
     cmd_run,
 )
+from clitask import cmd_task  # noqa: E402
 
 # Явный re-export: подмодули cli обращаются к этим именам через `cli.X`.
 __all__ = [
@@ -577,6 +581,42 @@ def main(argv: list[str] | None = None) -> int:
         help="расширить границы задачи (можно повторять)",
     )
     p.set_defaults(func=cmd_retry)
+
+    p = sub.add_parser(
+        "task",
+        help="очередь задач руками, но через валидатор схемы §4.3 (E2)",
+    )
+    task_sub = p.add_subparsers(dest="task_cmd", required=True)
+    tp = task_sub.add_parser("list", help="очередь одной строкой на задачу")
+    tp = task_sub.add_parser("check", help="схема §4.3 + след целостности: "
+                             "правка tasks.json в обход API видна по журналу")
+    tp = task_sub.add_parser("add", help="добавить задачу по шаблону типа")
+    tp.add_argument("title", help="название задачи")
+    tp.add_argument("--type", default="feature",
+                    choices=["feature", "feature-tests", "test-task", "idea"],
+                    help="idea — замечание на будущее: без paths/acceptance")
+    tp.add_argument("--path", action="append", default=[],
+                    help="граница задачи, glob (можно повторять)")
+    tp.add_argument("--acceptance", action="append", default=[],
+                    help="проверяемый критерий приёмки (можно повторять)")
+    tp.add_argument("--dep", action="append", default=[],
+                    help="id задачи-предшественника (можно повторять)")
+    tp.add_argument("--milestone", help="привязка к репланингу (§5.4)")
+    tp = task_sub.add_parser("split", help="расщепить задачу на части")
+    tp.add_argument("id", help="id расщепляемой задачи")
+    tp.add_argument("--part", action="append", required=True,
+                    help="название части (повторить для каждой; минимум две)")
+    tp.add_argument("--type", help="тип частей (по умолчанию — тип исходной)")
+    tp.add_argument("--path", action="append", default=[],
+                    help="границы частей (по умолчанию — от исходной)")
+    tp.add_argument("--acceptance", action="append", default=[],
+                    help="приёмка частей (по умолчанию — от исходной)")
+    tp = task_sub.add_parser("close", help="закрыть задачу без петли "
+                             "(idea отработана, ручное решение)")
+    tp.add_argument("id", help="id задачи (pending/blocked; задачу в работе "
+                     "у петли закрывать нельзя)")
+    tp.add_argument("--note", help="причина/итог — останется в задаче")
+    p.set_defaults(func=cmd_task)
 
     p = sub.add_parser("memory", help="память между прогонами (E9)")
     mem_sub = p.add_subparsers(dest="mem_cmd", required=True)
