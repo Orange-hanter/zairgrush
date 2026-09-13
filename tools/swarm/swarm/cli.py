@@ -88,6 +88,8 @@ KNOWN_CONFIG_KEYS = frozenset(
         "review_effort",
         "review_model_pool",
         "review_effort_pool",
+        "review_arm_pool",
+        "confirm_arm_pool",
         "confirm_model",
         "confirm_effort",
         "confirm_model_pool",
@@ -110,6 +112,7 @@ KNOWN_CONFIG_KEYS = frozenset(
 # Режимы траты денег (см. spending.MODES). Продублировано строкой по той
 # же причине, что и список движков: cli грузится раньше плоских модулей.
 SPENDING_MODES = frozenset({"money_bin", "capped"})
+
 
 # Экспериментальные флаги (06-док, §1): та же семантика, что у основного
 # списка, — опечатка в имени флага молча включала бы умолчание.
@@ -146,6 +149,25 @@ DOC_CONTEXT_MODES = frozenset({"off", "executor", "reviewer", "all"})
 EXECUTOR_ENGINES = frozenset({"kimi", "claude", "ollama", "zcode"})
 
 
+def _bad_arms(pool: Any) -> list[str]:
+    """Элементы пула рук не той формы (см. `promptbuilder.draw_arm`).
+
+    Рука — это пара «модель, усилие»: строка, массив или инлайн-таблица.
+    Число, булево или пустой массив рукой не являются, и жребий их не
+    возьмёт; вернуть их оператору — дешевле, чем дать ему прочитать в
+    журнале руку `None`.
+    """
+    if not isinstance(pool, list):
+        return []
+    bad = []
+    for item in pool:
+        ok = (isinstance(item, str | dict)
+              or (isinstance(item, list) and item))
+        if not ok:
+            bad.append(repr(item))
+    return bad
+
+
 def load_config(root: str | pathlib.Path) -> dict[str, Any]:
     path = pathlib.Path(root) / "swarm.toml"
     cfg = {"gate_command": None, "protected_paths": ["tests/*", "tests/**"]}
@@ -171,6 +193,16 @@ def load_config(root: str | pathlib.Path) -> dict[str, Any]:
                     f"если это настройка петли, проверь имя",
                     file=sys.stderr,
                 )
+            for key in ("review_arm_pool", "confirm_arm_pool"):
+                bad = _bad_arms(parsed.get(key))
+                if bad:
+                    # Та же причина, что у незнакомых ключей: элемент не
+                    # той формы жребий не забирает, петля тихо уходит на
+                    # одиночные пулы — и оператор уверен, что меряет пары.
+                    print(f"ВНИМАНИЕ: {path}: {key} — элементы не той формы "
+                          f"({', '.join(bad)}); рука объявляется парой "
+                          f'["модель", "усилие"], пустое усилие — '
+                          f"«флаг не передавать»", file=sys.stderr)
             exp = parsed.get("experiments")
             if isinstance(exp, dict):
                 unknown_exp = sorted(set(exp) - KNOWN_EXPERIMENT_KEYS)
@@ -343,6 +375,7 @@ __all__ = [
     "importlib",
     "tree_sitter_clib",
 ]
+
 
 EPILOG = """
 порядок применения (первый прогон):

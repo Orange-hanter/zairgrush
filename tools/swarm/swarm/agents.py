@@ -178,6 +178,12 @@ class Agents:
         """Делегат к `promptbuilder.tuning`."""
         return promptbuilder.tuning(self, prefix, confirming)
 
+
+    def _draw_arm(self, prefix: str, confirming: bool) -> tuple[Any, Any] | None:
+        """Делегат к `promptbuilder.draw_arm`. Рука — ПАРА «модель +
+        усилие» (см. там же): реализация одна, живёт рядом с `draw`."""
+        return promptbuilder.draw_arm(self, prefix, confirming)
+
     def _draw(self, key: str, confirming: bool) -> Any:
         """Делегат к `promptbuilder.draw`."""
         return promptbuilder.draw(self, key, confirming)

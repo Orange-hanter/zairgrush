@@ -2,7 +2,7 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.31
+version: 0.32
 created: 2026-08-06
 updated: 2026-09-13
 related:
@@ -930,6 +930,99 @@ E6 — отложен (ждёт E1 и потребителя)
   `experiment-e15` (ADR-014), ADR-026 привязан к EXF-001…004.
 
 
+### E16. Дешёвый контур в пути ревью (Step 0 measured; цикл REV-001…005)
+
+> Номер: на ветке плана секция шла как «E12», но в main номер E12 занят
+> замороженными реплей-стендами — при слиянии ветки секция получила
+> собственный номер E16. Фактура шага 0 сохранена как была записана.
+
+Full plan: [09-cheap-review-contour.md](09-cheap-review-contour.md).
+Step 0 report: [experiments/reviewarm/REPORT.md](experiments/reviewarm/REPORT.md).
+Зарегистрировано как пункт программы; решения цикла REV-001…005 —
+ADR-027.
+
+- **A (current)**: one expensive reviewer per round, plus a paid
+  confirming round on the same diff; cheap models serve chores only
+  (§7.2).
+- **B**: cheap models enter the review path as *material*, never as the
+  verdict owner — a free Ollama juror panel under distinct lenses,
+  a 1 M-context digest that replaces the reviewer's own repository walk,
+  deterministic triage for trivial diffs, and `claude-haiku-4-5` as a
+  drawn review arm alongside `claude-opus-5`.
+- **Hypothesis**: the reviewer's bill is *reading the repository*
+  (94 % of cache write is tool-walk depth, governed by effort), not
+  reading the diff; therefore feeding context and buying extra angles
+  from a flat-rate contour beats swapping the reviewer's model.
+- **Decision by**: the gold-set metric reported as a **pair** — metered
+  $ per endorsed major (baseline $39 on PILOT-1) *and* wall-clock plus
+  cheap-token volume, so unmetered work cannot inflate the ratio.
+- **Zero step**: offline replay of the panel roster against
+  `experiments/goldset/labels.jsonl` — no expensive calls, gate before
+  anything is wired into the loop.
+- **Step 0 result (2026-08-20, run twice, $0.00 metered, 70 calls,
+  270 s)**: the free contour produces mechanically valid material —
+  **zero off-diff candidates across 140 calls and 200 candidates**, i.e.
+  the address validator the plan built rejects nothing. Coverage is
+  better than expected: the panel names 28 of the 34 files the paid
+  reviewer named (82 %) and reaches **all 4** files carrying a paid
+  `major` finding. But the **volume gate fails**: 14.3 candidates per
+  diff after dedup against a ceiling of 10, over on 11 of 14 diffs.
+  Dedup is not the lever (jurors under different lenses make different
+  claims about the same file, so 200 raw merge to ~200), and the obvious
+  filter is worse than it looks — keeping only self-rated `major` passes
+  at 4.3/diff while **halving** major-file coverage, 4/4 to 2/4.
+- **Run A was invalid and is kept as evidence**: the wrapper hardcoded
+  `think: false`, which gpt-oss **ignores** (it only accepts a level), so
+  that juror reasoned away its whole `num_predict` and returned empty
+  answers 12 times in 14 — read at the time as "the model is unusable".
+  `think` is a property of the model, not a constant of the call, and the
+  inverse holds: a level destroys the four models that *can* disable the
+  trace. Corrected, `gpt-oss:120b` is the quietest and fastest juror and
+  ties for the most unique reach. The rule had been written in ADR-004
+  seven months earlier and lived only in prose; it is now enforced in
+  code (`ollama_chat(..., think=)`, per-model map, `thinking_chars` in
+  metrics, 4 tests) and recorded as an ADR-004 amendment.
+- **Blocked measurement**: recall against endorsed labels is **not
+  obtainable from committed diffs** — every endorsed finding of PILOT-1
+  was fixed *before* the commit closing its task, so `git show` displays
+  the correction, not the defect. Recall needs a replay over
+  `.swarm/log/<task>-i<N>-executor.jsonl`, which does carry full
+  tool-call arguments. Reported as address agreement (28/34 files, 82 %;
+  all 4 major-finding files) and explicitly not as recall.
+- **Also implemented** (P0's prerequisite, gated green): review arms are
+  drawn as `(model, effort)` **pairs** — `review_arm_pool` /
+  `confirm_arm_pool` in `agents.py::_draw_arm` — so a mixed pool stops
+  emitting the cross product of two independent draws and the journal can
+  name the configuration that produced a verdict. The probe that
+  motivated it corrected the plan: `claude -p --model claude-haiku-4-5
+  --effort xhigh` runs fine ($0.0204), so effort is **not** rejected on
+  Haiku 4.5 as the plan assumed.
+- **Volume lever found, and it is the roster.** Per-juror cap 2 was the
+  plan's recommended next step; measured (run D), it passes the volume
+  gate for the first time (5.0 per diff) and **halves** major-file
+  coverage, 4/4 → 2/4 — the same failure as the severity filter. Cutting
+  the *roster* instead: three jurors give 7.4 per diff against 14.3 for
+  five, lose one address (27/34), and hold 4/4. Three of the five modern
+  models contribute zero unique addresses.
+- **The catalogue has no unusable models.** Bake-off over all 19: at a
+  4000-token ceiling 18 answer; `minimax-m3` needs 12000 and then answers
+  too. The 900-token ceiling came from the metered contour's rule "we
+  don't pay for thinking", which is meaningless on a flat subscription
+  where output tokens cost only latency. `gemma4:31b` — the configured
+  helper default — was the weakest model measured; worth revisiting
+  separately.
+- **Статус: answered, ADR-027.** Цикл REV-001…005 (2026-09-13, $14.78
+  metered) закрыл четыре точки вставки: P0 haiku-плечо — отрицательно
+  (0/3 endorsed majors, пул отключён); P1 детерминированный триаж —
+  жизнеспособен, принят в реализацию (бэнда измерена на распределении
+  самого пилота, safety PASS); P2 панель+адъюдикатор и P3 дайджест —
+  нежизнеспособны в измеренных конфигурациях (retention FAIL, quote-gate
+  FAIL); открытые следующие измерения названы в отчётах. Отчёты:
+  `experiments/goldset/report-rev001.md`,
+  `experiments/reviewarm/report-rev00{2,3,4}.md`; кодовая часть P4
+  (boundary checker) — в tools/swarm (см. changelog v0.32 ниже и журнал
+  07-дока §29).
+
 ## 7. Критерий завершения программы
 
 Программа закрыта, когда по E1–E5, E7, E8 есть ADR (E6 может остаться
@@ -990,6 +1083,16 @@ approve), ADR-026; **E12 — оба реплей-стенда
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.32 (2026-09-13)
+
+- Слияние ветки `worktree-cheap-review-contour-plan`: зарегистрирован
+  **E16** (дешёвый контур в пути ревью) — на ветке секция шла как E12,
+  но номер в main занят реплей-стендами; фактура Step 0 (панель,
+  think-контракт, рычаг состава, bake-off каталога) сохранена, статус
+  заменён замеренным (ADR-027, цикл REV-001…005). В main приехала
+  arm-pool machinery (`_draw_arm`), контракт think хелперов и золотые
+  тесты панели.
 
 ### v0.31 (2026-09-13)
 

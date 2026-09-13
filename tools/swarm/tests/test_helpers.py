@@ -386,6 +386,50 @@ class TestNativeApiContract(unittest.TestCase):
         self.assertNotIn("max_tokens", body,
                          "max_tokens — поле /v1, нативный API его не знает")
 
+    def test_think_level_reaches_the_wire_verbatim(self):
+        """gpt-оss булево ИГНОРИРУЕТ и ждёт уровень (замер REVIEWARM).
+
+        Значит уровень обязан доехать до тела запроса как строка, а не
+        быть приведённым к булеву по дороге: `bool("low")` — это True,
+        то есть «думай сколько хочешь», ровно противоположное намерению.
+        """
+        self.transport({"message": {"content": "ok"}})
+        hp.ollama_chat("p", "t", think="low")
+        self.assertEqual(self.reqs[0]["think"], "low")
+
+    def test_think_defaults_to_false_for_every_other_model(self):
+        """Умолчание не съехало: контур не платит за размышления."""
+        self.transport({"message": {"content": "ok"}})
+        hp.ollama_chat("p", "t")
+        self.assertIs(self.reqs[0]["think"], False)
+
+    def test_thinking_volume_is_metered_apart_from_the_answer(self):
+        """Размышления не идут в результат, но тратят тот же num_predict.
+
+        Без этого числа строка «обрезан» читается как «модель плоха»,
+        хотя бюджет ушёл в размышления, которых не просили, — именно так
+        первый прогон REVIEWARM списал годную модель.
+        """
+        rows = []
+        set_env(self, "SWARM_HELPER_METRICS", "")
+        self.addCleanup(setattr, hp, "_metric", hp._metric)
+        hp._metric = lambda **kw: rows.append(kw)
+        self.transport({"message": {"content": "", "thinking": "ааа" * 10},
+                        "done_reason": "length"})
+        hp.ollama_chat("p", "t", think="low")
+        self.assertEqual(rows[0]["thinking_chars"], 30)
+        self.assertEqual(rows[0]["think"], "low")
+        self.assertTrue(rows[0]["truncated"])
+        self.assertFalse(rows[0]["ok"])
+
+    def test_structured_output_is_not_requested(self):
+        """Облако Ollama не поддерживает structured outputs (документация
+        вендора + замер 2026-08-20: ответ приходит по промпту, не по схеме).
+        Поле `format` в запросе означало бы контракт, которого нет."""
+        self.transport({"message": {"content": "ok"}})
+        hp.ollama_chat("p", "t")
+        self.assertNotIn("format", self.reqs[0])
+
     def test_deterministic_sampling_options(self):
         self.transport({"message": {"content": "ok"}})
         hp.ollama_chat("p", "t")

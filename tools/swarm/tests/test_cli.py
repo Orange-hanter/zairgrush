@@ -376,6 +376,20 @@ class TestConfigValidation(CliCase):
             cfg = cli.load_config(self.root)
         return cfg, buf.getvalue()
 
+    def test_arm_pool_is_a_known_key(self):
+        cfg, err = self._config_stderr(
+            'review_arm_pool = [["claude-opus-5", "xhigh"], '
+            '["claude-haiku-4-5", ""]]\n')
+        self.assertEqual(err, "")
+        self.assertEqual(cfg["review_arm_pool"][1], ["claude-haiku-4-5", ""])
+
+    def test_malformed_arm_warns(self):
+        """Элемент не той формы жребий не забирает: петля тихо уходит на
+        одиночные ключи, а оператор уверен, что меряет пары."""
+        _cfg, err = self._config_stderr("review_arm_pool = [17, []]\n")
+        self.assertIn("review_arm_pool", err)
+        self.assertIn("17", err)
+
     def test_unknown_key_warns(self):
         _cfg, err = self._config_stderr("max_iteration = 5\n")
         self.assertIn("незнакомые ключи", err)

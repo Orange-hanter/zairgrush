@@ -461,9 +461,17 @@ def tuning(agents: AgentsLike, prefix: str, confirming: bool = False) -> list[st
     из формальности во второй угол зрения — и дешевле: $0.88
     против $1.17. `confirm_*` без явной настройки падает обратно на
     `review_*`, то есть умолчание остаётся прежним.
+
+    Пул ПАР (`<prefix>_arm_pool` / `confirm_arm_pool`, см. `draw_arm`)
+    старше одиночных пулов: усилие, привязанное к модели, — часть
+    руки, а не независимый фактор.
     """
-    model = draw(agents, f"{prefix}_model", confirming)
-    effort = draw(agents, f"{prefix}_effort", confirming)
+    arm = draw_arm(agents, prefix, confirming)
+    if arm is None:
+        model = draw(agents, f"{prefix}_model", confirming)
+        effort = draw(agents, f"{prefix}_effort", confirming)
+    else:
+        model, effort = arm
     agents.last_tuning = {"model": model, "effort": effort}
     flags = []
     if model:
@@ -471,6 +479,44 @@ def tuning(agents: AgentsLike, prefix: str, confirming: bool = False) -> list[st
     if effort:
         flags += ["--effort", str(effort)]
     return flags
+
+
+def draw_arm(agents: AgentsLike, prefix: str, confirming: bool
+             ) -> tuple[Any, Any] | None:
+    """Рука замера — ПАРА «модель + усилие», а не произведение двух пулов.
+
+    Независимый жребий по двум ключам порождает сочетания, которых нет
+    ни в одном пуле. Это не теория: `claude-haiku-4-5` усилия не
+    принимает вовсе, и пул `[opus, haiku] × [xhigh, medium]` рано или
+    поздно выдаёт `--model claude-haiku-4-5 --effort xhigh` — вызов,
+    которого никто не задумывал. Рука — это модель ВМЕСТЕ с глубиной;
+    привязка усилия к модели обязана быть частью жребия, а не
+    случайностью порядка ключей. Мотив и замер — E16/REV-001 (09-док).
+
+    Пул пар (`<prefix>_arm_pool`, у подтверждающего раунда —
+    `confirm_arm_pool`) старше одиночных пулов и одиночных значений:
+    он выражает то, что мы сравниваем, точнее них. Форма элемента
+    свободная, потому что конфиг читается как данные, а не как контракт:
+    `["m", "e"]`, `["m"]`, `"m"`, `{"model": ..., "effort": ...}`. Пустое
+    усилие — это «флаг не передавать», то есть рука без ручки глубины,
+    выраженная явно. Элемент не той формы жребий не забирает: молча
+    подставить `None` значит записать в журнал руку, которой не было,
+    поэтому такой пул уступает дорогу прежнему пути (скалярным пулам).
+    """
+    pool = agents.config.get(f"{prefix}_arm_pool")
+    if confirming:
+        pool = agents.config.get("confirm_arm_pool", pool)
+    if not pool:
+        return None
+    arm = agents.rng.choice(list(pool))
+    if isinstance(arm, str):
+        return arm, None
+    if isinstance(arm, dict):
+        return arm.get("model"), arm.get("effort")
+    if isinstance(arm, list | tuple) and arm:
+        pair = [*list(arm), None]
+        return pair[0], pair[1]
+    return None
 
 
 def draw(agents: AgentsLike, key: str, confirming: bool) -> Any:
