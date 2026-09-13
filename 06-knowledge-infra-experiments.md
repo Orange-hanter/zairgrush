@@ -2,9 +2,9 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.33
+version: 0.34
 created: 2026-08-06
-updated: 2026-09-13
+updated: 2026-09-14
 related:
   - 05-agent-swarm.md
   - 05-agent-swarm-audit.md
@@ -632,7 +632,11 @@ summary: >
   promised: the tester runs BEFORE the executor, when no implementation
   exists on disk, and sees only spec and acceptance — no repo map, no
   memory, no other code. The gate between the two is deliberately not
-  checked: fresh tests must be red. Files it wrote become untouchable
+  checked — and after round 1 it is clear why it must not be: fresh tests
+  encode the spec, not a requirement to start red; on a task that
+  PRESERVES behaviour they are legitimately green both before and after
+  (s1ch had 1 of 6 red, s2tn 2 of 5), so a «must be red» check would
+  punish the correct case. Files it wrote become untouchable
   for the executor, tracked by content fingerprint (they sit uncommitted,
   so a path-only rule would have failed every round on the loop's own
   setup). Its contract carries a field no other role has — `unclear`: a
@@ -669,6 +673,20 @@ summary: >
   (2) Survival must be scored against the spec, discounting positions
   the tester declared `unclear`. The sample is thin besides: four tasks,
   one repository, every task converged in a single round.
+- **Change (1) done 2026-08-23 (prompt) / 2026-09-14 (bookkeeping,
+  NXT-018).** The tester prompt now states both task shapes directly:
+  tests encode the SPEC — the expected behaviour after the change — and
+  are not required to fail beforehand; an ADD-behaviour task starts red
+  by construction, a PRESERVE-behaviour task is guarded by tests green
+  on both sides, and both extremes are forbidden (no invented failures,
+  no skip/xfail to force green). The same false premise sat in two more
+  places and is corrected there too: the «fresh tests must be red»
+  justification of the unchecked gate (above, and the matching comment
+  in `loop.py`). The contract is untouched: output schema, `unclear`,
+  file list and the survival-scoring hooks are byte-identical. Round 2
+  rerun is prepared and deferred behind budget approval — the exact
+  commands and the cost envelope are in the journal
+  (07-док, §31); no paid calls were made for this preparation.
 - **Change (2) done 2026-08-24 — and it doubles arm B's margin.** Every
   mutant that survived, and every mutant CAUGHT in the same positions,
   was classified against the spec text into three classes:
@@ -1098,6 +1116,17 @@ approve), ADR-026; **E12 — оба реплей-стенда
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.34 (2026-09-14)
+
+- E11 раунд 2, изменение (1) зафиксировано как сделанное (NXT-018, только
+  бесплатная половина): ложная посылка «тесты обязаны падать сегодня»
+  убрана из промпта тестировщика ещё 2026-08-23 (c2fcf51), теперь
+  выметены и её следы — обоснование непроверяемого гейта в §E11 и
+  комментарий в `loop.py`. Тесты гейта покрывают обе формы задач
+  (добавляющую и сохраняющую поведение). Парный перезапуск бенча
+  подготовлен (команды и конверт $5–10 — в 07-доке §31) и ОТЛОЖЕН за
+  бюджетным решением владельца; платных вызовов не было.
 
 ### v0.33 (2026-09-13)
 
