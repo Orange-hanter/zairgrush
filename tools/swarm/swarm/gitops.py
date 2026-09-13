@@ -40,7 +40,10 @@ def gate(loop: LoopLike, task: dict[str, Any]) -> tuple[bool, str]:
         "python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]
         # Холодная сборка Rust не влезает в 900 с, а таймаут здесь —
         # исключение, топившее задачу в in_progress (до §5.3-починки).
-    r = loop.sh(cmd, timeout=int(loop.config.get("gate_timeout", 900)))
+    # Отметка о настоящем (state.phase): полный сьют идёт минутами, и
+    # без неё доска весь гейт показывает последний завершённый раунд.
+    with loop.state.phase("gate", task["id"]):
+        r = loop.sh(cmd, timeout=int(loop.config.get("gate_timeout", 900)))
     tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-3:])
     ok = r.returncode == 0
     loop.state.metric(task=task["id"], phase="gate", ok=ok, tail=tail[:300])

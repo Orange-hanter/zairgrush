@@ -54,6 +54,13 @@ def common_prefix(a, b):
     return len(os.path.commonprefix([a, b]))
 
 
+# Фаза в двойнике состояния: `agents.review` объявляет, чем занята петля
+# прямо сейчас (`state.phase` → `.swarm/now.json`), и двойник, который
+# этого не умеет, роняет вызов ещё до промпта. Пустой контекст — ровно
+# то, чем фаза является для этих тестов: они меряют промпт, а не доску.
+PHASE_STUB = staticmethod(lambda *a, **kw: contextlib.nullcontext())
+
+
 class PromptCase(unittest.TestCase):
     """Промпты строятся без состояния на диске: подставляем минимум."""
 
@@ -61,6 +68,7 @@ class PromptCase(unittest.TestCase):
         self.agents = ag.Agents.__new__(ag.Agents)
         self.agents.config = {}
         self.agents.state = type("S", (), {
+            "phase": PHASE_STUB,
             "load_tasks": staticmethod(lambda: {"goal": "цель прогона"}),
         })()
 
@@ -243,6 +251,7 @@ class TestExecutorScopeDiscipline(unittest.TestCase):
         self.agents = ag.Agents.__new__(ag.Agents)
         self.agents.config = {}
         self.agents.state = type("S", (), {
+            "phase": PHASE_STUB,
             "load_tasks": staticmethod(lambda: {"goal": "цель"}),
         })()
 
@@ -342,6 +351,7 @@ class TestRoleTuning(unittest.TestCase):
         a.driver = _load("driver")
         a.last_review_failure = None
         a.state = type("S", (), {
+            "phase": PHASE_STUB,
             "root": ".", "dir": pathlib.Path(tempfile.gettempdir()),
             "work_diff": staticmethod(lambda: "diff --git a/x b/x\n+1"),
             "metric": staticmethod(lambda **k: None),
@@ -627,6 +637,7 @@ class TestTuningPools(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         (pathlib.Path(tmp.name) / "log").mkdir()
         a.state = type("S", (), {
+            "phase": PHASE_STUB,
             "root": ".", "dir": pathlib.Path(tmp.name),
             "metric": staticmethod(lambda **k: rows.append(k)),
             "log": staticmethod(lambda *x, **k: None),
@@ -666,6 +677,7 @@ class TestConfirmLensGating(unittest.TestCase):
         a.last_review_failure = None
         a.work_diff = lambda: "diff --git a/x b/x\n+1"
         a.state = type("S", (), {
+            "phase": PHASE_STUB,
             "root": ".", "dir": pathlib.Path(tempfile.gettempdir()),
             "metric": staticmethod(lambda **k: None),
             "log": staticmethod(lambda *x, **k: None),
@@ -730,6 +742,7 @@ class TestReviewMetricsTelemetry(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         (pathlib.Path(tmp.name) / "log").mkdir()
         a.state = type("S", (), {
+            "phase": PHASE_STUB,
             "root": ".", "dir": pathlib.Path(tmp.name),
             "metric": staticmethod(lambda **k: rows.append(k)),
             "log": staticmethod(lambda *x, **k: None),

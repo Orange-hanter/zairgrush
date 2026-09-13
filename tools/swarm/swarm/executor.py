@@ -99,8 +99,12 @@ def implement(
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800),
     )
     parser, extract = engines.stream_pipeline(kind, agents.driver)
-    run = drv.start(cmd, parser=parser)
-    result = run.collect(extract)
+    # Пока идёт вызов — единственная запись о происходящем: метрика
+    # появится только после (state.phase).
+    with agents.state.phase("implement", task["id"], iter=iteration,
+                            engine=engine, model=model or None):
+        run = drv.start(cmd, parser=parser)
+        result = run.collect(extract)
     # Метка плеча в имени файла. Без неё оба исполнителя дуэли писали бы
     # сырьё в ОДИН путь из двух потоков: поток теневого плеча затирал бы
     # поток живого, и разбираться потом было бы не по чему — ровно та

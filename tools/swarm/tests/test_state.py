@@ -247,5 +247,90 @@ for i in range(int(n)):
                          "потерянные записи конкурирующих писателей")
 
 
+
+class TestPhaseMark(unittest.TestCase):
+    """Отметка о настоящем: `now.json` живёт ровно пока идёт фаза.
+
+    До неё в `.swarm/` семь минут работы исполнителя не оставляли ни
+    строки — журнал и метрики пишутся ПОСЛЕ фазы, и доска показывала
+    последний завершённый раунд, не имея способа сказать, идёт ли новый.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = st.SwarmState(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_mark_appears_during_and_disappears_after(self):
+        self.assertIsNone(self.state.current_phase())
+        with self.state.phase("implement", "t1", iter=2, engine="kimi"):
+            row = self.state.current_phase()
+            self.assertEqual(row["phase"], "implement")
+            self.assertEqual(row["task"], "t1")
+            self.assertEqual(row["iter"], 2)
+            self.assertTrue(row["since"])
+        self.assertIsNone(self.state.current_phase())
+        self.assertFalse(self.state.now_path.exists())
+
+    def test_nested_phase_returns_the_outer_one(self):
+        """Проверки внутри ревью — фаза внутри фазы: выход из вложенной
+        не значит, что петля бездельничает."""
+        with self.state.phase("review", "t1"):
+            with self.state.phase("verification", "t1"):
+                self.assertEqual(self.state.current_phase()["phase"],
+                                 "verification")
+            self.assertEqual(self.state.current_phase()["phase"], "review")
+        self.assertIsNone(self.state.current_phase())
+
+    def test_mark_survives_a_crash_inside_the_phase(self):
+        """Убитый процесс `finally` не отрабатывает — и тогда файл
+        называет фазу, на которой прогон оборвался. Здесь тот же эффект
+        воспроизводится записью без снятия."""
+        self.state._phases.append({"phase": "implement", "task": "t1",
+                                   "since": "2026-08-24T09:00:00+00:00"})
+        self.state._phase_write()
+        fresh = st.SwarmState(self.tmp.name)
+        self.assertEqual(fresh.current_phase()["phase"], "implement")
+
+    def test_broken_mark_is_data_not_a_crash(self):
+        self.state.now_path.write_text("{обрезано", encoding="utf-8")
+        self.assertIsNone(self.state.current_phase())
+
+
+class TestIsRunning(unittest.TestCase):
+    """Живость прогона — захваченная блокировка, а не pid из файла.
+
+    pid переиспользуется системой, и мёртвый прогон изредка «оживал»
+    чужим процессом с тем же номером.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_no_lock_file_means_not_running(self):
+        self.assertFalse(st.SwarmState(self.root).is_running())
+
+    def test_stale_lock_file_is_not_a_running_loop(self):
+        state = st.SwarmState(self.root)
+        state.lock_path.write_text("999999\n", encoding="utf-8")
+        self.assertFalse(state.is_running())
+
+    def test_held_lock_is_seen_from_another_handle(self):
+        holder = st.SwarmState(self.root)
+        holder.acquire()
+        try:
+            self.assertTrue(st.SwarmState(self.root).is_running())
+            self.assertTrue(holder.is_running())
+        finally:
+            holder.release()
+        self.assertFalse(st.SwarmState(self.root).is_running())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
