@@ -454,6 +454,21 @@ NARRATORS: dict[str, Narrator] = {
          f"{_s(r.get('verdict'))}, находок {r.get('findings')}"
          + (" (поля разобраны из одного)" if r.get("repaired") else "")),
         {"round", "verdict", "findings", "repaired"}),
+    # Триаж P1 (ADR-027): экономия бэнды меряется по этим записям —
+    # молчащий триаж был бы одновременно невидимой экономией и
+    # невидимым риском (пропущенное ревью, которого никто не видел).
+    "band_hit": lambda r: (
+        (f"триаж P1 в раунде {r.get('round')}: маршрут {_s(r.get('action'))} "
+         f"({r.get('diff_files')} ф., {r.get('diff_lines')} строк)"
+         + (f", рука {_s(r.get('model'))}" if r.get("model") else "")
+         + (f" — {_s(r.get('reason'))}" if r.get("reason") else "")),
+        {"round", "action", "model", "effort", "reason",
+         "diff_files", "diff_lines", "docs_only"}),
+    "guard_block": lambda r: (
+        (f"триаж P1 остановлен стражем в раунде {r.get('round')} "
+         f"({_s(r.get('reason'))}) — полное ревью "
+         f"({r.get('diff_files')} ф., {r.get('diff_lines')} строк)"),
+        {"round", "reason", "diff_files", "diff_lines"}),
     # Плечо B E11 видно построчно: кто написал тесты — вопрос замера, и
     # «неясное в спецификации» ценнее самих тестов, потому что это
     # находка о ПОСТАНОВКЕ, а не о коде.
