@@ -24,6 +24,7 @@ import parsing as parsing_mod  # noqa: E402
 import pathsafe  # noqa: E402
 import promptbuilder  # noqa: E402
 import spending  # noqa: E402
+import triage as triage_mod  # noqa: E402
 from agents_types import AgentsLike  # noqa: E402
 
 # Имя логера оставлено "agents": журнал наблюдаемости — контракт,
@@ -57,6 +58,52 @@ def _boundary_note_for(agents: AgentsLike, task: dict[str, Any],
         agents.state.log("boundary_note", task=task["id"],
                          round=iteration, note=note[:300])
     return note
+
+
+
+def _triage(agents: AgentsLike, task: dict[str, Any], raw_diff: str,
+            diff_files: int, diff_lines: int, iteration: int
+            ) -> tuple[str, tuple[Any, Any] | None]:
+    """Маршрут P1-триажа (ADR-027) с журнальными событиями; fail-open.
+
+    События — данные замера экономии: band_hit фиксирует маршрут
+    (skip / cheap / full при незаданной руке), guard_block — причину, по
+    которой дифф бэнды ушёл на полное ревью. Любой сбой классификатора
+    стоит ноль: полное ревью, как до введения полосы (§7.3 fail-open).
+    """
+    try:
+        decision = triage_mod.decide(raw_diff, diff_files, diff_lines,
+                                     agents.config)
+    except Exception:
+        log.warning("триаж не решён — полное ревью", exc_info=True)
+        return "full", None
+    block = decision.get("guard_block")
+    if block:
+        agents.state.log("guard_block", task=task["id"], round=iteration,
+                         reason=block, diff_files=diff_files,
+                         diff_lines=diff_lines)
+        return "full", None
+    route = str(decision.get("route"))
+    if route == "skip":
+        agents.state.log("band_hit", task=task["id"], round=iteration,
+                         action="skip", docs_only=True,
+                         diff_files=diff_files, diff_lines=diff_lines)
+        return "skip", None
+    if route != "cheap":
+        return "full", None
+    arm = triage_mod.cheap_arm(agents.config)
+    if arm is None or not arm[0]:
+        # Код без дешёвой руки пропустить нельзя (skip — только docs_only),
+        # а одобрять триаж не вправе: fail-open, но факт — в журнал,
+        # иначе несостоявшаяся экономия неотличима от отсутствия бэнды.
+        agents.state.log("band_hit", task=task["id"], round=iteration,
+                         action="full", reason="triage_arm не задана",
+                         diff_files=diff_files, diff_lines=diff_lines)
+        return "full", None
+    agents.state.log("band_hit", task=task["id"], round=iteration,
+                     action="cheap", model=arm[0], effort=arm[1],
+                     diff_files=diff_files, diff_lines=diff_lines)
+    return "cheap", arm
 
 
 
@@ -99,6 +146,27 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     raw_diff = agents.work_diff()
     diff = parsing_mod.condense_diff(raw_diff)
     diff_files, diff_lines = parsing_mod.diff_size(raw_diff)
+    # P1-триаж (ADR-027): бэнда читает ТЕ ЖЕ diff_files/diff_lines, что
+    # уходят в метрику ниже, — второй редакции размера у полосы нет.
+    # Мимо бэнды маршрут "full", и путь дальше не меняется ни на байт.
+    triage_route, triage_arm = _triage(agents, task, raw_diff, diff_files,
+                                       diff_lines, iteration)
+    if triage_route == "skip":
+        # docs_only + guard: ревью пропускается с отметкой band_hit.
+        # Контракт петли требует вердикт, поэтому возвращается явный
+        # approve с пометкой `triaged` — отличим от вердикта руки и в
+        # журнале, и в метрике. Код этим путём не идёт никогда.
+        agents.state.metric(task=task["id"], iter=iteration, phase="review",
+                          attempt=attempt, dur_s=0.0, run_reason="triaged",
+                          cost_usd=0.0, verdict="approve", findings=0,
+                          blockers=0, majors=0, minors=0,
+                          diff_files=diff_files, diff_lines=diff_lines,
+                          valid=True, triage="skip", confirming=confirming)
+        return {"verdict": "approve", "findings": [], "triaged": "skip",
+                "analysis": "дифф документационный (docs_only): ревью "
+                            "пропущено триажем P1 по ADR-027, отметка "
+                            "band_hit в журнале",
+                "summary": "docs_only: полное ревью пропущено (триаж P1)"}
     # Предревью-заметка о границах (REV-005, P4): та же геометрия, что у
     # стража gitops.scope_check, но со стороны рецензента и до вызова.
     # 7/7 споров пилота удовлетворены — постановка, а не код; ревьюер,
@@ -135,6 +203,15 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                              usedforsecurity=False).hexdigest()[:12]
     task_sha = hashlib.sha1(task_part.encode(),
                             usedforsecurity=False).hexdigest()[:12]
+    tuning_flags = promptbuilder.tuning(agents, "review", confirming)
+    if triage_route == "cheap" and triage_arm is not None:
+        # Дешёвая рука заменяет жребий ЦЕЛИКОМ, а не подмешивается в пул:
+        # бэнда — детерминированный маршрут, и рука в нём — свойство
+        # маршрута, а не лотереи. Вердикт остаётся полным контрактом.
+        model, effort = triage_arm
+        tuning_flags = ([*(["--model", str(model)] if model else []),
+                         *(["--effort", str(effort)] if effort else [])])
+        agents.last_tuning = {"model": model, "effort": effort}
     cmd = ["claude", "-p", rules_part + task_part + tail_part,
            "--output-format", "stream-json", "--verbose",
            "--include-partial-messages",
@@ -145,7 +222,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
            # бюджету» — штатный диагноз петли. В режиме money_bin флага
            # нет вовсе, явно заданный — действует (см. spending.py).
            *spending.budget_flags(agents.config, "review_budget_usd"),
-           *promptbuilder.tuning(agents, "review", confirming)]
+           *tuning_flags]
     drv = agents.driver.AgentDriver(
         cwd=str(agents.state.root),
         silence_timeout=agents.config.get("silence_timeout", 600),
@@ -226,6 +303,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                       findings=len((verdict or {}).get("findings", [])),
                       **_severity_counts(verdict),
                       diff_files=diff_files, diff_lines=diff_lines,
+                      triage=("cheap" if triage_route == "cheap" else None),
                       valid=valid, terminal_reason=terminal,
                       salvaged=salvaged or None,
                       confirming=confirming, rules_sha=rules_sha,

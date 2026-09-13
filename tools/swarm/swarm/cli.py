@@ -97,6 +97,8 @@ KNOWN_CONFIG_KEYS = frozenset(
         "confirm_model_pool",
         "confirm_effort_pool",
         "confirm_lens",
+        "triage",
+        "triage_arm",
         "memory_db",
         "memory_budget_chars",
         "memory_top_k",
