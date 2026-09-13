@@ -75,6 +75,12 @@ graph TD
   "changelog": [
     {
       "date": "2026-09-13",
+      "action": "Реализация next-2026-09, секция A + часть C: влиты 4 ветки (arch-diagrams ddd1479, board-console 514f614, inbox-triage cb7b0e9, stand-cod-doc 8daffdb) + найденное в дереве изменение live_board opt-in (bc754d1, изолировано отдельным коммитом); NXT-016: swarm task add/split/close/list/check (clitask.py, 13 тестов, merge f4d9b50) — решающий замер E2 требует живого прогона, эксперимент остаётся открытым; NXT-008 закрыта как superseded (metrics row пришла с inbox-triage). Гейт 1348 green, drift=0 (184 docs: +11-architecture-diagrams, +rubric-snapshot/REPORT, +stands/cod-doc/README). Frontmatter нормализован: 11 — type architecture, 07 — status active.",
+      "author": "kimi-code",
+      "scope": "master"
+    },
+    {
+      "date": "2026-09-13",
       "action": "Создан план next-2026-09 (NXT-001…028, 4 секции) по инвентарю незакрытой работы: A — мержи 4 оставшихся веток (arch-diagrams, board-console, inbox-triage, stand-cod-doc), B — инфраструктура петли (budget kill-switch, prompt-via-stdin, P1 triage band по ADR-027, review metrics row), C — измерения (B2–B8 из report-rev003/004, E2/E3/E5/E7/E11/E13; E7 заблокирован E3), D — решения владельца (брифы C1–C4, sandbox A1, пилотные бюджеты ~$130, 07 §21). Аудит плана чист (0 issues). Потеря: experiments/reviewarm/out2/ уничтожены вместе с worktree cheap-review-contour-plan (out*/ gitignored) — B2-перемер требует перегенерации панели.",
       "author": "kimi-code",
       "scope": "master"

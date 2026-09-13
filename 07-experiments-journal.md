@@ -1,7 +1,7 @@
 ---
 title: "ZeusLogic — Инженерный журнал программы экспериментов"
 type: journal
-status: living
+status: active
 version: 0.21
 created: 2026-08-07
 updated: 2026-09-13

@@ -1,6 +1,6 @@
 ---
 title: "ZAIrgRush — architecture in diagrams: agents, data flow, gates"
-type: reference
+type: architecture
 status: draft
 version: 0.2
 created: 2026-08-23
