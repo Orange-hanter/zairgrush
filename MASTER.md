@@ -55,7 +55,7 @@ graph TD
 
 ```json
 {
-  "next_step": "Выполнить план hardening-2026-09 (живёт в cod-doc DB, scope `hardening-2026-09`, не файлом в репозитории): секция A — гигиена документов, B — ADR-процесс, C — бэклог; задачи HRD-001…HRD-008",
+  "next_step": "Выполнить план next-2026-09 (cod-doc DB, scope `next-2026-09`): секция A — мержи оставшихся веток, B — инфраструктура петли (kill-switch, argv, triage band, metrics row), C — измерения и эксперименты (B2–B8, E2/E3/E5/E7/E11/E13), D — решения владельца (брифы C1–C4, sandbox, бюджеты); задачи NXT-001…NXT-028",
   "required_input": "Приоритетные компоненты для спецификации, выбор между docs-first или code-first подходом",
   "blocked_by": []
 }
@@ -73,6 +73,12 @@ graph TD
     "timestamp": "2026-09-07T00:00:00Z"
   },
   "changelog": [
+    {
+      "date": "2026-09-13",
+      "action": "Создан план next-2026-09 (NXT-001…028, 4 секции) по инвентарю незакрытой работы: A — мержи 4 оставшихся веток (arch-diagrams, board-console, inbox-triage, stand-cod-doc), B — инфраструктура петли (budget kill-switch, prompt-via-stdin, P1 triage band по ADR-027, review metrics row), C — измерения (B2–B8 из report-rev003/004, E2/E3/E5/E7/E11/E13; E7 заблокирован E3), D — решения владельца (брифы C1–C4, sandbox A1, пилотные бюджеты ~$130, 07 §21). Аудит плана чист (0 issues). Потеря: experiments/reviewarm/out2/ уничтожены вместе с worktree cheap-review-contour-plan (out*/ gitignored) — B2-перемер требует перегенерации панели.",
+      "author": "kimi-code",
+      "scope": "master"
+    },
     {
       "date": "2026-09-12",
       "action": "Hardening-прогон: HRD-001 (нормализация type: в frontmatter, import без warnings), HRD-002 (разделы specs/models/docs наполнены реальными индексами, VERIFIED честный), HRD-003 (ADR-025: каноникал ADR — таблица adr в DB, docs/adr — проекции, 24 дубля удалены из Documents), HRD-004 (routine weekly_drift_check), HRD-005 (ADR-014 связан с HRD-001..008), HRD-006 (6 failed legacy закрыты), HRD-007 (выборочная сверка LEG: найдена и исправлена битая JSON-структура changelog — две записи без открывающей скобки). Зарегистрирован эксперимент E15 (семейство ревьюера), план experiment-e15 (EXF-001..004). drift=0 (145 docs).",
