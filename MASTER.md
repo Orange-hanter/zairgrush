@@ -31,7 +31,7 @@ graph TD
 
 ### Architecture
 - **Описание:** Архитектурные решения, диаграммы компонентов и ADR проекта.
-- **Ссылка:** `📁 /arch/README.md | 🗃️ doc:arch_README_md | 🔑 sha:c776e5ea34d5`
+- **Ссылка:** `📁 /arch/README.md | 🗃️ doc:arch_README_md | 🔑 sha:99294a07e8dd`
 - **Статус:** `🟢 VERIFIED`
 - **Ответственный агент:** `@Orchestrator`
 

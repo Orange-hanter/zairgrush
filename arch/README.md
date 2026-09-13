@@ -4,7 +4,7 @@ status: draft
 source_of_truth: true
 owner: cod-doc core
 created: 2026-08-28
-updated: 2026-09-13 (ADR-026: ревьюер и исполнитель — разные семейства, замерено E15)
+updated: 2026-09-13 (ADR-027: дешёвый контур ревью — цикл REV-001…005, триаж принят, остальное замерено-отрицательно)
 ---
 
 # 🏗️ Architecture
@@ -34,6 +34,7 @@ updated: 2026-09-13 (ADR-026: ревьюер и исполнитель — ра�
 | ADR-024 | Память между прогонами: файлы первичны, PG — индекс | accepted | [013](../experiments/adr/013-memory-architecture.md) |
 | ADR-025 | Каноникал ADR — таблица `adr` в DB; `docs/adr/` — проекции, не Documents (`import docs --exclude 'docs/adr'`) | accepted | только в DB (docs/adr/ADR-025.md) |
 | ADR-026 | Ревьюер и исполнитель — разные семейства моделей; совпадение — заявляемое исключение (замерено E15) | accepted | только в DB (docs/adr/ADR-026.md) |
+| ADR-027 | Дешёвый контур ревью: триаж детерминированный — да; haiku-плечо, панель+adjudicator, дайджест — нет (замерено, цикл REV-001…005) | accepted | только в DB (docs/adr/ADR-027.md) |
 
 ## Исторические (superseded)
 

@@ -2,9 +2,9 @@
 title: "ZeusLogic — Cheap models in the review path: a plan"
 type: design
 status: draft
-version: 0.6
+version: 0.7
 created: 2026-08-20
-updated: 2026-09-12
+updated: 2026-09-13
 related:
   - 05-agent-swarm.md
   - 06-knowledge-infra-experiments.md
@@ -299,21 +299,56 @@ adjudicator** — run an expensive model over the three-juror output and
 measure what it costs. That step is metered, so it awaits owner approval.
 Until then P2 stays unbuilt and P0/P1/P3 are unaffected.
 
-**Step 1 — P0**: tuple-draw fix + Haiku in the pool. Runs inside the next
-pilot queue with no protocol change. *Tuple draw implemented and gated
-(997 tests + 378 subtests green); Haiku in the pool still awaits owner
-approval, since it is metered.*
+**Step 1 — P0: measured 2026-09-13, NEGATIVE (REV-001).** Haiku in the
+pool ran against the goldset ground (14 diffs, $1.56): 0/3 endorsed
+majors re-found, 0/6 endorsed claims — the cheap arm approves what it
+cannot see (details: `experiments/goldset/report-rev001.md`). The pool
+added to the pilot stand was disabled again with a dated comment; the
+tuple-draw machinery itself still lives on branch
+`worktree-cheap-review-contour-plan`, not on main. Haiku stays out of
+the verdict path; §7.2's rule stands measured, not assumed.
 
-**Step 2 — P1**: deterministic band, measured against the pilot's own
-diff-size distribution before any classifier is written.
+**Step 2 — P1: measured 2026-09-13, VIABLE (REV-002, accepted — code is
+future work).** The pilot's own distribution (18 diffs, median 370
+lines/3 files, $25.66 paid) gave the band: cheap = (single file AND
+≤100 changed lines) OR docs-only; guard = not protected, no new
+dependency, gate green. Safety gate PASS: all three endorsed-major
+grounds excluded by the single-file predicate at any threshold below
+369. Savings: 13.1% of pilot history (one diff — a 64-line load.rs that
+had burned $3.41 on two quota-dead calls), 67% on the E13 micro-diff
+profile; triage stays forbidden on canary/adversarial harnesses. The
+test-only predicate is unreachable under pilot `protected_paths` and
+the data says keep it that way (`experiments/reviewarm/report-rev002.md`).
 
-**Step 3 — P2/B2** behind `[experiments] panel`, fail-open, metrics into
-the stand's `.swarm/helper-metrics.jsonl` (artifact hygiene, AUDIT-3).
+**Step 3 — P2/B2: measured 2026-09-13, NOT viable in this configuration
+(REV-003, $9.24).** The adjudicator itself is cheap — opus/high at
+$0.44/diff, −62% vs direct review, volume far under the plan's <10
+ceiling — but its verify-and-drop contract on closing ground cut the
+panel's signal: major-files 1/4 (from 4/4), address coverage 9/27
+(`experiments/reviewarm/report-rev003.md`). The panel's free material
+and its 4/4 major-file reach survive; the next levers named there
+(keep-unless-contradicted contract, B1 append-as-leads, round-ground
+adjudication) are open measurements, not decisions. Building P2 behind
+`[experiments] panel` is not warranted on this evidence.
 
-**Step 4 — P3 digest** — one factor per run, per the program rule.
+**Step 4 — P3 digest: measured 2026-09-13, NOT viable in this
+configuration (REV-004, $3.98).** deepseek-v4-flash digests (15
+multi-file diffs, $0, 3-9 s each) failed the plan's own checkable-quote
+gate: 71% of quotes real, 29% at the stated file:line, vs ≥80%
+required; feeding mechanically filtered quotes to the reviewer held
+neither axis — cost up on average (+17%), tail timeouts 3/15, address
+coverage 4→1 (`experiments/reviewarm/report-rev004.md`). The quote
+checker itself works and is reusable; the digest-as-navigation variant
+is an open measurement, not this one.
 
-P4's diagnoser replacement can land at any time; it does not touch the
-review path.
+**P4 — SHIPPED 2026-09-13 (REV-005).** The boundary checker (new
+`boundarynote.py`: deterministic statement↔diff note, fail-open, one
+journal mark per (task, note), 30 tests) went through an ai-review
+cycle (2 major + 4 minor + 3 nit, all fixed) and ships with the gate
+green (1291 passed). The size-diagnoser turned out to be already
+replaced on main (d939ba3, golden-benched against all six PILOT-1
+cases) — verified, not rewritten. Refuters skipped as optional.
+It does not touch the review path's verdict machinery.
 
 ---
 
@@ -403,6 +438,21 @@ confirm it, and both are cheap.
 ---
 
 ## Журнал изменений
+
+### v0.7 (2026-09-13)
+
+- Цикл REV-001…005 закрыт (план `swarm-review-path`, ADR-027). Четыре
+  замера и один ремонт; суммарно потрачено $14.78 metered. P0 haiku —
+  отрицательно (0/3 endorsed majors, пул отключен датированным
+  комментарием); P1 детерминированный триаж — жизнеспособен и
+  принят в реализацию (код — будущая работа, бэнда измерена на
+  распределении самого пилота, safety PASS, 13–67% экономии); P2
+  панель+адъюдикатор и P3 дайджест — нежизнеспособны в измеренной
+  конфигурации (retention FAIL и quote-gate FAIL соответственно;
+  следующие измерения названы в отчётах, не решены). P4 отгружен:
+  boundary checker в коде после ревью-цикла, диагност размера
+  подтверждён уже заменённым на main. Отчёты: experiments/goldset/
+  report-rev001.md, experiments/reviewarm/report-rev00{2,3,4}.md.
 
 ### v0.6 (2026-09-12)
 
