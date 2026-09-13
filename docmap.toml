@@ -1,0 +1,174 @@
+# docmap.toml — E5, вариант B: карта «код → секции документов».
+#
+# Формат (stdlib tomllib):
+#   [[map]]
+#   code = "путь/или/glob/**"            # от корня репо, fnmatch-синтаксис
+#   docs = ["файл.md", "файл.md#якорь"]  # якорь — подстрока заголовка markdown
+#
+# Механика: изменился файл, покрытый `code`, → перечисленные секции
+# ПОДОЗРЕВАЕМЫ на рассинхрон. Детект полностью механический, LLM нужен
+# только чтобы сформулировать правку (эта часть — отдельно и за флагом).
+# Саму карту тоже проверяет машина: glob без совпадений, несуществующий
+# документ, якорь, которого нет ни в одном заголовке, — всё это warning
+# (`swarm docmap`). Секция без владельца-кода в карте не появляется —
+# она просто не покрыта, и это видно по пустому suspects на её правках.
+
+[[map]]
+code = "tools/swarm/swarm/loop.py"
+docs = ["05-agent-swarm.md#Цикл работы", "05-agent-swarm.md#Стоп-условия", "08-operators-guide.md#Рабочий цикл"]
+
+[[map]]
+code = "tools/swarm/swarm/state.py"
+docs = ["05-agent-swarm.md#tasks.json", "05-agent-swarm.md#Проверка целостности"]
+
+[[map]]
+code = "tools/swarm/swarm/planner.py"
+docs = ["05-agent-swarm.md#Планировщик", "08-operators-guide.md#Планировщиком"]
+
+[[map]]
+code = "tools/swarm/swarm/executor.py"
+docs = ["05-agent-swarm.md#Задача (оркестратор", "05-agent-swarm.md#Отчёт исполнителя"]
+
+[[map]]
+code = "tools/swarm/swarm/reviewer.py"
+docs = ["05-agent-swarm.md#Verdict (ревьюер", "08-operators-guide.md#Ревью, которое не прошло контракт"]
+
+[[map]]
+code = "tools/swarm/swarm/engines.py"
+docs = ["08-operators-guide.md#Кем исполнять", "05-agent-swarm.md#Слой запуска"]
+
+[[map]]
+code = "tools/swarm/swarm/driver.py"
+docs = ["05-agent-swarm.md#Слой запуска", "05-agent-swarm.md#Живость агентов"]
+
+[[map]]
+code = "tools/swarm/swarm/helpers.py"
+docs = ["05-agent-swarm.md#Дешёвые модели", "05-agent-swarm.md#Роли хелперов", "05-agent-swarm.md#Способы вызова"]
+
+[[map]]
+code = "tools/swarm/swarm/docctx.py"
+docs = ["05-agent-swarm.md#Роли хелперов", "06-knowledge-infra-experiments.md#E5."]
+
+[[map]]
+code = "tools/swarm/swarm/docmap.py"
+docs = ["06-knowledge-infra-experiments.md#E5."]
+
+[[map]]
+code = "tools/swarm/swarm/mem*.py"
+docs = ["05-agent-swarm.md#Знаниевая инфраструктура", "08-operators-guide.md#Память между прогонами"]
+
+[[map]]
+code = "tools/swarm/swarm/codemap.py"
+docs = ["05-agent-swarm.md#Чем индексировать код"]
+
+[[map]]
+code = "tools/swarm/swarm/pyindex.py"
+docs = ["05-agent-swarm.md#Чем индексировать код"]
+
+[[map]]
+code = "tools/swarm/swarm/unclear.py"
+docs = ["06-knowledge-infra-experiments.md#E14."]
+
+[[map]]
+code = "tools/swarm/swarm/tester.py"
+docs = ["06-knowledge-infra-experiments.md#E11."]
+
+[[map]]
+code = "tools/swarm/swarm/triage.py"
+docs = ["06-knowledge-infra-experiments.md#E16."]
+
+[[map]]
+code = "tools/swarm/swarm/clitask.py"
+docs = ["06-knowledge-infra-experiments.md#E2."]
+
+[[map]]
+code = "tools/swarm/swarm/board*.py"
+docs = ["08-operators-guide.md#Наблюдение"]
+
+[[map]]
+code = "tools/swarm/swarm/spending.py"
+docs = ["05-agent-swarm.md#Стоп-условия"]
+
+[[map]]
+code = "tools/swarm/swarm/gitops.py"
+docs = ["05-agent-swarm.md#Коммиты, алиасы", "05-agent-swarm.md#Чистый выход"]
+
+[[map]]
+code = "tools/swarm/swarm/pathsafe.py"
+docs = ["05-agent-swarm.md#Разрешённые пути задачи"]
+
+[[map]]
+code = "tools/swarm/swarm/duel.py"
+docs = ["06-knowledge-infra-experiments.md#Правила программы"]
+
+[[map]]
+code = "tools/swarm/swarm/ambient.py"
+docs = ["06-knowledge-infra-experiments.md#Правила программы"]
+
+[[map]]
+code = "tools/swarm/swarm/agents.py"
+docs = ["05-agent-swarm.md#Протокол handoff", "05-agent-swarm.md#Управление контекстом"]
+
+[[map]]
+code = "tools/swarm/swarm/promptbuilder.py"
+docs = ["05-agent-swarm.md#Протокол handoff", "05-agent-swarm.md#Управление контекстом"]
+
+[[map]]
+code = "tools/swarm/swarm/parsing.py"
+docs = ["05-agent-swarm.md#Протокол handoff"]
+
+[[map]]
+code = "tools/swarm/swarm/vocab.py"
+docs = ["05-agent-swarm.md#Протокол handoff"]
+
+[[map]]
+code = "tools/swarm/swarm/reviewcycle.py"
+docs = ["05-agent-swarm.md#Исходы цикла"]
+
+[[map]]
+code = "tools/swarm/swarm/verdicts.py"
+docs = ["05-agent-swarm.md#Verdict (ревьюер", "08-operators-guide.md#Ревью, которое не прошло контракт"]
+
+[[map]]
+code = "tools/swarm/swarm/verify.py"
+docs = ["05-agent-swarm.md#Verdict (ревьюер"]
+
+[[map]]
+code = "tools/swarm/swarm/obs.py"
+docs = ["05-agent-swarm.md#Два потока записи"]
+
+[[map]]
+code = "tools/swarm/swarm/tsindex.py"
+docs = ["05-agent-swarm.md#Знаниевая инфраструктура"]
+
+[[map]]
+code = "tools/swarm/swarm/boundarynote.py"
+docs = ["06-knowledge-infra-experiments.md#E16."]
+
+[[map]]
+code = "tools/swarm/swarm/cli.py"
+docs = ["08-operators-guide.md#Конфигурация прогона"]
+
+[[map]]
+code = "tools/swarm/swarm/clirun.py"
+docs = ["08-operators-guide.md#Рабочий цикл", "08-operators-guide.md#Когда что-то идёт не так"]
+
+[[map]]
+code = "tools/swarm/swarm/climisc.py"
+docs = ["08-operators-guide.md#Проверка окружения", "08-operators-guide.md#Постановка задач"]
+
+[[map]]
+code = "tools/swarm/swarm/cliexplain.py"
+docs = ["08-operators-guide.md#Куда смотреть, когда прогон встал"]
+
+[[map]]
+code = "tools/swarm/swarm/cliinbox.py"
+docs = ["08-operators-guide.md#Разбор вопросов"]
+
+[[map]]
+code = "tools/swarm/swarm/clireport.py"
+docs = ["08-operators-guide.md#Наблюдение"]
+
+[[map]]
+code = "tools/swarm/swarm/climemory.py"
+docs = ["08-operators-guide.md#Память между прогонами"]
