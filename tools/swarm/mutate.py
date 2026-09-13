@@ -122,6 +122,14 @@ MUTATIONS = [
         "    caps = {} if mode(config) == DEFAULT_MODE else dict(CAPPED_DEFAULTS)",
         "test_spending",
     ),
+    # --- ловушка среды: стенд внутри .claude/ (climisc.py) ---
+    (
+        "доктор: стенд внутри .claude/ снова считается годным",
+        "swarm/climisc.py",
+        '    if ".claude" in root.resolve().parts:',
+        "    if False:",
+        "test_cli",
+    ),
     # --- фоновый замер (ambient.py) ---
     (
         "фон: жребий перестал зависеть от задачи (всё в одно плечо)",

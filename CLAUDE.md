@@ -22,6 +22,9 @@ Kimi Code (исполнитель по умолчанию, модель K3), о�
 - `11-architecture-diagrams.md` — архитектура в диаграммах Mermaid (роли, потоки данных, цепочка гейтов, учёт раундов, контракт вердикта, эскалации, память); документ на английском, диаграммы проверены рендером `mmdc`;
 - `.cursor/mcp.json` / `.kimi-code/mcp.json` — MCP-хосты IDE: `cod-doc` (слаг `zairgrush`) и `ai-reviewer` (превью, `REVIEW_MCP_ROOT` = этот репозиторий). Не merge-гейт. Пути в этих файлах абсолютные и machine-local (`/Users/dakh/...`) — осознанно: MCP-хосты не раскрывают `${workspaceFolder}`/env-плейсхолдеры; на другой машине конфиги правятся под локальный layout, это не переносимая часть репозитория;
 - `tools/swarm/` — сама реализация: CLI `swarm`, оркестратор, индексация кода, тесты (`pytest`, `tools/swarm/tests/`), JSON-схемы контрактов (`tools/swarm/schemas/`);
+- `stands/<проект>/` — готовые стенды: эталонный `swarm.toml` плюс README
+  с порядком развёртывания и списком мин конкретного репозитория
+  (`stands/cod-doc/`);
 - `experiments/adr/` — принятые решения экспериментальной программы (ADR); `experiments/findings.jsonl` — сырой журнал наблюдений; `experiments/goldset/` — замороженный золотой набор ревью PILOT-1; `experiments/reviewarm/` — харвестер и отчёт нулевого шага дешёвого контура (`replay.py`, `analyze.py`, `bakeoff.py`, `REPORT.md` — в git; артефакты прогона в `out*/` — нет). Рабочие стенды экспериментов (`experiments/stand*`, `bench/`, `repomap/` и т.п.) — воспроизводимый scratch, в git не попадают (`.gitignore`).
 
 Проверка — одна команда: `cd tools/swarm && ./check.sh` (линт → типы →
