@@ -3,6 +3,7 @@
 import argparse
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 from typing import Any
@@ -291,7 +292,42 @@ def _preflight(st: Any, force: bool = False) -> bool:
     if dirty:
         st.log("preflight_forced", dirty=dirty)
         print(f"PREFLIGHT: дерево грязное ({len(dirty)}), продолжаю по --force")
+    _log_agent_versions(st)
     return True
+
+
+
+def _log_agent_versions(st: Any) -> None:
+    """Версии обоих CLI — в журнал прогона, рядом со `swarm_sha`.
+
+    Отпечаток КОДА ПЕТЛИ в журнале есть с самого начала, а версии агентов,
+    которыми петля работает, не записывались нигде. При этом петля
+    разбирает их поверхности: `--json-schema`, форму конвертов, тексты
+    сообщений о квоте. Смена мажорного поведения агента выглядела бы как
+    поломка роя, и сравнить прогоны было бы не по чему — воспроизводимость
+    держалась на удаче.
+
+    `doctor` версии УЖЕ спрашивает, но только показывает их человеку и
+    только когда его позвали. Здесь они попадают в журнал каждого прогона,
+    то есть в те же данные, по которым потом считают замеры.
+
+    Граница деградации: отсутствующий или молчащий CLI не отменяет прогона
+    (движок мог быть и не выбран) — в журнал уезжает None.
+    """
+    versions: dict[str, str | None] = {}
+    for name in ("kimi", "claude"):
+        exe = shutil.which(name)
+        if not exe:
+            versions[name] = None
+            continue
+        try:
+            out = subprocess.run([name, "--version"], capture_output=True,
+                                 text=True, timeout=30,
+                                 check=False).stdout.strip().splitlines()
+            versions[name] = out[0][:120] if out else None
+        except (OSError, subprocess.SubprocessError):
+            versions[name] = None
+    st.log("agent_versions", **versions)
 
 
 # Один сервер на процесс, а не на вызов: `_board_open` дёргается один раз

@@ -30,6 +30,7 @@ experiments/plan/
 experiments/repomap/
 experiments/reviewarm/out*/
 experiments/reviewarm/rev*/
+experiments/rubric-snapshot/out*/
 experiments/smoke1/
 experiments/stand/
 experiments/stand-*/

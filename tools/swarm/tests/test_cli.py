@@ -467,6 +467,39 @@ class TestConfigValidation(CliCase):
         self.assertEqual(cfg["doc_context_paths"], ["docs/arch.md", "docs/api.md"])
 
 
+class TestAgentVersionsAreJournalled(CliCase):
+    """Отпечаток кода петли в журнале был, версий агентов — нет.
+
+    Петля разбирает поверхности обоих CLI: `--json-schema`, форму конвертов,
+    тексты сообщений о квоте. Смена мажорного поведения агента выглядела бы
+    как поломка роя, и сравнивать прогоны было бы не по чему.
+    """
+
+    def _versions_rows(self):
+        text = self.state.journal_path.read_text(encoding="utf-8")
+        return [json.loads(x) for x in text.splitlines()
+                if x.strip() and json.loads(x).get("kind") == "agent_versions"]
+
+    def test_run_journals_both_agent_versions(self):
+        run_cli("--root", str(self.root), "run")
+        rows = self._versions_rows()
+        self.assertTrue(rows, "версии агентов не записаны")
+        self.assertIn("kimi", rows[0])
+        self.assertIn("claude", rows[0])
+
+    def test_missing_cli_is_recorded_as_none_not_as_a_crash(self):
+        """Движок мог быть и не выбран: отсутствие CLI — не авария прогона."""
+        rows = []
+        orig = clirun.shutil.which
+        clirun.shutil.which = lambda _name: None
+        self.addCleanup(setattr, clirun.shutil, "which", orig)
+        run_cli("--root", str(self.root), "run")
+        rows = self._versions_rows()
+        self.assertTrue(rows)
+        self.assertIsNone(rows[0]["kimi"])
+        self.assertIsNone(rows[0]["claude"])
+
+
 class TestEnginePreflight(CliCase):
     """Кем исполнять — говорится ДО первого потраченного доллара."""
 
