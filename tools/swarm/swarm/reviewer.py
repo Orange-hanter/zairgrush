@@ -1,6 +1,9 @@
 """Вызов ревьюера: промпт, раунды, разбор вердикта, проверка исполнением.
 Вынесено из agents.py: функции получают объект Agents первым аргументом
 (AgentsLike), класс держит делегаты — точки вызова не изменились.
+
+Журнальная заметка о границах пишется ОДИН раз на (задача, текст):
+повтор раундов не дублирует строку, смена диффа — да.
 """
 import hashlib
 import json
@@ -15,6 +18,7 @@ _HERE = str(HERE)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import boundarynote  # noqa: E402
 import modlock  # noqa: E402
 import parsing as parsing_mod  # noqa: E402
 import pathsafe  # noqa: E402
@@ -26,6 +30,34 @@ from agents_types import AgentsLike  # noqa: E402
 # переименование модуля не должно менять имена потоков.
 log = modlock.load_module("obs").get_logger("agents")
 
+_NOTED: set[tuple[str, str]] = set()
+_NOTED_CAP = 10_000
+
+
+def _boundary_note_for(agents: AgentsLike, task: dict[str, Any],
+                       diff: str, iteration: int) -> str | None:
+    """Предревью-заметка о границах: собрать, журналануть, fail-open.
+
+    Разбор диффа и сверка границ — детерминированный код, но любая его
+    ошибка обязана стоить НОЛЬ: вызов ревьюера не откладывается из-за
+    заметки (§7.3 — fail-open на API каждого помощника). Сбой ловится,
+    пишется warning, ревьюер идёт без заметки, как шло до REV-005.
+    """
+    try:
+        files = boundarynote.diff_files(diff)
+        note = boundarynote.boundary_note(
+            task, files, agents.config.get("protected_paths"))
+    except Exception:
+        log.warning("предревью-заметка о границах не собрана", exc_info=True)
+        return None
+    if note and (task["id"], note) not in _NOTED:
+        if len(_NOTED) >= _NOTED_CAP:
+            _NOTED.clear()
+        _NOTED.add((task["id"], note))
+        agents.state.log("boundary_note", task=task["id"],
+                         round=iteration, note=note[:300])
+    return note
+
 
 def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: int,
            attempt: int = 1,
@@ -36,6 +68,13 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
     # в историю. Единый источник — state.work_diff (intent-to-add).
     diff = parsing_mod.condense_diff(agents.work_diff())
+    # Предревью-заметка о границах (REV-005, P4): та же геометрия, что у
+    # стража gitops.scope_check, но со стороны рецензента и до вызова.
+    # 7/7 споров пилота удовлетворены — постановка, а не код; ревьюер,
+    # увидевший расслоение «paths ↔ дифф» до вызова, не сжигает раунд
+    # на спор о границах. Fail-open: на чистом диффе note is None и
+    # промпт не меняется ни на байт (параметр по умолчанию пуст).
+    note = _boundary_note_for(agents, task, diff, iteration)
     schema = (SCHEMAS / "verdict-v1.schema.json").read_text()
     # Самый дорогой вызов системы шёл в обход слоя живости: голый
     # subprocess.run с жёстким таймаутом, который не отличал «думает»
@@ -55,7 +94,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                            and wants_verification(agents, task)),
         verify_results=verify_results,
         memory=promptbuilder.norms_for(agents, task), lens=lens,
-        retry_note=retry_note)
+        retry_note=retry_note, boundary_note=note or "")
     # sha1[:12] стабильных частей — не для секретности, а как отпечаток
     # (Feature 4): мутация «неизменного» блока меняет rules_sha ровно
     # так же, как мутация кода меняет sha256 в condense_diff — метрика

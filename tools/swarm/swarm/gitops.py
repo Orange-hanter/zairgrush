@@ -19,6 +19,7 @@ _HERE = str(pathlib.Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import boundarynote as boundarynote_mod  # noqa: E402
 import state as state_mod  # noqa: E402
 
 if TYPE_CHECKING:
@@ -163,7 +164,18 @@ def scope_check(loop: LoopLike, task: dict[str, Any],
     Иначе любой размашистый paths обнулял бы анти-gaming (§5.5).
     """
     allowed = task.get("paths") or []
-    protected = loop.config.get("protected_paths") or ["tests/*", "tests/**"]
+    protected_raw = loop.config.get("protected_paths")
+    if protected_raw is not None and not (
+            isinstance(protected_raw, list)
+            and all(isinstance(p, str) for p in protected_raw)):
+        # Строка здесь — опечатка конфига, а не список: fnmatch умеет
+        # только списки, и молча перебирал бы БУКВЫ. Предупреждение —
+        # тем же каналом, что у reviewcycle (loop.ui), поведение —
+        # умолчание (общий нормализатор boundarynote.normalize_protected,
+        # та же диалектика, что у предревью-заметки).
+        loop.ui(f"ВНИМАНИЕ: protected_paths не список строк "
+                f"({protected_raw!r}) — петля работает на умолчании")
+    protected = boundarynote_mod.normalize_protected(protected_raw)
     # E11, плечо B: файл, написанный НЕЗАВИСИМЫМ тестировщиком, снова
     # становится чужим тестом, хотя `paths` его называет. Без этого
     # исключения плечо было бы плечом A с лишним вызовом: исполнитель

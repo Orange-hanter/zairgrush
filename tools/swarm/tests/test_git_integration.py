@@ -93,6 +93,30 @@ class TestNewFileIsVisible(GitCase):
         self.assertIn("src/sneaky.py", bad,
                       "нарушение обязано называться поимённо, а не каталогом")
 
+    def test_protected_paths_as_plain_string_falls_back_with_warning(self):
+        """Строка вместо списка — опечатка конфига, а не глоб из букв.
+
+        Раньше fnmatch перебирал СИМВОЛЫ строки, защита молча исчезала.
+        Теперь: предупреждение через loop.ui и работа на умолчании —
+        чужой тест в защищённой зоне по-прежнему ловится (поимённо в
+        touched, а не внешним bad-путём).
+        """
+        warnings: list[str] = []
+        self.loop.ui = warnings.append
+        self.loop.config["protected_paths"] = "tests/*"
+        task = dict(self.TASK)
+        # */other.py — разрешён широким НЕзащищённым паттерном, но сам
+        # файл защищён и не отперт: ловится именно защитой (touched), а
+        # не внешним bad-путём. С дроблением на буквы защита исчезла бы.
+        task["paths"] = ["src/existing.py", "*/other.py"]
+        self.create("tests/other.py")
+        ok, _bad, touched = self.loop.scope_check(task)
+        self.assertFalse(ok)
+        self.assertIn("tests/other.py", touched,
+                      "защита не исчезла из-за строки в конфиге")
+        self.assertTrue(any("protected_paths" in w for w in warnings),
+                        f"предупреждение обязано быть громким: {warnings}")
+
     def test_new_file_in_nested_dir_named_precisely(self):
         self.create("src/deep/nested/mod.py")
         _, bad, _ = self.loop.scope_check(dict(self.TASK))
