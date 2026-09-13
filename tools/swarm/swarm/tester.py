@@ -39,6 +39,7 @@ if _HERE not in sys.path:
 import engines  # noqa: E402
 import modlock  # noqa: E402
 import pathsafe  # noqa: E402
+import spending  # noqa: E402
 
 log = modlock.load_module("obs").get_logger("tester")
 
@@ -186,6 +187,9 @@ def write_tests(
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800),
     )
     parser, extract = engines.stream_pipeline(kind, agents.driver)
+    # Тестировщик едет на argv исполнителя — и под потолком его вызова.
+    spending.guard(agents.config, agents.state, "tester",
+                   "executor_budget_usd")
     run = drv.start(cmd, parser=parser)
     result = run.collect(extract)
     # id задачи — данные недоверенные: в имя файла только через санитайзер,
@@ -217,6 +221,7 @@ def write_tests(
         report=bool(report),
         **facts,
     )
+    spending.guard(agents.config, agents.state, "tester")
     if report is None:
         log.warning(
             "тестировщик не отдал отчёт", extra={"swarm_task": str(task.get("id"))}

@@ -150,6 +150,10 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
         cwd=str(agents.state.root),
         silence_timeout=agents.config.get("silence_timeout", 600),
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800))
+    # Страж потолка прогона ДО диспетча: ревьюер — самый дорогой вызов
+    # хода, и до стража он уходил даже с уже пробитым бюджетом.
+    spending.guard(agents.config, agents.state, "review",
+                   "review_budget_usd")
     run = drv.start(cmd, parser=agents.driver.parse_claude)
     result = run.collect(agents.driver.extract_result_envelope)
     env: dict[str, Any] | None = result.report
@@ -235,6 +239,9 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                       tokens_in=usage.get("input_tokens"),
                       tokens_out=usage.get("output_tokens"),
                       **agents.last_tuning)
+    # Цена записана: повтор (attempt=2) или второй проход верификации
+    # ниже не имеют права уйти, если потолок прогона уже пробит.
+    spending.guard(agents.config, agents.state, "review")
     if not valid and terminal == "budget_exhausted":
         # Повтор обречён: тот же промпт кончится на том же месте.
         # На пилоте вторая попытка стоила ещё $3.23 и дала то же

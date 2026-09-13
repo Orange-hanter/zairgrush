@@ -52,6 +52,7 @@ if _HERE not in sys.path:
 
 import engines  # noqa: E402
 import pathsafe  # noqa: E402
+import spending  # noqa: E402
 
 if TYPE_CHECKING:
     from agents_types import AgentsLike
@@ -184,6 +185,9 @@ def find(agents: AgentsLike, task: dict[str, Any], goal: str) -> dict[str, Any] 
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800),
     )
     parser, extract = engines.stream_pipeline(kind, agents.driver)
+    # Пурист едет на argv исполнителя — и под потолком его вызова.
+    spending.guard(agents.config, agents.state, "unclear",
+                   "executor_budget_usd")
     run = drv.start(cmd, parser=parser)
     result = run.collect(extract)
     # id задачи — данные недоверенные: в имя файла только через санитайзер,
@@ -216,6 +220,7 @@ def find(agents: AgentsLike, task: dict[str, Any], goal: str) -> dict[str, Any] 
         found=found,
         **facts,
     )
+    spending.guard(agents.config, agents.state, "unclear")
     agents.state.log(
         "unclear_found",
         task=task["id"],

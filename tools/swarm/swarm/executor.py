@@ -22,6 +22,7 @@ import modlock  # noqa: E402
 import parsing as parsing_mod  # noqa: E402
 import pathsafe  # noqa: E402
 import promptbuilder  # noqa: E402
+import spending  # noqa: E402
 from agents_types import AgentsLike  # noqa: E402
 
 # Имя логера оставлено "agents": журнал наблюдаемости — контракт,
@@ -99,6 +100,10 @@ def implement(
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800),
     )
     parser, extract = engines.stream_pipeline(kind, agents.driver)
+    # Страж потолка прогона ДО диспетча: между раундами проверка была,
+    # а ход из нескольких вызовов пробивал потолок на любую величину.
+    spending.guard(agents.config, agents.state, "executor",
+                   "executor_budget_usd")
     # Пока идёт вызов — единственная запись о происходящем: метрика
     # появится только после (state.phase).
     with agents.state.phase("implement", task["id"], iter=iteration,
@@ -152,6 +157,9 @@ def implement(
         arm=arm,
         **facts,
     )
+    # Цена записана — следующий вызов этого же хода (ревьюер, повтор)
+    # не имеет права уйти, если потолок уже пробит.
+    spending.guard(agents.config, agents.state, "executor")
     if report is None or reason != "done":
         # stderr — единственное место, где провайдер объясняет отказ.
         # Пока он не сохранялся, диагноз «квота Kimi исчерпана» занял

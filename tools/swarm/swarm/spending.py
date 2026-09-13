@@ -85,6 +85,49 @@ def budget_flags(config: dict[str, Any], key: str) -> list[str]:
     return ["--max-budget-usd", str(cap)] if cap is not None else []
 
 
+class BudgetExhaustedError(RuntimeError):
+    """Потолок ПРОГОНА пробит посреди хода: следующий вызов не уходит.
+
+    Не «провал роли» и не квота: ловится петлей отдельно и сводится к
+    тому же терминальному исходу, что у проверки между раундами
+    (`budget_stop` в loop). Цифры несёт с собой — журналу нужны факты,
+    а не повторное чтение метрик.
+    """
+
+    def __init__(self, spent: float, budget: float, role: str = "") -> None:
+        self.spent = spent
+        self.budget = budget
+        self.role = role
+        super().__init__(
+            f"бюджет прогона исчерпан: ${spent} из ${budget}"
+            + (f", вызов роли {role}" if role else "")
+        )
+
+
+def guard(config: dict[str, Any], state: Any, role: str = "",
+          cap_key: str = "") -> None:
+    """Страж потолка прогона ВОКРУГ каждого вызова LLM.
+
+    Межраундовая проверка в loop видела потолок только между итерациями,
+    и один ход пробивал его на любую величину: g1nt сжёг $2.75 при
+    потолке $0.70, потому что внутри хода (исполнитель, ревьюер, повторы)
+    останавливать было некому. Здесь две проверки одной функцией:
+
+    ДО диспетча (задан cap_key): потраченное плюс потолок предстоящего
+    вызова — худшая честная оценка его цены — против бюджета. Потолка
+    роли нет (money_bin) — оценка ноль, и решает только записанный факт.
+    ПОСЛЕ записи цены (cap_key не задан): потраченное против бюджета,
+    чтобы СЛЕДУЮЩИЙ вызов того же хода уже не ушёл.
+    """
+    budget = run_budget(config)
+    if budget is None:
+        return
+    spent = state.total_spend()
+    estimate = call_cap(config, cap_key) if cap_key else None
+    if spent + (estimate or 0.0) >= budget:
+        raise BudgetExhaustedError(spent, budget, role)
+
+
 def run_budget(config: dict[str, Any]) -> float | None:
     """Потолок ПРОГОНА. Неявного не бывает ни в одном режиме.
 

@@ -122,6 +122,15 @@ MUTATIONS = [
         "    caps = {} if mode(config) == DEFAULT_MODE else dict(CAPPED_DEFAULTS)",
         "test_spending",
     ),
+    (
+        "деньги: страж вызова снова не останавливает ход посреди раунда",
+        "swarm/spending.py",
+        """    if spent + (estimate or 0.0) >= budget:
+        raise BudgetExhaustedError(spent, budget, role)""",
+        """    if spent + (estimate or 0.0) >= budget:
+        return""",
+        "test_budget_guard",
+    ),
     # --- ловушка среды: стенд внутри .claude/ (climisc.py) ---
     (
         "доктор: стенд внутри .claude/ снова считается годным",
