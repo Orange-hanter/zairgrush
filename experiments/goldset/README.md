@@ -90,6 +90,14 @@ Honest caveat: the stand's repository has moved on since the pilot, so
 today's number is an upper bound on what the linter knew on planning
 day.
 
+`e13/` — not a reviewer bench but a task-selection corpus: the
+divergent-arms candidate set that E13 lacked (journal §21). `mine.py`
+re-derives `candidates.jsonl` offline from the recorded stands, the
+pilot review log and the labels above; 15 candidates with evidence
+pointers plus 20 near-misses. The paid validation run is deferred by
+the owner's budget gate; plan and pre-registration live in
+`e13/README.md`.
+
 ## The metric
 
 For a review arm A (model/effort):
