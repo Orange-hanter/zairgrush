@@ -116,6 +116,57 @@ class TestPromptIsAboutCatchingMistakes(unittest.TestCase):
         self.assertIn("pass before AND\n  after", text)
         self.assertIn("Never invent an artificial failure", text)
 
+    def test_false_premise_itself_is_gone(self):
+        """Страж регресса: формулировка «тесты обязаны падать сегодня»
+        не должна вернуться ни в каком виде — она и была дефектом
+        (findings E11:red-premise-is-false)."""
+        text = self._text()
+        self.assertNotIn("must fail today", text)
+        self.assertNotIn("Tests must fail", text)
+
+    def test_adds_behaviour_task_shape(self):
+        """Задача, ДОБАВЛЯЮЩАЯ поведение (новой функции не существует):
+        тесты законно стартуют красными и зеленеют после реализации."""
+        task = dict(TASK, id="s4cli",
+                    spec="добавить CLI: чтение stdin, отчёт wordstat",
+                    paths=["wordstat/cli.py", "tests/test_cli.py"],
+                    acceptance=["--top по умолчанию 10",
+                                "ненулевой код на плохих аргументах"])
+        text = self._text(task)
+        self.assertIn("ADDS behaviour", text)
+        self.assertIn("fail now and pass once the spec is implemented", text)
+        self.assertIn("tests/test_cli.py", text)
+        self.assertNotIn("wordstat/cli.py\n", text.replace(
+            "## Task whose behaviour you must pin", ""),
+            "реализация в список разрешённых файлов не попадает")
+
+    def test_preserves_behaviour_task_shape(self):
+        """Задача, СОХРАНЯЮЩАЯ поведение и меняющая способ (кэширование —
+        та самая s1ch раунда 1): тесты-охранники зелёные ДО и ПОСЛЕ, и
+        промпт обязан это прямо разрешать, а не требовать красного."""
+        task = dict(TASK, id="s1ch",
+                    spec="word_freq кэширует результаты: поведение то же, "
+                         "меняется способ",
+                    paths=["wordstat/stats.py", "tests/test_stats_cache.py"],
+                    acceptance=["повторный вызов не пересчитывает",
+                                "результаты не изменились"])
+        text = self._text(task)
+        self.assertIn("PRESERVES behaviour", text)
+        self.assertIn("pass before AND\n  after", text)
+        self.assertIn("caching", text)
+        self.assertIn("BOTH are\n  correct", text)
+        self.assertIn("tests/test_stats_cache.py", text)
+
+    def test_output_contract_is_intact(self):
+        """Правка посылки не тронула контракт: машинный разбор держится
+        на точном JSON, а поле unclear — канал спек-молчания, на котором
+        стоит счёт выживаемости против спеки (изменение 2 раунда 2)."""
+        text = self._text()
+        self.assertIn("EXACTLY one JSON object, no markdown fence", text)
+        self.assertIn('"status": "done | dispute"', text)
+        self.assertIn('"unclear"', text)
+        self.assertIn('"cases"', text)
+
     def test_carries_acceptance_and_spec(self):
         text = self._text()
         self.assertIn("полный сьют проходит", text)
