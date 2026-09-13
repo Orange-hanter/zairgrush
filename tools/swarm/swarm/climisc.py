@@ -423,6 +423,43 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if all(c[0] is not False for c in checks) else 1
 
 
+def cmd_docmap(args: argparse.Namespace) -> int:
+    """Карта «код → документы» (E5, вариант B): проверка и подозреваемые.
+
+    Без --changed печатает предупреждения о состоянии самой карты
+    (мёртвый glob, нет документа, нет якоря); с --changed — секции,
+    подозреваемые на дрейф по перечисленным изменённым файлам. Детект
+    механический: LLM здесь не зовётся вовсе.
+    """
+    docmap = cli.load_mod("docmap")
+    root = pathlib.Path(args.root)
+    map_path = root / docmap.MAP_NAME
+    if not map_path.is_file():
+        print(f"{map_path}: карты нет — детектор дрейфа не настроен")
+        return 0
+    try:
+        entries = docmap.load(map_path)
+    except (TypeError, ValueError, OSError) as e:
+        print(f"docmap: {e}", file=sys.stderr)
+        return 2
+    if args.changed:
+        hits = docmap.suspects(list(args.changed), entries)
+        if not hits:
+            print("подозреваемых секций нет")
+            return 0
+        for h in hits:
+            print(f"{h.doc}  (код: {h.code}, правка: {h.file})")
+        return 0
+    warnings = docmap.check(root, entries)
+    for w in warnings:
+        print(f"[ПРЕД] docmap: {w}")
+    if warnings:
+        print(f"предупреждений: {len(warnings)}")
+        return 1
+    print(f"[  ok ] docmap: {len(entries)} записей, предупреждений нет")
+    return 0
+
+
 def cmd_policy(args: argparse.Namespace) -> int:
     """Политики прогона: решения человека уровня цели, а не задачи."""
     st = cli.state_mod.SwarmState(args.root)

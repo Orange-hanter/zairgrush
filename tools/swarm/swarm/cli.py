@@ -333,6 +333,7 @@ from cliexplain import (  # noqa: E402,F401
 from cliinbox import _paths_mentioned, cmd_answer, cmd_inbox  # noqa: E402,F401
 from climemory import _memory_anchor, cmd_memory  # noqa: E402,F401
 from climisc import (  # noqa: E402
+    cmd_docmap,
     cmd_doctor,
     cmd_plan,
     cmd_policy,
@@ -369,6 +370,7 @@ __all__ = [
     "cmd_ab",
     "cmd_answer",
     "cmd_board",
+    "cmd_docmap",
     "cmd_doctor",
     "cmd_go",
     "cmd_impact",
@@ -514,6 +516,20 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("doctor", help="проверка окружения")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser(
+        "docmap",
+        help="карта «код → документы» (E5-B): проверка карты, "
+        "подозреваемые секции по изменённым файлам",
+    )
+    p.add_argument(
+        "--changed",
+        nargs="+",
+        metavar="ФАЙЛ",
+        help="изменённые файлы (от корня репо): какие секции документов "
+        "теперь подозреваются на дрейф",
+    )
+    p.set_defaults(func=cmd_docmap)
 
     p = sub.add_parser("map", help="карта символов репозитория")
     p.add_argument(
