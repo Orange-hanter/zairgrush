@@ -1,0 +1,46 @@
+{
+ "task": "REV-005 (B2-рука REV-003, NXT-009)",
+ "registered_at": "2026-09-14",
+ "registered_before_adjudicator_calls": true,
+ "note": "Подготовка (prep) выполнена 2026-09-13/14 на ветке prep/b2-panel без единого metered-вызова; metered-прогон отложен за одобрением бюджета владельцем. Источник дизайна: report-rev003.md, «Что это НЕ решает» п.1 — «keep unless contradicted вместо drop unless supported, severity-downgrade вместо drop». Замер ОДНОФАКТОРНЫЙ: меняется только контракт адъюдикатора.",
+ "question": "Contract, not effort, is the prime suspect for the REV-003 retention collapse: does the INVERTED adjudication contract (keep unless contradicted + severity downgrade) recover the retention gates that verify-and-drop failed (major-files 1/4, address 9/27), at a comparable $/diff?",
+ "hypothesis": "H1: retention recovers — adjudicated kept-list names ALL major-files the subset panel names and >= (address_baseline - 2) reviewer addresses — while mean $/diff stays within 1.5x of the REV-003 valid mean ($0.44). H0: retention gates still fail -> contract inversion is not the lever, the panel material itself is.",
+ "input": {
+  "panel_data": "REGENERATED 2026-09-13 (prep/b2-panel) with the documented $0 command from REPORT.md: python3 replay.py --stand ~/work/zeus-pilot --models deepseek-v4-flash:0731,glm-5.1,qwen3.5:397b,gpt-oss:120b,kimi-k2.7-code --out out2 (328 s wall, 70 calls, flat subscription, $0 metered). Original out2/ was destroyed as gitignored scratch.",
+  "panel_deviation_declared": "regen is NOT byte-identical to the Step-0 panel: 209 rows total vs 200 recorded; 3-juror subset 110 candidates / 14 diffs (7.86/diff) vs 104 (7.43) recorded. Same roster, same harness, same seeds/think-map, same 1200-line truncation; provider-side drift on Ollama Cloud. Consequence: retention baselines (major-files, address coverage) MUST be recomputed from the regenerated subset with rev003/analyze.py joins BEFORE judging B2 against them; REV-003's own numbers (4/4, 27/34) are reference, not gate.",
+  "subset": "three jurors per REV-003 selection (prereg.json + SUBSET in adjudicate.py): glm-5.1 + gpt-oss:120b + qwen3.5:397b",
+  "diffs": "the same 14 PILOT-1 closing diffs = rev001/ground/<task>-close.raw.diff (s2ky -> s2ky-i2 as in REV-003); >250K chars -> condensed <key>.diff fallback (same 250_000 threshold as the original runner: g1nt and c4rp go condensed)",
+  "tasks": "task title/spec/acceptance from live ~/work/zeus-pilot/.swarm/tasks.json (unchanged from REV-003)"
+ },
+ "adjudicator": {
+  "model": "claude-opus-5",
+  "effort": "high",
+  "argv": "claude -p <prompt> --output-format json --json-schema <same adjudication schema as REV-003> --allowedTools Read,Grep,Glob,Bash(git diff:*) --max-budget-usd 0.70 --model claude-opus-5 --effort high",
+  "schema": "UNCHANGED from REV-003 (analysis, kept[file,severity,claim,rationale,source_jurors], dropped[claim,reason], out_of_scope_notes) — schema is held constant so the contract text is the only factor",
+  "budget_cap_usd_total": 10.0,
+  "budget_guard": "cumulative guard on metrics-rev003-b2.jsonl (separate from REV-003's metrics): stop before any call that would push the B2 total above $10.0; per-call cap $0.70. Owner budget approval required before the run."
+ },
+ "contract_delta": {
+  "from": "verify-and-drop (original, kept verbatim as the --contract default): 'утверждение, которое дифф не поддерживает — отбрось с причиной. Сомнение = оставить.'",
+  "to": "keep-unless-contradicted: 'Кандидат ОСТАЁТСЯ по умолчанию. Отбрасывай только то, что дифф ПРЯМО ОПРОВЕРГАЕТ (файл не тронут, претензия о коде, которого в диффе нет, поведение противоположно показанному). «Дифф не подтверждает» — НЕ основание для отброса (closing-дифф показывает исправленный код): неподтверждённое, но не опровергнутое — ОСТАВЬ и ПОНИЗЬ severity на ступень (blocker→major, major→minor), неуверенность в rationale; minor остаётся minor с пометкой «не подтверждено диффом».'",
+  "unchanged": "prompt skeleton, fenced untrusted-DATA framing, dedup/merge rule with source_jurors lineage, 'not a cold review' clause, Russian output, schema, model, effort, caps"
+ },
+ "runner": "experiments/reviewarm/rev003/adjudicate.py (patched on prep/b2-panel): --contract keep-unless-contradicted selects the inverted prompt, writes raw-b2/ + metrics-rev003-b2.jsonl; --dry-run renders all 14 prompts with sha256 and makes NO calls (verified 2026-09-14: 14 prompts, $0, no output files)",
+ "metrics": {
+  "price": "mean/median $ per valid adjudicated diff vs REV-003 ($0.44 mean / $0.42 median on 12 valid)",
+  "volume": "kept/diff mean and max vs the plan's <10/diff ceiling; expected to rise vs REV-003's 1.3/diff — that rise IS the mechanism under test",
+  "retention": {
+   "major_files": "files carrying a MAJOR paid finding that the regenerated subset panel names (recomputed baseline): kept-list must name all of them",
+   "address_coverage": "paid-reviewer files named by the regenerated subset (recomputed baseline N): kept-list >= N-2"
+  },
+  "downgrades": "count of severity downgrades (rationale-marked) — the new contract's signature behavior, reported per diff",
+  "mechanical": "zero off-diff files in kept (Step-0's zero-hallucination standard)"
+ },
+ "decision_rule": "B2 SUPPORTS the contract hypothesis if BOTH retention gates pass on recomputed baselines AND mean $/diff <= $0.66 (1.5x REV-003 valid mean). Retention gates failing again REFUTES it (panel material, not contract, is the bottleneck). Price gate failing alone => contract works but not at this effort/price point; report both axes separately, no composite fudge.",
+ "known_limitations": [
+  "regenerated panel != original panel (declared above): B2 vs REV-003 is contract + panel-drift confounded at the margin; mitigated by recomputing baselines on the new panel and by the contract being the only intentional change",
+  "closing-ground: endorsed-major recall not measurable (restated from REV-003); retention measured against the paid reviewer's address set",
+  "single pass, effort high; giant data-diffs (g1nt, c4rp) go condensed and remain a known-invalid tail (REV-003: empty structured_output twice) — validity criterion unchanged",
+  "--max-budget-usd does not cut a long turn (REV-003 finding, NXT-005 fixed in the swarm loop but the adjudicator runner keeps the between-calls guard)"
+ ]
+}
