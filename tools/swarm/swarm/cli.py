@@ -161,8 +161,7 @@ def _bad_arms(pool: Any) -> list[str]:
         return []
     bad = []
     for item in pool:
-        ok = (isinstance(item, str | dict)
-              or (isinstance(item, list) and item))
+        ok = isinstance(item, str | dict) or (isinstance(item, list) and item)
         if not ok:
             bad.append(repr(item))
     return bad
@@ -199,10 +198,13 @@ def load_config(root: str | pathlib.Path) -> dict[str, Any]:
                     # Та же причина, что у незнакомых ключей: элемент не
                     # той формы жребий не забирает, петля тихо уходит на
                     # одиночные пулы — и оператор уверен, что меряет пары.
-                    print(f"ВНИМАНИЕ: {path}: {key} — элементы не той формы "
-                          f"({', '.join(bad)}); рука объявляется парой "
-                          f'["модель", "усилие"], пустое усилие — '
-                          f"«флаг не передавать»", file=sys.stderr)
+                    print(
+                        f"ВНИМАНИЕ: {path}: {key} — элементы не той формы "
+                        f"({', '.join(bad)}); рука объявляется парой "
+                        f'["модель", "усилие"], пустое усилие — '
+                        f"«флаг не передавать»",
+                        file=sys.stderr,
+                    )
             exp = parsed.get("experiments")
             if isinstance(exp, dict):
                 unknown_exp = sorted(set(exp) - KNOWN_EXPERIMENT_KEYS)
@@ -382,8 +384,8 @@ EPILOG = """
   doctor                      проверить среду — тридцать секунд здесь
                               экономят час диагностики потом
   go --goal "цель"            от А до Я: рой сам планирует и сам исполняет
-                              (живая доска откроется сама, адрес — в шапке;
-                              страница обновляется на месте, без перезагрузок)
+                              (живая доска — opt-in: live_board = true;
+                              иначе в шапке file:// на .swarm/board.html)
   inbox -> answer <id> "…"    разобрать вопросы, которые петля отложила
   go                          продолжить с того же места
 

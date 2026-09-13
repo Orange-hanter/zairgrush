@@ -378,8 +378,8 @@ class TestConfigValidation(CliCase):
 
     def test_arm_pool_is_a_known_key(self):
         cfg, err = self._config_stderr(
-            'review_arm_pool = [["claude-opus-5", "xhigh"], '
-            '["claude-haiku-4-5", ""]]\n')
+            'review_arm_pool = [["claude-opus-5", "xhigh"], ["claude-haiku-4-5", ""]]\n'
+        )
         self.assertEqual(err, "")
         self.assertEqual(cfg["review_arm_pool"][1], ["claude-haiku-4-5", ""])
 
@@ -1003,9 +1003,9 @@ class TestGoGoalGuard(CliCase):
 
 
 class TestBoardAutoOpen(CliCase):
-    """Доска открывается сама при старте прогона — оператор во время
-    живого прогона не понимал, как за ним следить, пока не открывал
-    доску руками. Правило: открывать, пока не отключили явно.
+    """Живая доска — opt-in (`live_board = true`). Без флага сервер не
+    поднимается и macOS `open` не вызывается: иначе каждый `run`/`go`
+    разработчика распахивал вкладку на 7433.
     """
 
     def setUp(self):
@@ -1041,15 +1041,43 @@ class TestBoardAutoOpen(CliCase):
         self.addCleanup(lambda: setattr(subprocess, "run", orig_run))
         return calls
 
+    def _enable_live_board(self, extra: str = "") -> None:
+        (self.root / "swarm.toml").write_text("live_board = true\n" + extra)
+        subprocess.run(["git", "add", "swarm.toml"], cwd=self.root, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "enable live board",
+            ],
+            cwd=self.root,
+            check=True,
+        )
+
     def test_disabled_by_config_skips_open(self):
-        (self.root / "swarm.toml").write_text("board_open = false\n")
+        self._enable_live_board("board_open = false\n")
         cli.sys.platform = "darwin"
         calls = self._capture_open_calls()
         self.fake_loop({"aaaa": "done", "bbbb": "done"})
         run_cli("--root", str(self.root), "run")
         self.assertEqual(calls, [])
 
-    def test_default_opens_on_darwin(self):
+    def test_default_does_not_open(self):
+        cli.sys.platform = "darwin"
+        calls = self._capture_open_calls()
+        self.fake_loop({"aaaa": "done", "bbbb": "done"})
+        _code, out = run_cli("--root", str(self.root), "run")
+        self.assertEqual(calls, [])
+        self.assertIn("доска: file://", out)
+        self.assertIsNone(clirun._BOARD_SERVER)
+
+    def test_live_board_opens_on_darwin(self):
+        self._enable_live_board()
         cli.sys.platform = "darwin"
         calls = self._capture_open_calls()
         self.fake_loop({"aaaa": "done", "bbbb": "done"})
@@ -1068,6 +1096,7 @@ class TestBoardAutoOpen(CliCase):
         только судьбу команды `open` (macOS-специфична), не самого
         сервера. На не-macOS в шапке печатается адрес живой доски, а
         браузер сам не распахивается."""
+        self._enable_live_board()
         cli.sys.platform = "linux"
         calls = self._capture_open_calls()
         self.fake_loop({"aaaa": "done", "bbbb": "done"})
@@ -1076,6 +1105,7 @@ class TestBoardAutoOpen(CliCase):
         self.assertRegex(out, r"доска: http://127\.0\.0\.1:\d+/")
 
     def test_go_prints_the_board_header_line(self):
+        self._enable_live_board()
         cli.sys.platform = "linux"
         self.fake_loop({"aaaa": "done", "bbbb": "done"})
         _code, out = run_cli("--root", str(self.root), "go")
@@ -1084,6 +1114,7 @@ class TestBoardAutoOpen(CliCase):
     def test_failed_open_only_warns_and_does_not_stop_the_run(self):
         """Наблюдение — не работа (правило доски): любой сбой автооткрытия
         обязан остаться диагностикой, а не остановить прогон."""
+        self._enable_live_board()
         cli.sys.platform = "darwin"
         orig_run = subprocess.run
 

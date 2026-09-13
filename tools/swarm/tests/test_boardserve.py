@@ -7,6 +7,7 @@
 выглядела бы для клиента как новый контент), откат на эфемерный порт при
 занятом, деградация до последней удачной страницы при провале рендера.
 """
+
 import importlib.util
 import json
 import pathlib
@@ -32,7 +33,8 @@ def make_root(tmp, tasks=None, goal="цель"):
     (swarm / "log").mkdir(parents=True)
     (swarm / "tasks.json").write_text(
         json.dumps({"goal": goal, "tasks": tasks or []}, ensure_ascii=False),
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     (swarm / "metrics.jsonl").write_text("", encoding="utf-8")
     (swarm / "log" / "run.jsonl").write_text("", encoding="utf-8")
     return root
@@ -100,16 +102,28 @@ class TestStateChangeIsVisible(BoardServeCase):
         # реального времени между двумя GET.
         server = self.start(min_rebuild_s=0)
         (self.root / ".swarm" / "tasks.json").write_text(
-            json.dumps({"goal": "цель", "tasks": [
-                {"id": "t1", "title": "старое имя", "status": "pending"}]},
-                       ensure_ascii=False), encoding="utf-8")
+            json.dumps(
+                {
+                    "goal": "цель",
+                    "tasks": [{"id": "t1", "title": "старое имя", "status": "pending"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         _status1, body1, etag1 = _get(server.url)
         self.assertIn("старое имя", body1)
 
         (self.root / ".swarm" / "tasks.json").write_text(
-            json.dumps({"goal": "цель", "tasks": [
-                {"id": "t1", "title": "новое имя", "status": "pending"}]},
-                       ensure_ascii=False), encoding="utf-8")
+            json.dumps(
+                {
+                    "goal": "цель",
+                    "tasks": [{"id": "t1", "title": "новое имя", "status": "pending"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         _status2, body2, etag2 = _get(server.url)
         self.assertIn("новое имя", body2)
         self.assertNotIn("старое имя", body2)
@@ -197,7 +211,8 @@ class TestRenderFailureDegrades(BoardServeCase):
             # тогда осталась бы непроверенной.
             (self.root / ".swarm" / "tasks.json").write_text(
                 json.dumps({"goal": "цель после поломки", "tasks": []}),
-                encoding="utf-8")
+                encoding="utf-8",
+            )
             status2, body2, etag2 = _get(server.url)
         finally:
             bs.board_mod.render = original_render
@@ -232,8 +247,7 @@ class TestBoardOpenDisabled(unittest.TestCase):
         self.root = make_root(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
 
-        cli_spec = importlib.util.spec_from_file_location(
-            "cli", ROOT_DIR / "cli.py")
+        cli_spec = importlib.util.spec_from_file_location("cli", ROOT_DIR / "cli.py")
         self.cli = importlib.util.module_from_spec(cli_spec)
         sys.modules["cli"] = self.cli
         cli_spec.loader.exec_module(self.cli)
@@ -246,6 +260,12 @@ class TestBoardOpenDisabled(unittest.TestCase):
 
     def test_board_open_false_returns_no_url_and_starts_no_server(self):
         out, url = self.cli._board_open(self.root, {"board_open": False})
+        self.assertEqual(out, self.root / ".swarm" / "board.html")
+        self.assertIsNone(url)
+        self.assertIsNone(self.cli._BOARD_SERVER)
+
+    def test_live_board_default_off_starts_no_server(self):
+        out, url = self.cli._board_open(self.root, {})
         self.assertEqual(out, self.root / ".swarm" / "board.html")
         self.assertIsNone(url)
         self.assertIsNone(self.cli._BOARD_SERVER)

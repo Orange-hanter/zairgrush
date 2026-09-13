@@ -40,6 +40,7 @@
 остаётся снимком: его переписывает петля после каждого раунда, и вне
 прогона он читается как обычный статичный файл.
 """
+
 import datetime
 import html
 import json
@@ -66,18 +67,30 @@ STATUS_RU = vocab.STATUS_RU
 SEVERITY_RU = vocab.SEVERITY_RU
 CATEGORY_RU = vocab.CATEGORY_RU
 KIND_RU = vocab.KIND_RU
-MAX_DIFF_CHARS = 12000        # больше человек в браузере всё равно не читает
+MAX_DIFF_CHARS = 12000  # больше человек в браузере всё равно не читает
 
 # Порядок фаз на шкале и в легенде — тот же, что в жизни прогона.
-PHASE_ORDER = ("implement", "gate", "scope", "review", "verification",
-               "policy", "integrity")
+PHASE_ORDER = (
+    "implement",
+    "gate",
+    "scope",
+    "review",
+    "verification",
+    "policy",
+    "integrity",
+)
 # Цвет фазы — общий для шкалы времени и легенды денег; в JS та же
 # таблица (PCOL): расхождение здесь означало бы, что одна и та же фаза на
 # одной странице показана двумя цветами.
-PHASE_COLOR = {"implement": "var(--acc)", "review": "var(--live)",
-               "gate": "var(--ok)", "scope": "var(--faint)",
-               "verification": "var(--mut)", "policy": "var(--mut)",
-               "integrity": "var(--bad)"}
+PHASE_COLOR = {
+    "implement": "var(--acc)",
+    "review": "var(--live)",
+    "gate": "var(--ok)",
+    "scope": "var(--faint)",
+    "verification": "var(--mut)",
+    "policy": "var(--mut)",
+    "integrity": "var(--bad)",
+}
 
 
 def _key(row: dict[str, Any], field: str = "task") -> str:
@@ -126,8 +139,9 @@ def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
 
 
 def _git(root: pathlib.Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=root, capture_output=True,
-                          text=True, check=False).stdout
+    return subprocess.run(
+        ["git", *args], cwd=root, capture_output=True, text=True, check=False
+    ).stdout
 
 
 def _budget(root: pathlib.Path) -> float | None:
@@ -171,8 +185,8 @@ def _verdicts(swarm_dir: pathlib.Path, tid: str) -> list[dict[str, Any]]:
     out = []
     paths = sorted(
         (swarm_dir / "log").glob(f"{tid}-i*-review.json"),
-        key=lambda p: _round_key(
-            p.stem.replace(f"{tid}-", "").replace("-review", "")))
+        key=lambda p: _round_key(p.stem.replace(f"{tid}-", "").replace("-review", "")),
+    )
     for path in paths:
         stem = path.stem.replace(f"{tid}-", "").replace("-review", "")
         try:
@@ -181,29 +195,47 @@ def _verdicts(swarm_dir: pathlib.Path, tid: str) -> list[dict[str, Any]]:
             # Нечитаемый файл — та же история, что и нечитаемый ответ ниже:
             # раунд был, а вердикта нет. Молчаливый пропуск противоречил
             # собственному правилу доски и прятал самое интересное.
-            out.append({"round": stem, "failed": True,
-                        "why": f"файл вердикта не прочитан: {err}"})
+            out.append(
+                {
+                    "round": stem,
+                    "failed": True,
+                    "why": f"файл вердикта не прочитан: {err}",
+                }
+            )
             continue
         except ValueError:
             # Нечитаемый ответ — САМОЕ интересное для оператора: раунд был,
             # деньги потрачены, вердикта нет. Пропуская такой файл, доска
             # показывала задачу так, будто ревью и не запускалось.
-            out.append({"round": stem, "failed": True,
-                        "why": "ответ ревьюера не разобран"})
+            out.append(
+                {"round": stem, "failed": True, "why": "ответ ревьюера не разобран"}
+            )
             continue
         v = env.get("structured_output")
         if not isinstance(v, dict):
-            out.append({"round": stem, "failed": True,
-                        "why": (env.get("terminal_reason")
-                                or env.get("subtype") or "ответ не разобран")})
+            out.append(
+                {
+                    "round": stem,
+                    "failed": True,
+                    "why": (
+                        env.get("terminal_reason")
+                        or env.get("subtype")
+                        or "ответ не разобран"
+                    ),
+                }
+            )
             continue
-        out.append({
-            "round": stem, "verdict": v.get("verdict"),
-            "summary": v.get("summary"), "analysis": v.get("analysis"),
-            "findings": v.get("findings") or [],
-            "notes": v.get("out_of_scope_notes") or [],
-            "requests": v.get("verification_requests") or [],
-        })
+        out.append(
+            {
+                "round": stem,
+                "verdict": v.get("verdict"),
+                "summary": v.get("summary"),
+                "analysis": v.get("analysis"),
+                "findings": v.get("findings") or [],
+                "notes": v.get("out_of_scope_notes") or [],
+                "requests": v.get("verification_requests") or [],
+            }
+        )
     return out
 
 
@@ -222,19 +254,26 @@ def _timeline(metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not phase or end is None:
             continue
         dur = _num(m.get("wall_s")) or _num(m.get("dur_s")) or 0.0
-        segs.append({
-            "task": _key(m), "iter": m.get("iter"), "phase": str(phase),
-            "t0": round(end - dur, 1), "t1": round(end, 1),
-            "dur": round(dur, 1), "ok": m.get("ok"),
-            "cost": _num(m.get("cost_usd")),
-            "verdict": m.get("verdict"),
-            "note": str(m.get("reason") or m.get("run_reason") or ""),
-        })
+        segs.append(
+            {
+                "task": _key(m),
+                "iter": m.get("iter"),
+                "phase": str(phase),
+                "t0": round(end - dur, 1),
+                "t1": round(end, 1),
+                "dur": round(dur, 1),
+                "ok": m.get("ok"),
+                "cost": _num(m.get("cost_usd")),
+                "verdict": m.get("verdict"),
+                "note": str(m.get("reason") or m.get("run_reason") or ""),
+            }
+        )
     return sorted(segs, key=lambda s: (s["t0"], s["t1"]))
 
 
-def _totals(metrics: list[dict[str, Any]],
-            tasks: list[dict[str, Any]]) -> dict[str, Any]:
+def _totals(
+    metrics: list[dict[str, Any]], tasks: list[dict[str, Any]]
+) -> dict[str, Any]:
     """Итоги прогона по ролям, гейту, вердиктам и находкам.
 
     Одна сумма денег не отвечает на вопрос, ради которого доску
@@ -250,12 +289,15 @@ def _totals(metrics: list[dict[str, Any]],
             row = phases.setdefault(phase, {"n": 0.0, "cost": 0.0, "sec": 0.0})
             row["n"] += 1
             row["cost"] += _num(m.get("cost_usd")) or 0.0
-            row["sec"] += (_num(m.get("wall_s")) or _num(m.get("dur_s")) or 0.0)
+            row["sec"] += _num(m.get("wall_s")) or _num(m.get("dur_s")) or 0.0
         if phase == "gate":
             gate["ok" if m.get("ok") else "fail"] += 1
-        for key, field in (("in", "tokens_in"), ("out", "tokens_out"),
-                           ("cache_read", "cache_read"),
-                           ("cache_write", "cache_write")):
+        for key, field in (
+            ("in", "tokens_in"),
+            ("out", "tokens_out"),
+            ("cache_read", "cache_read"),
+            ("cache_write", "cache_write"),
+        ):
             tokens[key] += _num(m.get(field)) or 0.0
     for row in phases.values():
         row["cost"] = round(row["cost"], 2)
@@ -271,24 +313,33 @@ def _totals(metrics: list[dict[str, Any]],
                 if isinstance(f, dict):
                     sev = str(f.get("severity") or "?")
                     severity[sev] = severity.get(sev, 0) + 1
-    return {"phases": phases, "tokens": {k: int(v) for k, v in tokens.items()},
-            "gate": gate, "verdicts": verdicts, "severity": severity}
+    return {
+        "phases": phases,
+        "tokens": {k: int(v) for k, v in tokens.items()},
+        "gate": gate,
+        "verdicts": verdicts,
+        "severity": severity,
+    }
 
 
-def _run_facts(st: Any, root: pathlib.Path,
-               journal: list[dict[str, Any]], metrics: list[dict[str, Any]],
-               segs: list[dict[str, Any]]) -> dict[str, Any]:
+def _run_facts(
+    st: Any,
+    root: pathlib.Path,
+    journal: list[dict[str, Any]],
+    metrics: list[dict[str, Any]],
+    segs: list[dict[str, Any]],
+) -> dict[str, Any]:
     """Паспорт прогона: чей код, когда начался, жив ли, чем занят.
 
     Живость — не «есть свежие записи»: тихий прогон (идёт длинная фаза)
     и мёртвый выглядят в файлах одинаково. Спрашиваем блокировку
     состояния (`state.is_running`) — она врать не умеет.
     """
-    stamps = [e for e in (_epoch(r.get("ts")) for r in journal + metrics)
-              if e is not None]
+    stamps = [
+        e for e in (_epoch(r.get("ts")) for r in journal + metrics) if e is not None
+    ]
     stamps += [s["t0"] for s in segs]
-    last_row = next((r for r in reversed(journal + metrics) if r.get("run_id")),
-                    {})
+    last_row = next((r for r in reversed(journal + metrics) if r.get("run_id")), {})
     live = st.is_running()
     now = st.current_phase()
     return {
@@ -321,8 +372,9 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
     # Оба потока метрик: без plan-metrics доска показывала $38.43 там,
     # где страж бюджета видел $40.12 — два авторитета на одну цифру
     # (пилот). Считать деньги обязана одна формула: как total_spend().
-    metrics = (_read_jsonl(swarm / "metrics.jsonl")
-               + _read_jsonl(swarm / "plan-metrics.jsonl"))
+    metrics = _read_jsonl(swarm / "metrics.jsonl") + _read_jsonl(
+        swarm / "plan-metrics.jsonl"
+    )
     journal = _read_jsonl(swarm / "log" / "run.jsonl")
 
     # Арифметика денег — та же, что у state.total_spend(): сырая сумма и
@@ -346,11 +398,11 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
             # (старая версия, ручная правка) не должна ронять доску.
             if not row.get("qid"):
                 continue
-            questions[row["qid"]] = dict(row, status="open",
-                                         asked=_epoch(row.get("ts")))
+            questions[row["qid"]] = dict(
+                row, status="open", asked=_epoch(row.get("ts"))
+            )
         elif row.get("kind") == "answer" and row.get("qid") in questions:
-            questions[row["qid"]].update(status="answered",
-                                         answer=row.get("text"))
+            questions[row["qid"]].update(status="answered", answer=row.get("text"))
 
     suppressed: dict[str, list[dict[str, Any]]] = {}
     for row in journal:
@@ -360,14 +412,28 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
     tasks = []
     for t in data.get("tasks", []):
         tid = t.get("id")
-        phases = [{
-            "ts": (m.get("ts") or "")[11:19], "iter": m.get("iter"),
-            "phase": PHASE_RU.get(_key(m, "phase"), m.get("phase")),
-            "result": (m.get("verdict") or m.get("reason")
-                       or ("ок" if m.get("ok") else "провал" if m.get("ok") is False else "")),
-            "dur": _num(m.get("dur_s")) or _num(m.get("wall_s")),
-            "cost": _num(m.get("cost_usd")),
-        } for m in metrics if m.get("task") == tid and m.get("phase")]
+        phases = [
+            {
+                "ts": (m.get("ts") or "")[11:19],
+                "iter": m.get("iter"),
+                "phase": PHASE_RU.get(_key(m, "phase"), m.get("phase")),
+                "result": (
+                    m.get("verdict")
+                    or m.get("reason")
+                    or (
+                        "ок"
+                        if m.get("ok")
+                        else "провал"
+                        if m.get("ok") is False
+                        else ""
+                    )
+                ),
+                "dur": _num(m.get("dur_s")) or _num(m.get("wall_s")),
+                "cost": _num(m.get("cost_usd")),
+            }
+            for m in metrics
+            if m.get("task") == tid and m.get("phase")
+        ]
         diff = ""
         # Источников коммита два и они расходятся: step_done в журнале и поле
         # `commit` в задаче (его мог проставить оператор). Берём поле задачи —
@@ -376,23 +442,36 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
             diff = _git(root, "show", "--stat", "--format=%s%n", t["commit"])
             full = _git(root, "show", "--format=", t["commit"])
             if full:
-                diff += "\n" + (full[:MAX_DIFF_CHARS]
-                                + ("\n… дифф обрезан" if len(full) > MAX_DIFF_CHARS else ""))
+                diff += "\n" + (
+                    full[:MAX_DIFF_CHARS]
+                    + ("\n… дифф обрезан" if len(full) > MAX_DIFF_CHARS else "")
+                )
         streams = sorted(p.name for p in (swarm / "log").glob(f"{tid}-*executor.jsonl"))
-        tasks.append(dict(t, _phases=phases, _cost=spend.get(tid),
-                          _verdicts=_verdicts(swarm, tid), _diff=diff,
-                          _suppressed=suppressed.get(tid, []),
-                          _streams=streams,
-                          _questions=[q for q in questions.values()
-                                      if q.get("task") == tid]))
+        tasks.append(
+            dict(
+                t,
+                _phases=phases,
+                _cost=spend.get(tid),
+                _verdicts=_verdicts(swarm, tid),
+                _diff=diff,
+                _suppressed=suppressed.get(tid, []),
+                _streams=streams,
+                _questions=[q for q in questions.values() if q.get("task") == tid],
+            )
+        )
 
     rounds: dict[str, list[dict[str, Any]]] = {}
     for r in journal:
         if r.get("kind") == "round":
             rounds.setdefault(_key(r), []).append(
-                {"round": r.get("round"), "verdict": r.get("verdict"),
-                 "outcome": r.get("outcome"), "findings": r.get("findings"),
-                 "intent": r.get("intent")})
+                {
+                    "round": r.get("round"),
+                    "verdict": r.get("verdict"),
+                    "outcome": r.get("outcome"),
+                    "findings": r.get("findings"),
+                    "intent": r.get("intent"),
+                }
+            )
     for t in tasks:
         t["_rounds"] = rounds.get(_key(t, "id"), [])
 
@@ -402,18 +481,26 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
     # plan_failed — событие, ради которого блок и существует. Наружу не
     # идёт только бухгалтерия (state_written): она сопровождает каждую
     # запись состояния и хоронила бы под собой редкие события.
-    run_level = [r for r in journal
-                 if not r.get("task")
-                 and r.get("kind") not in vocab.BOOKKEEPING_KINDS]
+    run_level = [
+        r
+        for r in journal
+        if not r.get("task") and r.get("kind") not in vocab.BOOKKEEPING_KINDS
+    ]
 
     # Хроника — фразами, а не дампом: `{"kind":"round","round":1,…}` человек
     # разбирает медленнее, чем «раунд 1 → request_changes, находок 3», и
     # ровно так же медленно он разбирал её здесь до появления vocab.
     # `ts: null` — тоже данные: str(… or "") вместо веры в строку.
-    events = [{"ts": str(r.get("ts") or "")[11:19], "kind": r.get("kind"),
-               "kind_ru": vocab.ru(KIND_RU, r.get("kind")),
-               "task": r.get("task"), "detail": vocab.narrate(r)}
-              for r in journal]
+    events = [
+        {
+            "ts": str(r.get("ts") or "")[11:19],
+            "kind": r.get("kind"),
+            "kind_ru": vocab.ru(KIND_RU, r.get("kind")),
+            "task": r.get("task"),
+            "detail": vocab.narrate(r),
+        }
+        for r in journal
+    ]
 
     # Незавершённость шага считает state.unfinished_steps(), а не копия
     # формулы: копия закрывала шаг только по step_done, и разобранный
@@ -422,15 +509,22 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
     unfinished = st.unfinished_steps()
 
     segments = _timeline(metrics)
-    return {"goal": data.get("goal", ""), "tasks": tasks,
-            "questions": list(questions.values()), "events": events,
-            "run_level": run_level, "unfinished": unfinished,
-            "spend": spend, "total": round(total_raw, 2),
-            "timeline": segments,
-            "totals": _totals(metrics, tasks),
-            "run": _run_facts(st, root, journal, metrics, segments),
-            "root": str(root), "swarm_dir": str(swarm),
-            "built": time.strftime("%Y-%m-%d %H:%M:%S")}
+    return {
+        "goal": data.get("goal", ""),
+        "tasks": tasks,
+        "questions": list(questions.values()),
+        "events": events,
+        "run_level": run_level,
+        "unfinished": unfinished,
+        "spend": spend,
+        "total": round(total_raw, 2),
+        "timeline": segments,
+        "totals": _totals(metrics, tasks),
+        "run": _run_facts(st, root, journal, metrics, segments),
+        "root": str(root),
+        "swarm_dir": str(swarm),
+        "built": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 CSS = """
@@ -941,8 +1035,8 @@ if (location.protocol !== 'http:' && location.protocol !== 'https:') {
   // Открыт как файл (file://) — сервера за ним нет и быть не может:
   // честнее сказать это прямо, чем гонять fetch в никуда.
   document.getElementById('live').textContent =
-    'это снимок на диске: во время прогона живая доска открывается ' +
-    'сама, её адрес печатает команда запуска — здесь не обновится';
+    'это снимок на диске: живая доска — live_board = true в swarm.toml, ' +
+    'её адрес печатает команда запуска — здесь не обновится';
 } else {
   let etag = null;
   let misses = 0;
@@ -1034,8 +1128,9 @@ def _bar(parts: list[tuple[float, str]], total: float) -> str:
     out = ['<div class="split">']
     for value, color in parts:
         if value > 0:
-            out.append(f'<i style="width:{value / total * 100:.4g}%;'
-                       f'background:{color}"></i>')
+            out.append(
+                f'<i style="width:{value / total * 100:.4g}%;background:{color}"></i>'
+            )
     out.append("</div>")
     return "".join(out)
 
@@ -1045,14 +1140,17 @@ def _legend(items: list[tuple[str, str, str]]) -> str:
     e = html.escape
     if not items:
         return ""
-    cells = "".join(f'<span><b class="sw" style="background:{c}"></b>'
-                    f'{e(name)} <b>{e(val)}</b></span>'
-                    for c, name, val in items)
+    cells = "".join(
+        f'<span><b class="sw" style="background:{c}"></b>'
+        f"{e(name)} <b>{e(val)}</b></span>"
+        for c, name, val in items
+    )
     return f'<div class="legend">{cells}</div>'
 
 
-def _vitals(board: dict[str, Any], tasks: list[dict[str, Any]],
-            by_status: dict[str, int]) -> str:
+def _vitals(
+    board: dict[str, Any], tasks: list[dict[str, Any]], by_status: dict[str, int]
+) -> str:
     """Показатели прогона: четыре ответа, ради которых доску открывают —
     сколько сделано, сколько стоило и кому, сходится ли ревью, зелен ли гейт.
     """
@@ -1067,8 +1165,15 @@ def _vitals(board: dict[str, Any], tasks: list[dict[str, Any]],
     done, blocked = by_status.get("done", 0), by_status.get("blocked", 0)
     active = by_status.get("in_progress", 0) + by_status.get("in_review", 0)
     pending = by_status.get("pending", 0)
-    bar = _bar([(done, "var(--ok)"), (blocked, "var(--bad)"),
-                (active, "var(--live)"), (pending, "var(--faint)")], n)
+    bar = _bar(
+        [
+            (done, "var(--ok)"),
+            (blocked, "var(--bad)"),
+            (active, "var(--live)"),
+            (pending, "var(--faint)"),
+        ],
+        n,
+    )
     marks: list[tuple[str, str, str]] = [("var(--ok)", "закрыто", str(done))]
     if blocked:
         marks.append(("var(--bad)", "заблокировано", str(blocked)))
@@ -1077,29 +1182,45 @@ def _vitals(board: dict[str, Any], tasks: list[dict[str, Any]],
     if pending:
         marks.append(("var(--faint)", "в очереди", str(pending)))
     legend = _legend(marks)
-    tiles.append(f'<div class="tile"><div class="cap">задачи</div>'
-                 f'<div class="big">{done}<small> из {n}</small></div>'
-                 f'{bar}{legend}</div>')
+    tiles.append(
+        f'<div class="tile"><div class="cap">задачи</div>'
+        f'<div class="big">{done}<small> из {n}</small></div>'
+        f"{bar}{legend}</div>"
+    )
 
     # 2. Деньги — по ролям. Сумма не отвечает на вопрос «дорого — это кто».
     total = board.get("total", 0)
     budget = run.get("budget")
-    paid = [(p, phases[p]["cost"]) for p in PHASE_ORDER
-            if p in phases and phases[p]["cost"] > 0]
-    paid += [(p, row["cost"]) for p, row in phases.items()
-             if p not in PHASE_ORDER and row["cost"] > 0]
+    paid = [
+        (p, phases[p]["cost"])
+        for p in PHASE_ORDER
+        if p in phases and phases[p]["cost"] > 0
+    ]
+    paid += [
+        (p, row["cost"])
+        for p, row in phases.items()
+        if p not in PHASE_ORDER and row["cost"] > 0
+    ]
     if budget:
         share = min(1.0, float(total) / budget) if budget else 0.0
         money_bar = _bar([(share, "var(--live)"), (1 - share, "var(--sunk)")], 1.0)
         cap = f"<small> из ${budget:g}</small>"
     else:
-        money_bar = _bar([(c, PHASE_COLOR.get(p, "var(--mut)")) for p, c in paid],
-                         sum(c for _, c in paid))
+        money_bar = _bar(
+            [(c, PHASE_COLOR.get(p, "var(--mut)")) for p, c in paid],
+            sum(c for _, c in paid),
+        )
         cap = ""
-    legend = _legend([(PHASE_COLOR.get(p, "var(--mut)"),
-                       PHASE_RU.get(p, p), f"${c:.2f}") for p, c in paid])
-    tiles.append(f'<div class="tile"><div class="cap">{e(vocab.SPEND_LABEL)}</div>'
-                 f'<div class="big">${total}{cap}</div>{money_bar}{legend}</div>')
+    legend = _legend(
+        [
+            (PHASE_COLOR.get(p, "var(--mut)"), PHASE_RU.get(p, p), f"${c:.2f}")
+            for p, c in paid
+        ]
+    )
+    tiles.append(
+        f'<div class="tile"><div class="cap">{e(vocab.SPEND_LABEL)}</div>'
+        f'<div class="big">${total}{cap}</div>{money_bar}{legend}</div>'
+    )
 
     # 3. Ревью: вердикты и находки по весу.
     verdicts = totals.get("verdicts") or {}
@@ -1108,8 +1229,9 @@ def _vitals(board: dict[str, Any], tasks: list[dict[str, Any]],
     ok = verdicts.get("approve", 0)
     again = verdicts.get("request_changes", 0)
     lost = verdicts.get("нет вердикта", 0)
-    bar = _bar([(ok, "var(--ok)"), (again, "var(--live)"), (lost, "var(--bad)")],
-               rounds)
+    bar = _bar(
+        [(ok, "var(--ok)"), (again, "var(--live)"), (lost, "var(--bad)")], rounds
+    )
     marks = []
     if ok:
         marks.append(("var(--ok)", "approve", str(ok)))
@@ -1119,14 +1241,18 @@ def _vitals(board: dict[str, Any], tasks: list[dict[str, Any]],
         marks.append(("var(--bad)", "без вердикта", str(lost)))
     legend = _legend(marks)
     finds = sum(severity.values())
-    sev_line = " · ".join(f"{SEVERITY_RU.get(s, s)} {severity[s]}"
-                          for s in ("blocker", "major", "minor")
-                          if severity.get(s))
-    tiles.append(f'<div class="tile"><div class="cap">ревью</div>'
-                 f'<div class="big">{rounds}<small> вердиктов, находок '
-                 f'{finds}</small></div>{bar}{legend}'
-                 + (f'<div class="hint">{e(sev_line)}</div>' if sev_line else "")
-                 + "</div>")
+    sev_line = " · ".join(
+        f"{SEVERITY_RU.get(s, s)} {severity[s]}"
+        for s in ("blocker", "major", "minor")
+        if severity.get(s)
+    )
+    tiles.append(
+        f'<div class="tile"><div class="cap">ревью</div>'
+        f'<div class="big">{rounds}<small> вердиктов, находок '
+        f"{finds}</small></div>{bar}{legend}"
+        + (f'<div class="hint">{e(sev_line)}</div>' if sev_line else "")
+        + "</div>"
+    )
 
     # 4. Гейт и контекст: зелен ли прогон тестов и сколько стоил контекст.
     gate = totals.get("gate") or {}
@@ -1139,14 +1265,18 @@ def _vitals(board: dict[str, Any], tasks: list[dict[str, Any]],
     if tokens.get("in") or read:
         # Округление до тысяч превращало 480 токенов в «0k» — цифра,
         # которая называет не масштаб, а ноль там, где его нет.
-        ctx = (f'<div class="hint">контекст: вход {_k(tokens.get("in", 0))}, '
-               f'выход {_k(tokens.get("out", 0))}'
-               + (f", из кэша {cached:.0f}%" if read + write else "") + "</div>")
-    tiles.append(f'<div class="tile"><div class="cap">гейт</div>'
-                 f'<div class="big">{g_ok}<small> зелёных из {g_ok + g_bad}'
-                 f'</small></div>{bar}{ctx}</div>')
+        ctx = (
+            f'<div class="hint">контекст: вход {_k(tokens.get("in", 0))}, '
+            f"выход {_k(tokens.get('out', 0))}"
+            + (f", из кэша {cached:.0f}%" if read + write else "")
+            + "</div>"
+        )
+    tiles.append(
+        f'<div class="tile"><div class="cap">гейт</div>'
+        f'<div class="big">{g_ok}<small> зелёных из {g_ok + g_bad}'
+        f"</small></div>{bar}{ctx}</div>"
+    )
     return f'<div class="vitals">{"".join(tiles)}</div>'
-
 
 
 def _now_panel(board: dict[str, Any]) -> str:
@@ -1165,31 +1295,38 @@ def _now_panel(board: dict[str, Any]) -> str:
     since = _epoch(row.get("since"))
     bits = []
     if row.get("task"):
-        bits.append(f'задача {row["task"]}')
+        bits.append(f"задача {row['task']}")
     if row.get("iter"):
-        bits.append(f'раунд {row["iter"]}')
-    bits.extend(f"{field} {row[field]}"
-                for field in ("engine", "model", "attempt") if row.get(field))
+        bits.append(f"раунд {row['iter']}")
+    bits.extend(
+        f"{field} {row[field]}"
+        for field in ("engine", "model", "attempt")
+        if row.get(field)
+    )
     meta = " · ".join(str(b) for b in bits)
     if now:
-        elapsed = (f'<span class="el" data-since="{since:.0f}"></span>'
-                   if since else "")
-        return (f'<section class="now"><span class="beat"></span>'
-                f'<div class="grow"><div class="what">сейчас: {e(phase)}</div>'
-                f'<div class="meta">{e(meta)}</div></div>{elapsed}</section>')
-    cmd = f'swarm --root {board.get("root", ".")} resume'
-    return (f'<section class="now dead"><span class="beat"></span>'
-            f'<div class="grow"><div class="what">прогон оборвался на фазе '
-            f'«{e(phase)}»</div><div class="meta">{e(meta)} · петля не '
-            f'запущена, а отметка о работе осталась — процесс убит, '
-            f'а не завершён</div>'
-            f'<div class="cmd"><code>{e(cmd)}</code>'
-            f'<button class="copy" data-cmd="{e(cmd)}">скопировать</button>'
-            f"</div></div></section>")
+        elapsed = f'<span class="el" data-since="{since:.0f}"></span>' if since else ""
+        return (
+            f'<section class="now"><span class="beat"></span>'
+            f'<div class="grow"><div class="what">сейчас: {e(phase)}</div>'
+            f'<div class="meta">{e(meta)}</div></div>{elapsed}</section>'
+        )
+    cmd = f"swarm --root {board.get('root', '.')} resume"
+    return (
+        f'<section class="now dead"><span class="beat"></span>'
+        f'<div class="grow"><div class="what">прогон оборвался на фазе '
+        f'«{e(phase)}»</div><div class="meta">{e(meta)} · петля не '
+        f"запущена, а отметка о работе осталась — процесс убит, "
+        f"а не завершён</div>"
+        f'<div class="cmd"><code>{e(cmd)}</code>'
+        f'<button class="copy" data-cmd="{e(cmd)}">скопировать</button>'
+        f"</div></div></section>"
+    )
 
 
-def _decisions(board: dict[str, Any], open_q: list[dict[str, Any]],
-               blocked: list[dict[str, Any]]) -> str:
+def _decisions(
+    board: dict[str, Any], open_q: list[dict[str, Any]], blocked: list[dict[str, Any]]
+) -> str:
     """Очередь человека: вопросы петли и заблокированные задачи вместе.
 
     Раньше вопрос лежал в одном месте страницы, блокировка — в другом, а
@@ -1202,11 +1339,11 @@ def _decisions(board: dict[str, Any], open_q: list[dict[str, Any]],
     for q in open_q:
         cmd = f'swarm --root {root} answer {q["qid"]} "…"'
         asked = q.get("asked")
-        age = (f'<span data-ago="{asked:.0f}"></span>' if asked else "")
+        age = f'<span data-ago="{asked:.0f}"></span>' if asked else ""
         out.append(
             f'<div class="ask"><div class="top"><b>{e(q["qid"])}</b>'
-            f'<span>задача {e(str(q.get("task") or "—"))}</span>'
-            f'<span>{e(str(q.get("qkind", "")))}</span>'
+            f"<span>задача {e(str(q.get('task') or '—'))}</span>"
+            f"<span>{e(str(q.get('qkind', '')))}</span>"
             f'<span class="grow"></span>{age}</div>'
             f'<div class="q">{e(str(q.get("question", "")))}</div>'
             # Команда — в data-атрибуте, а не в inline-onclick: JSON
@@ -1215,31 +1352,35 @@ def _decisions(board: dict[str, Any], open_q: list[dict[str, Any]],
             f'<div class="cmd"><code>{e(cmd)}</code>'
             f'<button class="copy" data-cmd="{e(cmd)}">скопировать</button></div>'
             f'<div class="hint">если решение требует тронуть файл вне границ '
-            f'задачи — добавьте <code>--add-path путь</code></div></div>')
+            f"задачи — добавьте <code>--add-path путь</code></div></div>"
+        )
     for t in blocked:
-        cmd = f'swarm --root {root} retry {t.get("id")}'
-        why = " · ".join(str(x) for x in (t.get("reason"), t.get("diagnosis"))
-                         if x)
+        cmd = f"swarm --root {root} retry {t.get('id')}"
+        why = " · ".join(str(x) for x in (t.get("reason"), t.get("diagnosis")) if x)
         out.append(
             f'<div class="ask blocked"><div class="top">'
-            f'<b>{e(str(t.get("id")))}</b><span>задача заблокирована</span></div>'
+            f"<b>{e(str(t.get('id')))}</b><span>задача заблокирована</span></div>"
             f'<div class="q">{e(str(t.get("title") or ""))}</div>'
             + (f'<div class="hint">{e(why)}</div>' if why else "")
-            + (f'<div class="hint">работа сохранена: '
-               f'<code>{e(str(t["stash"]))}</code></div>' if t.get("stash") else "")
+            + (
+                f'<div class="hint">работа сохранена: '
+                f"<code>{e(str(t['stash']))}</code></div>"
+                if t.get("stash")
+                else ""
+            )
             + f'<div class="cmd"><code>{e(cmd)}</code>'
-              f'<button class="copy" data-cmd="{e(cmd)}">скопировать</button>'
-              f'</div><div class="hint">разбор причины: '
-              f'<code>swarm --root {e(root)} why {e(str(t.get("id")))}</code>'
-              f"</div></div>")
+            f'<button class="copy" data-cmd="{e(cmd)}">скопировать</button>'
+            f'</div><div class="hint">разбор причины: '
+            f"<code>swarm --root {e(root)} why {e(str(t.get('id')))}</code>"
+            f"</div></div>"
+        )
     return "".join(out)
 
 
 def render(board: dict[str, Any]) -> str:
     e = html.escape
     tasks = board.get("tasks") or []
-    open_q = [q for q in board.get("questions") or []
-              if q.get("status") == "open"]
+    open_q = [q for q in board.get("questions") or [] if q.get("status") == "open"]
     blocked = [t for t in tasks if t.get("status") == "blocked"]
     by_status: dict[str, int] = {}
     for t in tasks:
@@ -1254,9 +1395,11 @@ def render(board: dict[str, Any]) -> str:
     # `#live` ниже — про страницу (сервер за ней); это разные факты, и
     # смешивать их в одну надпись значит врать об одном из двух.
     live = bool(run.get("live"))
-    pill = ('<span class="pill on"><span class="dot"></span>петля идёт</span>'
-            if live else
-            '<span class="pill"><span class="dot"></span>петля не запущена</span>')
+    pill = (
+        '<span class="pill on"><span class="dot"></span>петля идёт</span>'
+        if live
+        else '<span class="pill"><span class="dot"></span>петля не запущена</span>'
+    )
     ident = []
     if run.get("id"):
         ident.append(f'<span class="mono">прогон {e(str(run["id"]))}</span>')
@@ -1267,30 +1410,32 @@ def render(board: dict[str, Any]) -> str:
     if run.get("t0") and run.get("t1"):
         span = float(run["t1"]) - float(run["t0"])
         if span >= 3600:
-            sub.append(f"прогон {int(span // 3600)} ч "
-                       f"{int(span % 3600 // 60)} мин")
+            sub.append(f"прогон {int(span // 3600)} ч {int(span % 3600 // 60)} мин")
         elif span >= 60:
             sub.append(f"прогон {int(span // 60)} мин")
         else:
             sub.append(f"прогон {int(span)} с")
     if run.get("t1"):
-        sub.append(f'последнее событие <span data-ago="{float(run["t1"]):.0f}">'
-                   f"</span>")
+        sub.append(f'последнее событие <span data-ago="{float(run["t1"]):.0f}"></span>')
 
-    rail = (f'<div class="rail"><span class="brand">рой</span>'
-            f'{"".join(ident)}<span class="grow"></span>{pill}'
-            f'<button id="theme" title="светлая или тёмная">◐ тема</button>'
-            f"</div>")
+    rail = (
+        f'<div class="rail"><span class="brand">рой</span>'
+        f'{"".join(ident)}<span class="grow"></span>{pill}'
+        f'<button id="theme" title="светлая или тёмная">◐ тема</button>'
+        f"</div>"
+    )
     # Кодировка объявляется в самой странице, а не только заголовком
     # сервера: файл `.swarm/board.html` открывают и напрямую (file://),
     # где заголовка нет вовсе — и весь русский текст превращался в
     # мусор, хотя руководство оператора велит открывать именно файл.
-    parts = ['<meta charset="utf-8">',
-             f"<title>Доска прогона</title><style>{CSS}</style>",
-             '<div class="wrap">',
-             rail,
-             f'<h1>{e(board.get("goal") or "цель не задана")}</h1>',
-             f'<div class="sub">{" · ".join(sub)}</div>']
+    parts = [
+        '<meta charset="utf-8">',
+        f"<title>Доска прогона</title><style>{CSS}</style>",
+        '<div class="wrap">',
+        rail,
+        f"<h1>{e(board.get('goal') or 'цель не задана')}</h1>",
+        f'<div class="sub">{" · ".join(sub)}</div>',
+    ]
 
     parts.append(_vitals(board, tasks, by_status))
 
@@ -1300,8 +1445,9 @@ def render(board: dict[str, Any]) -> str:
         parts.append(now_panel)
 
     if open_q or blocked:
-        parts.append(f'<h2>Ждут вас <span class="cnt">'
-                     f"{len(open_q) + len(blocked)}</span></h2>")
+        parts.append(
+            f'<h2>Ждут вас <span class="cnt">{len(open_q) + len(blocked)}</span></h2>'
+        )
         parts.append(_decisions(board, open_q, blocked))
 
     # События уровня прогона и шаги без исхода — не хроника: остановку по
@@ -1313,10 +1459,11 @@ def render(board: dict[str, Any]) -> str:
         parts.append('<div class="log">')
         parts.extend(
             f'<div class="ev"><span class="tm">'
-            f'{e(str(r.get("ts") or "")[11:19])}</span>'
+            f"{e(str(r.get('ts') or '')[11:19])}</span>"
             f'<span class="kd">{e(vocab.ru(KIND_RU, r.get("kind")))}</span>'
             f'<span class="dt">{e(vocab.narrate(r))}</span></div>'
-            for r in run_level)
+            for r in run_level
+        )
         parts.append("</div>")
     if unfinished:
         parts.append("<h2>Шаги без исхода — прогон падал</h2>")
@@ -1325,40 +1472,54 @@ def render(board: dict[str, Any]) -> str:
             f'<div class="ev hot"><span class="tm"></span>'
             f'<span class="kd">{e(str(r.get("task") or ""))}'
             f'</span><span class="dt">{e(vocab.narrate(r))}</span></div>'
-            for r in unfinished)
+            for r in unfinished
+        )
         parts.append("</div>")
-        parts.append(f'<div class="hint">интент без записи о завершении: '
-                     f'<code>swarm --root {e(str(board.get("root", ".")))} '
-                     f"resume</code> разберётся</div>")
+        parts.append(
+            f'<div class="hint">интент без записи о завершении: '
+            f"<code>swarm --root {e(str(board.get('root', '.')))} "
+            f"resume</code> разберётся</div>"
+        )
 
     if board.get("timeline"):
         parts.append('<h2>Ход прогона <span class="cnt">по фазам</span></h2>')
         parts.append('<div class="tl" id="timeline"></div>')
-        parts.append(_legend([(PHASE_COLOR[p], PHASE_RU.get(p, p), "")
-                              for p in ("implement", "review", "gate", "scope")
-                              if (board.get("totals") or {}).get(
-                                  "phases", {}).get(p)]))
-        parts.append('<div class="hint">строка — задача, отрезок — фаза; '
-                     'засечка вместо отрезка значит, что у фазы нет '
-                     'измеренной длительности (гейт, границы). Наведите '
-                     'на отрезок — время, деньги и исход; щёлкните по имени '
-                     'задачи слева — откроется её карточка.</div>')
+        parts.append(
+            _legend(
+                [
+                    (PHASE_COLOR[p], PHASE_RU.get(p, p), "")
+                    for p in ("implement", "review", "gate", "scope")
+                    if (board.get("totals") or {}).get("phases", {}).get(p)
+                ]
+            )
+        )
+        parts.append(
+            '<div class="hint">строка — задача, отрезок — фаза; '
+            "засечка вместо отрезка значит, что у фазы нет "
+            "измеренной длительности (гейт, границы). Наведите "
+            "на отрезок — время, деньги и исход; щёлкните по имени "
+            "задачи слева — откроется её карточка.</div>"
+        )
 
     parts.append(f'<h2>Задачи <span class="cnt">{len(tasks)}</span></h2>')
-    parts.append('<div class="bar">'
-                 '<input type="search" id="search" placeholder="поиск по задачам, '
-                 'находкам, файлам…">'
-                 '<button data-f="all" class="on">все</button>'
-                 '<button data-f="pending">в очереди</button>'
-                 '<button data-f="blocked">заблокированы</button>'
-                 '<button data-f="done">закрыты</button></div>')
+    parts.append(
+        '<div class="bar">'
+        '<input type="search" id="search" placeholder="поиск по задачам, '
+        'находкам, файлам…">'
+        '<button data-f="all" class="on">все</button>'
+        '<button data-f="pending">в очереди</button>'
+        '<button data-f="blocked">заблокированы</button>'
+        '<button data-f="done">закрыты</button></div>'
+    )
     parts.append('<div id="tasks"></div>')
     if not tasks:
-        parts.append('<div class="empty">Очередь пуста: задач ещё нет. '
-                     'Их приносит <code>swarm plan</code> — или '
-                     '<code>swarm go</code>, который планирует и исполняет '
-                     'сам. Страница наполнится, как только в '
-                     '<code>.swarm/tasks.json</code> появится очередь.</div>')
+        parts.append(
+            '<div class="empty">Очередь пуста: задач ещё нет. '
+            "Их приносит <code>swarm plan</code> — или "
+            "<code>swarm go</code>, который планирует и исполняет "
+            "сам. Страница наполнится, как только в "
+            "<code>.swarm/tasks.json</code> появится очередь.</div>"
+        )
 
     events = board.get("events") or []
     parts.append("<h2>Хроника</h2>")
@@ -1368,8 +1529,9 @@ def render(board: dict[str, Any]) -> str:
         f'<div class="ev"><span class="tm">{e(str(ev.get("ts", "")))}</span>'
         f'<span class="kd">{e(str(ev.get("kind_ru", "")))}</span>'
         f'<span class="dt">{e(str(ev.get("task") or ""))} '
-        f'{e(str(ev.get("detail", "")))}</span></div>'
-        for ev in events)
+        f"{e(str(ev.get('detail', '')))}</span></div>"
+        for ev in events
+    )
     parts.append("</div>")
 
     # Формулировка точная намеренно: этот файл — снимок на момент сборки,
@@ -1381,33 +1543,41 @@ def render(board: dict[str, Any]) -> str:
     root = e(str(board.get("root", ".")))
     parts.append(
         f'<div class="foot">Этот файл — снимок на момент сборки; во время '
-        f'прогона доска живая (адрес печатает команда запуска) и '
-        f'обновляется на месте без перезагрузки — петля переписывает файл '
-        f'после каждого раунда, живой сервер каждый раз собирает страницу '
-        f'заново. Посмотреть живьём вне прогона: '
-        f'<code>swarm --root {root} board --serve</code>; '
-        f'разовый снимок: <code>swarm --root {root} board</code>.<br>'
-        f'Собрано: {e(str(board.get("built", "")))} '
-        f'<span id="live"></span></div></div>')
+        f"прогона доска живая (адрес печатает команда запуска) и "
+        f"обновляется на месте без перезагрузки — петля переписывает файл "
+        f"после каждого раунда, живой сервер каждый раз собирает страницу "
+        f"заново. Посмотреть живьём вне прогона: "
+        f"<code>swarm --root {root} board --serve</code>; "
+        f"разовый снимок: <code>swarm --root {root} board</code>.<br>"
+        f"Собрано: {e(str(board.get('built', '')))} "
+        f'<span id="live"></span></div></div>'
+    )
 
     # Словари имён едут на страницу ИЗ vocab, а не живут третьей копией в
     # JS: копия уже разошлась — исход раунда доска показывала по-английски,
     # пока `why` говорил по-русски.
     payload = json.dumps(
-        dict(board, vocab={"severity": vocab.SEVERITY_RU,
-                           "category": vocab.CATEGORY_RU,
-                           "status": vocab.STATUS_RU,
-                           "outcome": vocab.OUTCOME_RU,
-                           "phase": vocab.PHASE_RU}),
-        ensure_ascii=False).replace("</", "<\\/")
+        dict(
+            board,
+            vocab={
+                "severity": vocab.SEVERITY_RU,
+                "category": vocab.CATEGORY_RU,
+                "status": vocab.STATUS_RU,
+                "outcome": vocab.OUTCOME_RU,
+                "phase": vocab.PHASE_RU,
+            },
+        ),
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
     parts.append(f'<script type="application/json" id="data">{payload}</script>')
     parts.append(f"<script>{JS}</script>")
     return "\n".join(parts)
 
 
-def build(root: str | pathlib.Path,
-          out: str | pathlib.Path | None = None,
-          ) -> tuple[pathlib.Path, dict[str, Any]]:
+def build(
+    root: str | pathlib.Path,
+    out: str | pathlib.Path | None = None,
+) -> tuple[pathlib.Path, dict[str, Any]]:
     board = collect(root)
     page = render(board)
     out = pathlib.Path(out) if out else pathlib.Path(root) / ".swarm" / "board.html"

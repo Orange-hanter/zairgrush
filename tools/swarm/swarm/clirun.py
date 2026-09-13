@@ -1,4 +1,5 @@
 """Команды запуска петли: go, run, resume и их хелперы."""
+
 import argparse
 import json
 import pathlib
@@ -20,14 +21,13 @@ from cliexplain import _prefix  # noqa: E402
 # что на исчерпанном бюджете — снаружи «сделано» и «встало» совпадали.
 # 2 (usage/отказ на входе), 3 (нет готовых задач), 4 (квота) заняты;
 # 11 совпадает по смыслу с EXIT_ASK_USER петли. Таблица — в EPILOG.
-EXIT_QUEUE_DONE = 0    # очередь отработана: все взятые задачи done
+EXIT_QUEUE_DONE = 0  # очередь отработана: все взятые задачи done
 
 EXIT_NEEDS_HUMAN = 11  # есть исходы blocked/ask_user — нужен человек
 
-EXIT_BUDGET = 12       # прогон остановлен по бюджету
+EXIT_BUDGET = 12  # прогон остановлен по бюджету
 
 EXIT_NO_EXECUTOR = 13  # исполнитель недоступен, прогон остановлен
-
 
 
 def _run_verdict(results: dict[str, str]) -> int:
@@ -39,14 +39,15 @@ def _run_verdict(results: dict[str, str]) -> int:
     """
     if results.get("_executor") == "unavailable":
         return EXIT_NO_EXECUTOR
-    if (results.get("_budget") == "exhausted"
-            or "budget_stop" in results.values()):
+    if results.get("_budget") == "exhausted" or "budget_stop" in results.values():
         return EXIT_BUDGET
-    if any(v in ("blocked", "ask_user") for k, v in results.items()
-           if not k.startswith("_")):
+    if any(
+        v in ("blocked", "ask_user")
+        for k, v in results.items()
+        if not k.startswith("_")
+    ):
         return EXIT_NEEDS_HUMAN
     return EXIT_QUEUE_DONE
-
 
 
 def _print_results(results: dict[str, str]) -> None:
@@ -57,7 +58,6 @@ def _print_results(results: dict[str, str]) -> None:
     а главное в последней строке. `run` и `go` печатают одинаково.
     """
     cli.ui("\nитог: " + json.dumps(results, ensure_ascii=False))
-
 
 
 def _engine_preflight(cfg: dict[str, Any]) -> bool:
@@ -112,8 +112,10 @@ def _engine_preflight(cfg: dict[str, Any]) -> bool:
         return False
     factor = ambient.factor(cfg)
     if factor:
-        cli.ui(f"фоновый замер: фактор {factor}, "
-               f"сид {(cfg.get('experiments') or {}).get('ambient_seed')}")
+        cli.ui(
+            f"фоновый замер: фактор {factor}, "
+            f"сид {(cfg.get('experiments') or {}).get('ambient_seed')}"
+        )
     # Дуэль: два исполнителя на задачу. Проверки те же и по той же
     # причине — испорченную выборку не видно ни в одном выводе.
     duel = cli.load_mod("duel")
@@ -127,9 +129,11 @@ def _engine_preflight(cfg: dict[str, Any]) -> bool:
         return False
     duel_factor = duel.factor(cfg)
     if duel_factor:
-        cli.ui(f"ДУЭЛЬ: фактор {duel_factor} — на каждой задаче два "
-               f"исполнителя параллельно; работа остаётся у плеча, "
-               f"выбранного жребием ЗАРАНЕЕ")
+        cli.ui(
+            f"ДУЭЛЬ: фактор {duel_factor} — на каждой задаче два "
+            f"исполнителя параллельно; работа остаётся у плеча, "
+            f"выбранного жребием ЗАРАНЕЕ"
+        )
     engines = cli.load_mod("engines")
     try:
         engine, model = engines.resolve(cfg)
@@ -137,25 +141,35 @@ def _engine_preflight(cfg: dict[str, Any]) -> bool:
         print(f"движок исполнителя не выбран: {e}", file=sys.stderr)
         return False
     cli.ui(f"исполнитель: {engine}" + (f" ({model})" if model else ""))
-    same_model = engine == "claude" and str(model) == str(
-        cfg.get("review_model") or "")
+    same_model = engine == "claude" and str(model) == str(cfg.get("review_model") or "")
     # Подтверждающий раунд ревьюит ТОТ ЖЕ дифф. Если он не разведён ни
     # моделью, ни усилием, ни линзой, это не второй ВЗГЛЯД, а второй раз
     # тот же вопрос: §8.2 обещает угол зрения, а конфиг по умолчанию
     # оплачивает повтор. Молчать об этом нельзя — обещание документа и
     # поведение прогона расходятся именно здесь.
-    diverged = any(cfg.get(k) for k in
-                   ("confirm_model", "confirm_model_pool", "confirm_effort",
-                    "confirm_effort_pool", "confirm_lens"))
+    diverged = any(
+        cfg.get(k)
+        for k in (
+            "confirm_model",
+            "confirm_model_pool",
+            "confirm_effort",
+            "confirm_effort_pool",
+            "confirm_lens",
+        )
+    )
     if int(cfg.get("confirmations", 2) or 0) > 1 and not diverged:
-        cli.ui("    ВНИМАНИЕ: подтверждающий раунд ничем не разведён — тот "
-               "же дифф тем же ревьюером с теми же параметрами; это второй "
-               "образец, а не второй взгляд. Развести: confirm_model, "
-               "confirm_effort или confirm_lens")
+        cli.ui(
+            "    ВНИМАНИЕ: подтверждающий раунд ничем не разведён — тот "
+            "же дифф тем же ревьюером с теми же параметрами; это второй "
+            "образец, а не второй взгляд. Развести: confirm_model, "
+            "confirm_effort или confirm_lens"
+        )
     if same_model:
-        cli.ui("    ВНИМАНИЕ: исполнитель и ревьюер — одна и та же модель; "
-               "независимость судьи (§3.2) держится только на "
-               "confirm_model/confirm_effort/confirm_lens")
+        cli.ui(
+            "    ВНИМАНИЕ: исполнитель и ревьюер — одна и та же модель; "
+            "независимость судьи (§3.2) держится только на "
+            "confirm_model/confirm_effort/confirm_lens"
+        )
     return True
 
 
@@ -189,15 +203,24 @@ def cmd_go(args: argparse.Namespace) -> int:
         print("цель очереди и переданная --goal расходятся:", file=sys.stderr)
         print(f"  в очереди: {stored_goal or '(не задана)'}", file=sys.stderr)
         print(f"  передана:  {args.goal}", file=sys.stderr)
-        print("продолжить старую очередь — `swarm go` без --goal; "
-              'новая цель — `swarm plan --goal "…"`, затем `swarm go`',
-              file=sys.stderr)
+        print(
+            "продолжить старую очередь — `swarm go` без --goal; "
+            'новая цель — `swarm plan --goal "…"`, затем `swarm go`',
+            file=sys.stderr,
+        )
         return 2
     if args.goal and not pending:
         print(f"== планирование: {args.goal}\n")
-        rc = cli.cmd_plan(argparse.Namespace(
-            root=args.root, cmd="plan", goal=args.goal, task=None,
-            dispute=None, dry_run=False))
+        rc = cli.cmd_plan(
+            argparse.Namespace(
+                root=args.root,
+                cmd="plan",
+                goal=args.goal,
+                task=None,
+                dispute=None,
+                dry_run=False,
+            )
+        )
         if rc != 0:
             return int(rc)
         print()
@@ -216,8 +239,7 @@ def cmd_go(args: argparse.Namespace) -> int:
 
     with cli.state_mod.SwarmState(args.root) as locked:
         agents = cli.load_mod("agents").Agents(locked, cfg)
-        loop = cli.loop_mod.Loop(locked, cfg, agents,
-                                                  ui=cli.ui)
+        loop = cli.loop_mod.Loop(locked, cfg, agents, ui=cli.ui)
         results = loop.run(limit=args.limit)
 
     board_mod = cli.load_mod("board")
@@ -225,13 +247,15 @@ def cmd_go(args: argparse.Namespace) -> int:
     open_q = [q for q in board["questions"] if q["status"] == "open"]
     _print_results(results)
     run_cap = spending.run_budget(cfg)
-    print(f"потрачено ${board['total']}"
-          + (f" из ${run_cap}" if run_cap else " (потолка прогона нет)"))
+    print(
+        f"потрачено ${board['total']}"
+        + (f" из ${run_cap}" if run_cap else " (потолка прогона нет)")
+    )
     print(f"доска: {out}")
     if open_q:
         print(f"\nЖДУТ ВАС ({len(open_q)}):")
         for q in open_q:
-            print(f"  {q['qid']}  {q['task']}  {str(q.get('question',''))[:90]}")
+            print(f"  {q['qid']}  {q['task']}  {str(q.get('question', ''))[:90]}")
         print(f'  ответить: {_prefix(str(args.root))} answer <id> "текст"')
         print(f"  затем продолжить: {_prefix(str(args.root))} go")
     else:
@@ -242,11 +266,9 @@ def cmd_go(args: argparse.Namespace) -> int:
             print(f"\nВСТАЛО ({len(stuck)}), вопросов в инбоксе нет:")
             for t in stuck:
                 print(f"  {t['id']}  {str(t.get('title', ''))[:60]}")
-            print(f"  разобрать: {_prefix(str(args.root))} "
-                  f"why {stuck[0]['id']}")
+            print(f"  разобрать: {_prefix(str(args.root))} why {stuck[0]['id']}")
     _board_close()
     return _run_verdict(results)
-
 
 
 def _preflight(st: Any, force: bool = False) -> bool:
@@ -259,20 +281,17 @@ def _preflight(st: Any, force: bool = False) -> bool:
     """
     dirty = st.changed_files()
     if dirty and not force:
-        print("PREFLIGHT: рабочее дерево грязное — запуск отменён",
-              file=sys.stderr)
+        print("PREFLIGHT: рабочее дерево грязное — запуск отменён", file=sys.stderr)
         for path in dirty[:10]:
             print(f"  {path}", file=sys.stderr)
         if len(dirty) > 10:
             print(f"  ... ещё {len(dirty) - 10}", file=sys.stderr)
-        print("закоммить или спрячь работу, либо запусти с --force",
-              file=sys.stderr)
+        print("закоммить или спрячь работу, либо запусти с --force", file=sys.stderr)
         return False
     if dirty:
         st.log("preflight_forced", dirty=dirty)
         print(f"PREFLIGHT: дерево грязное ({len(dirty)}), продолжаю по --force")
     return True
-
 
 
 # Один сервер на процесс, а не на вызов: `_board_open` дёргается один раз
@@ -283,11 +302,13 @@ def _preflight(st: Any, force: bool = False) -> bool:
 _BOARD_SERVER: Any = None
 
 
-
-def _board_open(root: str | pathlib.Path,
-                cfg: dict[str, Any]) -> tuple[pathlib.Path, str | None]:
-    """Доска открывается сама при старте прогона — правило оператора:
-    открывать, пока не отключили явно (`board_open = false`).
+def _board_open(
+    root: str | pathlib.Path, cfg: dict[str, Any]
+) -> tuple[pathlib.Path, str | None]:
+    """Живая доска — opt-in: сервер и вкладка браузера только при
+    `live_board = true`. Иначе на каждый `run`/`go` выскакивал
+    `http://127.0.0.1:7433/` — это мешало разработке сильнее, чем
+    помогало наблюдению.
 
     Путь к статическому файлу возвращается ВСЕГДА, даже когда живой
     сервер не поднялся: заголовку прогона он нужен независимо от того,
@@ -303,28 +324,28 @@ def _board_open(root: str | pathlib.Path,
     """
     global _BOARD_SERVER  # noqa: PLW0603 — один сервер на процесс, см. докстринг переменной
     out = pathlib.Path(root) / ".swarm" / "board.html"
-    if cfg.get("live_board") is False or cfg.get("board_open") is False:
+    if not cfg.get("live_board", False) or cfg.get("board_open") is False:
         return out, None
     url: str | None = None
     try:
         if _BOARD_SERVER is None:
             _BOARD_SERVER = cli.load_mod("boardserve").BoardServer(
-                root, port=cfg.get("board_port", 7433))
+                root, port=cfg.get("board_port", 7433)
+            )
             _BOARD_SERVER.start()
         url = _BOARD_SERVER.url
     except Exception:  # noqa: BLE001 — см. докстринг: сбой доски не останавливает прогон
         cli.log.warning(
-            "живая доска не поднялась — открою статический файл", exc_info=True)
+            "живая доска не поднялась — открою статический файл", exc_info=True
+        )
     try:
         board_mod = cli.load_mod("board")
         out, _board = board_mod.build(root)
         if sys.platform == "darwin":
             subprocess.run(["open", url or str(out)], check=False)
     except Exception:  # noqa: BLE001 — см. докстринг: сбой открытия не останавливает прогон
-        cli.log.warning(
-            "доска не открылась автоматически", exc_info=True)
+        cli.log.warning("доска не открылась автоматически", exc_info=True)
     return out, url
-
 
 
 def _board_close() -> None:
@@ -342,7 +363,6 @@ def _board_close() -> None:
     if _BOARD_SERVER is not None:
         _BOARD_SERVER.stop()
         _BOARD_SERVER = None
-
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -367,21 +387,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         out, board_url = _board_open(args.root, cfg)
         cli.ui(f"доска: {board_url}" if board_url else f"доска: file://{out.resolve()}")
         agents = cli.load_mod("agents").Agents(st, cfg)
-        loop = cli.loop_mod.Loop(st, cfg, agents,
-                                                  ui=cli.ui)
+        loop = cli.loop_mod.Loop(st, cfg, agents, ui=cli.ui)
         results = loop.run(limit=args.limit)
         _print_results(results)
     _board_close()
     return _run_verdict(results)
 
 
-
 ORCHESTRATOR_EMAIL = "orchestrator@swarm.local"
 
 
-
-def _reconcile_decision(row: dict[str, Any],
-                        root: str | pathlib.Path) -> tuple[str, str] | None:
+def _reconcile_decision(
+    row: dict[str, Any], root: str | pathlib.Path
+) -> tuple[str, str] | None:
     """Механическое решение по незавершённому интенту коммита (§5.6).
 
     Интент без done означает падение между действием и записью о нём.
@@ -406,35 +424,49 @@ def _reconcile_decision(row: dict[str, Any],
     head_before = row.get("head")
     if row.get("action") != "commit" or not head_before:
         return None
-    cur = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
-                         capture_output=True, text=True, check=False)
+    cur = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if cur.returncode != 0:
         return None
     if cur.stdout.strip() == head_before:
         return ("rollback", "")
     # Смотрим ПЕРВЫЙ коммит после записанной точки, а не HEAD: после
     # падения поверх могли коммитить и оператор, и следующий прогон.
-    after = subprocess.run(["git", "log", "--reverse", "--format=%H %ce",
-                            f"{head_before}..HEAD"], cwd=root,
-                           capture_output=True, text=True, check=False)
+    after = subprocess.run(
+        ["git", "log", "--reverse", "--format=%H %ce", f"{head_before}..HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     first = (after.stdout.strip().splitlines() or [""])[0].split()
     if after.returncode != 0 or len(first) < 2 or first[1] != ORCHESTRATOR_EMAIL:
         return None
     return ("complete", first[0][:8])
 
 
-
-def _reconcile_commit_step(st: Any, row: dict[str, Any],
-                           root: str | pathlib.Path) -> str | None:
+def _reconcile_commit_step(
+    st: Any, row: dict[str, Any], root: str | pathlib.Path
+) -> str | None:
     """Применить решение реконсиляции: журнал + статус задачи (§5.6)."""
     decision = _reconcile_decision(row, root)
     if decision is None:
         return None
     outcome, sha = decision
     if outcome == "rollback":
-        st.log("step_failed", step_id=row["step_id"], task=row["task"],
-               action="commit", reconciled=True,
-               error="реконсиляция resume: HEAD не сдвинулся, коммита не было")
+        st.log(
+            "step_failed",
+            step_id=row["step_id"],
+            task=row["task"],
+            action="commit",
+            reconciled=True,
+            error="реконсиляция resume: HEAD не сдвинулся, коммита не было",
+        )
         data = st.load_tasks()
         for t in data["tasks"]:
             if t["id"] == row["task"] and t["status"] == "in_progress":
@@ -442,8 +474,14 @@ def _reconcile_commit_step(st: Any, row: dict[str, Any],
                 t.pop("reason", None)
         st.save_tasks(data)
         return "коммита не было — задача возвращена в очередь"
-    st.log("step_done", step_id=row["step_id"], task=row["task"],
-           action="commit", reconciled=True, commit=sha)
+    st.log(
+        "step_done",
+        step_id=row["step_id"],
+        task=row["task"],
+        action="commit",
+        reconciled=True,
+        commit=sha,
+    )
     data = st.load_tasks()
     for t in data["tasks"]:
         if t["id"] == row["task"] and t["status"] != "done":
@@ -452,7 +490,6 @@ def _reconcile_commit_step(st: Any, row: dict[str, Any],
             t.pop("reason", None)
     st.save_tasks(data)
     return f"коммит {sha} состоялся — задача закрыта"
-
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
@@ -483,8 +520,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
     # «вас ждут N вопросов» относилось только к тем, что и правда ждут.
     stale_q = [q for q in st.questions(only_open=True) if q.get("stale")]
     if stale_q:
-        print(f"\nустаревшие вопросы ({len(stale_q)}) — их задачи уже "
-              f"закрыты, очередь они не держат:")
+        print(
+            f"\nустаревшие вопросы ({len(stale_q)}) — их задачи уже "
+            f"закрыты, очередь они не держат:"
+        )
         for q in stale_q:
             print(f"  {q['qid']}  {q['task']}  {q['question'][:70]}")
 
@@ -502,9 +541,11 @@ def cmd_resume(args: argparse.Namespace) -> int:
                 continue
             previewed += 1
             kind, sha = decision
-            would = ("коммита не было — задача вернётся в очередь"
-                     if kind == "rollback"
-                     else f"коммит {sha} состоялся — задача закроется")
+            would = (
+                "коммита не было — задача вернётся в очередь"
+                if kind == "rollback"
+                else f"коммит {sha} состоялся — задача закроется"
+            )
             print(f"реконсиляция (dry-run): {row['task']}: {would}")
             continue
         outcome = _reconcile_commit_step(st, row, args.root)
@@ -516,14 +557,19 @@ def cmd_resume(args: argparse.Namespace) -> int:
         print(f"незавершённых шагов: {len(leftover)}")
         for row in leftover:
             print(f"  {row['task']}: {row['action']}")
-        head = subprocess.run(["git", "log", "-1", "--format=%s"],
-                              cwd=args.root, capture_output=True, text=True,
-                              check=False)
+        head = subprocess.run(
+            ["git", "log", "-1", "--format=%s"],
+            cwd=args.root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         print(f"  последний коммит: {head.stdout.strip()}")
         print("  проверьте, применился ли side-effect, и поправьте статус вручную")
         if not args.force:
-            print("\nэскалация: возобновление требует решения человека "
-                  "(повторить с `--force`, если состояние проверено)")
+            print(
+                "\nэскалация: возобновление требует решения человека "
+                "(повторить с `--force`, если состояние проверено)"
+            )
             return 2
     return int(cli.cmd_run(args))
-

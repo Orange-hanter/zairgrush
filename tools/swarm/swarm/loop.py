@@ -12,6 +12,7 @@
     4.  REVIEW         — ревьюер; вердикт валидируется механически
     5.  COMMIT | FEEDBACK
 """
+
 import contextlib
 import datetime as dt
 import hashlib
@@ -103,42 +104,53 @@ REVIEW_DIAGNOSIS = {
         "ревьюер обрублен по бюджету, вердикта нет. Работа исполнителя "
         "цела, гейт был зелёный. Почти всегда причина — объём диффа: "
         "проверь, не попал ли в него сгенерированный файл; при "
-        "необходимости подними review_budget_usd"),
+        "необходимости подними review_budget_usd"
+    ),
     "invalid": (
         "ревьюер дважды не вернул разбираемый вердикт: ответ не проходит "
-        "схему. Смотри сырые ответы в .swarm/log/*-review.json"),
+        "схему. Смотри сырые ответы в .swarm/log/*-review.json"
+    ),
     # Причины ниже приходят из драйвера: ревью шло потоком, и прогон
     # не дожил до конверта. Работа исполнителя во всех случаях цела.
     "silence": (
         "ревьюер замолчал дольше silence_timeout и был остановлен; "
         "вердикта нет, работа исполнителя цела. Смотри "
         ".swarm/log/*-review-stream.jsonl; если он честно думал — "
-        "подними silence_timeout"),
+        "подними silence_timeout"
+    ),
     "wall_clock": (
         "ревьюер упёрся в wall_clock_cap и был остановлен; вердикта нет, "
         "работа исполнителя цела. Обычно так выглядит слишком большой "
-        "дифф — проверь, что в него попало"),
+        "дифф — проверь, что в него попало"
+    ),
     "crash": (
         "процесс ревьюера завершился с ошибкой до вердикта. Смотри "
-        ".swarm/log/*-review-stream.jsonl"),
+        ".swarm/log/*-review-stream.jsonl"
+    ),
     "no_report": (
         "поток ревьюера кончился без финального result-события — вердикт "
-        "снять не с чего. Смотри .swarm/log/*-review-stream.jsonl"),
+        "снять не с чего. Смотри .swarm/log/*-review-stream.jsonl"
+    ),
 }
 
 
 class Loop:
-    def __init__(self, state: Any, config: dict[str, Any], agents: Any,
-                 ui: Callable[..., None] | None = None) -> None:
+    def __init__(
+        self,
+        state: Any,
+        config: dict[str, Any],
+        agents: Any,
+        ui: Callable[..., None] | None = None,
+    ) -> None:
         self.state = state
         self.config = config
-        self.agents = agents          # объект с .implement() и .review()
+        self.agents = agents  # объект с .implement() и .review()
         self.ui = ui or (lambda *_a, **_k: None)
-        self.pre_existing: set[str] = set()   # дерево до старта задачи
-        self.run_dirt: set[str] = set()       # дерево до старта ПРОГОНА
-        self.head_before: str | None = None   # история до старта задачи
+        self.pre_existing: set[str] = set()  # дерево до старта задачи
+        self.run_dirt: set[str] = set()  # дерево до старта ПРОГОНА
+        self.head_before: str | None = None  # история до старта задачи
         self.state_before: str | None = None  # состояние петли до старта
-        self.live_board = bool(config.get("live_board", True))
+        self.live_board = bool(config.get("live_board", False))
 
     # --- механические шаги ------------------------------------------------
 
@@ -161,8 +173,7 @@ class Loop:
             board.build(self.state.root)
         except Exception:
             # Граница деградации: запись с трассировкой обязательна (§6.7).
-            log.exception("доска не обновлена",
-                          extra={"swarm_phase": "board"})
+            log.exception("доска не обновлена", extra={"swarm_phase": "board"})
 
     def _memory_record(self, task: dict[str, Any]) -> None:
         """Урок из терминального исхода. Память — наблюдение, не работа:
@@ -175,8 +186,9 @@ class Loop:
         try:
             memory_mod.record_task_outcome(self.state, task, self.config)
         except Exception:
-            log.exception("память: урок не записан",
-                          extra={"swarm_task": task.get("id")})
+            log.exception(
+                "память: урок не записан", extra={"swarm_task": task.get("id")}
+            )
 
     def _memory_reflect(self) -> None:
         """«Сновидение» после прогона: дайджест пересобран, факт записан."""
@@ -185,10 +197,10 @@ class Loop:
         except Exception:
             log.exception("память: рефлексия не состоялась")
 
-    def sh(self, cmd: list[str],
-            timeout: float = 900) -> subprocess.CompletedProcess[str]:
+    def sh(
+        self, cmd: list[str], timeout: float = 900
+    ) -> subprocess.CompletedProcess[str]:
         return _git_sh(self, cmd, timeout)
-
 
     @property
     def max_iter(self) -> int:
@@ -212,8 +224,10 @@ class Loop:
     def state_fingerprint(self) -> str | None:
         return _git_state_fingerprint(self)
 
-    def scope_check(self, task: dict[str, Any],
-                    ) -> tuple[bool, list[str], list[str]]:
+    def scope_check(
+        self,
+        task: dict[str, Any],
+    ) -> tuple[bool, list[str], list[str]]:
         return gitops.scope_check(self, task)
 
     def revert(self) -> list[str]:
@@ -228,9 +242,13 @@ class Loop:
     def _apply_patch(self, diff_text: str) -> bool:
         return _git_apply_patch(self, diff_text)
 
-    def _review_with_quota_wait(self, task: dict[str, Any], tail: str,
-                                iteration: int, confirming: bool,
-                                ) -> dict[str, Any] | None:
+    def _review_with_quota_wait(
+        self,
+        task: dict[str, Any],
+        tail: str,
+        iteration: int,
+        confirming: bool,
+    ) -> dict[str, Any] | None:
         return _rc_review_with_quota_wait(self, task, tail, iteration, confirming)
 
     def _find_unclear(self, task: dict[str, Any]) -> None:
@@ -284,21 +302,31 @@ class Loop:
             # имеет права стоить задачи (§7.3, тот же fail-open).
             log.exception("тестировщик упал", extra={"swarm_task": task["id"]})
             report = None
-        written = [p for p in tester.test_paths(task)
-                   if (self.state.root / p).exists()]
+        written = [p for p in tester.test_paths(task) if (self.state.root / p).exists()]
         if report is None or not written:
-            self.state.log("tests_not_authored", task=task["id"],
-                           reason=("нет отчёта" if report is None
-                                   else "файлы не появились"),
-                           degraded="плечо B выродилось в плечо A")
+            self.state.log(
+                "tests_not_authored",
+                task=task["id"],
+                reason=("нет отчёта" if report is None else "файлы не появились"),
+                degraded="плечо B выродилось в плечо A",
+            )
             return {}
-        self.state.log("tests_authored", task=task["id"], files=written,
-                       cases=len(report.get("cases") or []),
-                       unclear=report.get("unclear") or [],
-                       summary=report.get("summary"))
-        self.ui(f"    тесты написаны независимо: {', '.join(written)}"
-                + (f"; неясного в спеке: {len(report['unclear'])}"
-                   if report.get("unclear") else ""))
+        self.state.log(
+            "tests_authored",
+            task=task["id"],
+            files=written,
+            cases=len(report.get("cases") or []),
+            unclear=report.get("unclear") or [],
+            summary=report.get("summary"),
+        )
+        self.ui(
+            f"    тесты написаны независимо: {', '.join(written)}"
+            + (
+                f"; неясного в спеке: {len(report['unclear'])}"
+                if report.get("unclear")
+                else ""
+            )
+        )
         return {p: self.file_fingerprint(p) for p in written}
 
     def file_fingerprint(self, rel: str) -> str:
@@ -309,19 +337,20 @@ class Loop:
             return ""
         return hashlib.sha256(data).hexdigest()
 
-    def _implement_with_quota_wait(self, task: dict[str, Any],
-                                   feedback: Any, iteration: int) -> Any:
+    def _implement_with_quota_wait(
+        self, task: dict[str, Any], feedback: Any, iteration: int
+    ) -> Any:
         # Тип отчёта — контракт агентов, а не петли: `agents` здесь Any,
         # и сужать его тут значило бы объявить сузившееся знание, которого
         # у делегата нет (feedback на деле словарь находок, не строка).
         plan = duel.plan(self.config, task["id"])
         if plan is None:
-            return _rc_implement_with_quota_wait(self, task, feedback,
-                                                 iteration)
+            return _rc_implement_with_quota_wait(self, task, feedback, iteration)
         return self._duel_implement(plan, task, feedback, iteration)
 
-    def _duel_implement(self, plan: dict[str, Any], task: dict[str, Any],
-                        feedback: Any, iteration: int) -> Any:
+    def _duel_implement(
+        self, plan: dict[str, Any], task: dict[str, Any], feedback: Any, iteration: int
+    ) -> Any:
         """Два исполнителя на одной задаче одновременно (duel.py).
 
         Возвращается отчёт ЖИВОГО плеча, и только он. Теневое плечо —
@@ -331,11 +360,19 @@ class Loop:
         """
         tid = task["id"]
         live, shadow = plan["live"], plan["shadow"]
-        self.state.log("duel_start", task=tid, round=iteration,
-                       factor=plan["factor"], key=plan["key"],
-                       live_arm=live["arm"], shadow_arm=shadow["arm"])
-        self.ui(f"    дуэль {plan['factor']}: живое плечо {live['arm']}, "
-                f"теневое {shadow['arm']} (параллельно)")
+        self.state.log(
+            "duel_start",
+            task=tid,
+            round=iteration,
+            factor=plan["factor"],
+            key=plan["key"],
+            live_arm=live["arm"],
+            shadow_arm=shadow["arm"],
+        )
+        self.ui(
+            f"    дуэль {plan['factor']}: живое плечо {live['arm']}, "
+            f"теневое {shadow['arm']} (параллельно)"
+        )
 
         wt: pathlib.Path | None = None
         try:
@@ -343,16 +380,16 @@ class Loop:
         except subprocess.CalledProcessError:
             # Теневое дерево не создалось — задача не виновата: работаем
             # живым плечом и говорим, что замера на этой задаче нет.
-            self.state.log("duel_no_shadow", task=tid, round=iteration,
-                           reason="worktree_failed")
+            self.state.log(
+                "duel_no_shadow", task=tid, round=iteration, reason="worktree_failed"
+            )
             self.ui("    теневое дерево не создалось — дуэли нет, работаем")
 
         old_cfg, old_agents_cfg = self.config, self.agents.config
         self.config = self.agents.config = live["config"]
 
         def run_live() -> Any:
-            return _rc_implement_with_quota_wait(self, task, feedback,
-                                                 iteration)
+            return _rc_implement_with_quota_wait(self, task, feedback, iteration)
 
         def run_shadow() -> Any:
             if wt is None:
@@ -363,33 +400,48 @@ class Loop:
             # Прибор сломался — это факт о ЗАМЕРЕ, а не о задаче, и он
             # обязан быть в журнале с трассировкой. Без неё диагноз
             # собирается по отсутствию файлов (поймано на себе).
-            self.state.log("duel_shadow_failed", task=tid, round=iteration,
-                           error=f"{type(exc).__name__}: {exc}",
-                           trace=traceback.format_exc()[-1500:])
-            self.ui(f"    теневое плечо упало: {type(exc).__name__} — "
-                    f"замера на этой задаче нет, работа не тронута")
+            self.state.log(
+                "duel_shadow_failed",
+                task=tid,
+                round=iteration,
+                error=f"{type(exc).__name__}: {exc}",
+                trace=traceback.format_exc()[-1500:],
+            )
+            self.ui(
+                f"    теневое плечо упало: {type(exc).__name__} — "
+                f"замера на этой задаче нет, работа не тронута"
+            )
 
         try:
-            report, shadow_facts = duel.run_pair(run_live, run_shadow,
-                                                 shadow_broke)
+            report, shadow_facts = duel.run_pair(run_live, run_shadow, shadow_broke)
         finally:
             self.config, self.agents.config = old_cfg, old_agents_cfg
 
         live_facts = {"report": bool(report)}
         if self.agents.last_implement_failure:
-            live_facts["reason"] = self.agents.last_implement_failure.get(
-                "reason")
-        self.state.metric(task=tid, iter=iteration, phase="duel",
-                          factor=plan["factor"], live_arm=live["arm"],
-                          shadow_arm=shadow["arm"],
-                          live=live_facts, shadow=shadow_facts)
+            live_facts["reason"] = self.agents.last_implement_failure.get("reason")
+        self.state.metric(
+            task=tid,
+            iter=iteration,
+            phase="duel",
+            factor=plan["factor"],
+            live_arm=live["arm"],
+            shadow_arm=shadow["arm"],
+            live=live_facts,
+            shadow=shadow_facts,
+        )
         if wt is not None:
             duel.drop_worktree(self.state.root, wt)
         return report
 
-    def _shadow_arm(self, shadow: dict[str, Any], task: dict[str, Any],
-                    feedback: Any, iteration: int,
-                    wt: pathlib.Path) -> dict[str, Any]:
+    def _shadow_arm(
+        self,
+        shadow: dict[str, Any],
+        task: dict[str, Any],
+        feedback: Any,
+        iteration: int,
+        wt: pathlib.Path,
+    ) -> dict[str, Any]:
         """Теневое плечо в своём дереве: отчёт, гейт, объём диффа.
 
         Собственный экземпляр Agents, а не подмена полей общего: общий
@@ -401,13 +453,16 @@ class Loop:
         # замкнул бы круг. Второй экземпляр Agents нужен именно потому,
         # что общий сейчас занят живым плечом в другом потоке.
         import agents as agents_mod  # noqa: PLC0415 — круг импорта, см. выше
+
         arm_agents = agents_mod.Agents(self.state, shadow["config"])
         arm_agents.work_root = wt
         arm_agents.log_tag = engines.SHADOW_LOG_TAG
         report = arm_agents.implement(task, feedback, iteration)
         facts: dict[str, Any] = {
-            "arm": shadow["arm"], "report": bool(report),
-            "diff": duel.shadow_diff_stat(wt)}
+            "arm": shadow["arm"],
+            "report": bool(report),
+            "diff": duel.shadow_diff_stat(wt),
+        }
         if arm_agents.last_implement_failure:
             facts["reason"] = arm_agents.last_implement_failure.get("reason")
         # Гейт теневого плеча — в ЕГО дереве. Это и есть главная метрика:
@@ -416,17 +471,21 @@ class Loop:
             cmd = self.config.get("gate_command")
             if isinstance(cmd, list) and cmd:
                 r = subprocess.run(
-                    cmd, cwd=wt, capture_output=True, text=True,
+                    cmd,
+                    cwd=wt,
+                    capture_output=True,
+                    text=True,
                     check=False,
-                    timeout=self.config.get("gate_timeout", 900))
+                    timeout=self.config.get("gate_timeout", 900),
+                )
                 facts["gate"] = r.returncode == 0
-        self.state.log("duel_shadow", task=task["id"], round=iteration,
-                       **facts)
+        self.state.log("duel_shadow", task=task["id"], round=iteration, **facts)
         return facts
 
     @staticmethod
-    def _reviewers_disagreed(history: list[dict[str, Any]]
-                             ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    def _reviewers_disagreed(
+        history: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
         return _rc_reviewers_disagreed(history)
 
     @staticmethod
@@ -434,20 +493,27 @@ class Loop:
         return _rc_arm(row)
 
     @staticmethod
-    def _diagnose(outcome: str, history: list[dict[str, Any]],
-                  scope_failures: list[list[str]] | None = None,
-                  sig_failures: list[list[str]] | None = None,
-                  exec_failures: list[dict[str, Any]] | None = None) -> str:
-        return _rc_diagnose(outcome, history, scope_failures, sig_failures,
-                            exec_failures)
+    def _diagnose(
+        outcome: str,
+        history: list[dict[str, Any]],
+        scope_failures: list[list[str]] | None = None,
+        sig_failures: list[list[str]] | None = None,
+        exec_failures: list[dict[str, Any]] | None = None,
+    ) -> str:
+        return _rc_diagnose(
+            outcome, history, scope_failures, sig_failures, exec_failures
+        )
 
-    def _escalate_futile(self, task: dict[str, Any],
-                         history: list[dict[str, Any]],
-                         futile: list[dict[str, Any]],
-                         scope_failures: list[list[str]],
-                         sig_failures: list[list[str]],
-                         exec_failures: list[dict[str, Any]],
-                         iteration: int) -> str:
+    def _escalate_futile(
+        self,
+        task: dict[str, Any],
+        history: list[dict[str, Any]],
+        futile: list[dict[str, Any]],
+        scope_failures: list[list[str]],
+        sig_failures: list[list[str]],
+        exec_failures: list[dict[str, Any]],
+        iteration: int,
+    ) -> str:
         """Потолок бесплодных раундов: эскалация с ПРИЧИНОЙ.
 
         Отдельный исход от «раунды исправлений исчерпаны» именно потому,
@@ -458,21 +524,34 @@ class Loop:
         tid = task["id"]
         causes = sorted({str(f.get("cause")) for f in futile})
         stash = self.cleanup(task, "futile-rounds")
-        diagnosis = self._diagnose(ESCALATE_MAX, history,
-                                   scope_failures=scope_failures,
-                                   sig_failures=sig_failures,
-                                   exec_failures=exec_failures)
-        diagnosis = (f"{len(futile)} раунд(ов) сорвались, не дойдя до "
-                     f"суждения о работе ({', '.join(causes)}); лимит "
-                     f"исправлений не тронут. " + diagnosis)
-        self.state.log("futile_exhausted", task=tid, rounds=len(futile),
-                       causes=causes, stash=stash)
-        qid = self.state.ask(tid, ESCALATE_MAX, diagnosis, stash=stash,
-                             round=iteration, history=history)
-        self.state.set_status(tid, "blocked", reason="futile_rounds",
-                              stash=stash, iterations=iteration,
-                              exit_code=EXIT_ESCALATE, diagnosis=diagnosis,
-                              question_id=qid)
+        diagnosis = self._diagnose(
+            ESCALATE_MAX,
+            history,
+            scope_failures=scope_failures,
+            sig_failures=sig_failures,
+            exec_failures=exec_failures,
+        )
+        diagnosis = (
+            f"{len(futile)} раунд(ов) сорвались, не дойдя до "
+            f"суждения о работе ({', '.join(causes)}); лимит "
+            f"исправлений не тронут. " + diagnosis
+        )
+        self.state.log(
+            "futile_exhausted", task=tid, rounds=len(futile), causes=causes, stash=stash
+        )
+        qid = self.state.ask(
+            tid, ESCALATE_MAX, diagnosis, stash=stash, round=iteration, history=history
+        )
+        self.state.set_status(
+            tid,
+            "blocked",
+            reason="futile_rounds",
+            stash=stash,
+            iterations=iteration,
+            exit_code=EXIT_ESCALATE,
+            diagnosis=diagnosis,
+            question_id=qid,
+        )
         self.ui(f"    эскалация [{qid}]: {diagnosis}")
         return "blocked"
 
@@ -499,8 +578,9 @@ class Loop:
         self.state.metric(task=tid, phase="ambient", **facts)
         old_loop, old_agents = self.config, self.agents.config
         self.config, self.agents.config = over, over
-        self.ui(f"    фоновый замер: {facts['ambient_factor']} = "
-                f"{facts['ambient_arm']}")
+        self.ui(
+            f"    фоновый замер: {facts['ambient_factor']} = {facts['ambient_arm']}"
+        )
         try:
             yield
         finally:
@@ -521,8 +601,9 @@ class Loop:
         if self.pre_existing:
             # Факт в журнал: страж границ эти файлы дальше не видит, и
             # оператор обязан знать, что задача пошла поверх его правок.
-            self.state.log("pre_existing_dirt", task=tid,
-                           files=sorted(self.pre_existing))
+            self.state.log(
+                "pre_existing_dirt", task=tid, files=sorted(self.pre_existing)
+            )
         self.head_before = self.sh(["git", "rev-parse", "HEAD"]).stdout.strip()
         self.state_before = self.state_fingerprint()
 
@@ -539,9 +620,11 @@ class Loop:
         # хелперы, ревьюер повторно поднял то же замечание).
         human = None
         if task.get("human_answer"):
-            human = {"human_answer": task["human_answer"],
-                     "note": "решение человека по замыслу — обязательно к "
-                             "исполнению во всех последующих итерациях"}
+            human = {
+                "human_answer": task["human_answer"],
+                "note": "решение человека по замыслу — обязательно к "
+                "исполнению во всех последующих итерациях",
+            }
         feedback = dict(human) if human else None
         # E11, плечо B: тесты пишет отдельный вызов ДО исполнителя — тогда
         # реализации ещё нет на диске, и независимость автора получается
@@ -553,8 +636,12 @@ class Loop:
         self._authored_tests = self._author_tests(task)
         self._find_unclear(task)
         history: list[dict[str, Any]] = []
-        best: dict[str, Any] = {"findings": None, "round": None, "diff": None,
-                                "items": None}
+        best: dict[str, Any] = {
+            "findings": None,
+            "round": None,
+            "diff": None,
+            "items": None,
+        }
         # Подтверждающие раунды не расходуют лимит исправлений: они не
         # меняют код, а перепроверяют уже принятый. Иначе approve на
         # последней итерации обречён — подтверждать его негде (поймано на
@@ -595,8 +682,7 @@ class Loop:
         # с ПРИЧИНОЙ, а не с догадкой о размере. Умолчание тянется за
         # max_iterations: терпение — одна ручка, и оператор, поднявший
         # лимит исправлений, ждёт большей терпимости и к срывам среды.
-        max_futile = int(self.config.get("max_futile_rounds",
-                                         max(4, self.max_iter)))
+        max_futile = int(self.config.get("max_futile_rounds", max(4, self.max_iter)))
         # Снимок сигнатур — ДО первого вызова исполнителя: сравнивать после
         # первого раунда не с чем, если снимок взят после него. Один файл на
         # fill-задачу — гарантия валидатора плана (E10, planner._skeleton_
@@ -614,9 +700,15 @@ class Loop:
                 # Бесплодные раунды исчерпаны. Это НЕ «раунды исправлений
                 # кончились»: до исправлений дело не дошло ни разу, и
                 # эскалация обязана называть то, обо что раунды сгорели.
-                return self._escalate_futile(task, history, futile,
-                                             scope_failures, sig_failures,
-                                             exec_failures, iteration)
+                return self._escalate_futile(
+                    task,
+                    history,
+                    futile,
+                    scope_failures,
+                    sig_failures,
+                    exec_failures,
+                    iteration,
+                )
             # Бюджет проверяется перед КАЖДОЙ итерацией, а не только между
             # задачами: проверка раз в задачу означала, что одна задача
             # вольна пробить потолок на любую величину — сколько раундов
@@ -626,12 +718,20 @@ class Loop:
             spent = self.state.total_spend() if budget else 0.0
             if budget and spent >= float(budget):
                 stash = self.cleanup(task, "budget")
-                self.state.log("budget_exhausted", task=tid, round=iteration,
-                               spent=spent, budget=budget, stash=stash)
+                self.state.log(
+                    "budget_exhausted",
+                    task=tid,
+                    round=iteration,
+                    spent=spent,
+                    budget=budget,
+                    stash=stash,
+                )
                 self.state.set_status(tid, "pending", stash=stash)
-                self.ui(f"    БЮДЖЕТ ИСЧЕРПАН посреди задачи: ${spent} из "
-                        f"${budget}; работа в stash, задача возвращена "
-                        f"в очередь")
+                self.ui(
+                    f"    БЮДЖЕТ ИСЧЕРПАН посреди задачи: ${spent} из "
+                    f"${budget}; работа в stash, задача возвращена "
+                    f"в очередь"
+                )
                 return "budget_stop"
             iteration += 1
             # В подтверждающем раунде исполнитель не вызывается: гейт и
@@ -640,53 +740,74 @@ class Loop:
             if confirming:
                 confirming = False
             else:
-                report = self._implement_with_quota_wait(task, feedback,
-                                                         iteration)
+                report = self._implement_with_quota_wait(task, feedback, iteration)
                 if report is None:
-                    fail = getattr(self.agents, "last_implement_failure",
-                                   None) or {}
+                    fail = getattr(self.agents, "last_implement_failure", None) or {}
                     # Мгновенная смерть процесса (секунды, поток пуст) — не
                     # неудачная работа, а невозможность работать. Два раза
                     # подряд = устойчивое состояние среды: дальше жечь
                     # раунды бессмысленно, и следующая задача умрёт так же.
-                    if (fail.get("reason") == "crash"
-                            and fail.get("wall_s", 1e9) < 10
-                            and fail.get("events", 1e9) <= 1):
+                    if (
+                        fail.get("reason") == "crash"
+                        and fail.get("wall_s", 1e9) < 10
+                        and fail.get("events", 1e9) <= 1
+                    ):
                         instant_crashes += 1
                         if instant_crashes >= 2:
                             self.state.set_status(
-                                tid, "pending",
-                                reason="executor_unavailable")
+                                tid, "pending", reason="executor_unavailable"
+                            )
                             raise ExecutorUnavailableError(
                                 fail.get("stderr")
-                                or "процесс исполнителя умирает на старте")
+                                or "процесс исполнителя умирает на старте"
+                            )
                     # Работы не было — судить нечего: лимит исправлений не
                     # тратится, но факт идёт в диагноз и в свой потолок.
                     reason = str(fail.get("reason") or "invalid")
-                    exec_failures.append({"round": iteration, "reason": reason,
-                                          "wall_s": fail.get("wall_s")})
-                    futile.append({"round": iteration,
-                                   "cause": "executor_failed",
-                                   "detail": reason})
-                    self.state.log("round_futile", task=tid, round=iteration,
-                                   cause="executor_failed", detail=reason,
-                                   futile=len(futile), of=max_futile)
+                    exec_failures.append(
+                        {
+                            "round": iteration,
+                            "reason": reason,
+                            "wall_s": fail.get("wall_s"),
+                        }
+                    )
+                    futile.append(
+                        {
+                            "round": iteration,
+                            "cause": "executor_failed",
+                            "detail": reason,
+                        }
+                    )
+                    self.state.log(
+                        "round_futile",
+                        task=tid,
+                        round=iteration,
+                        cause="executor_failed",
+                        detail=reason,
+                        futile=len(futile),
+                        of=max_futile,
+                    )
                     # Совет обязан лечить ту болезнь, что была. Обрыв по
                     # деньгам — не нарушение контракта: работа написана на
                     # диск, оборвался ОТЧЁТ. Сказать здесь «повтори,
                     # соблюдая контракт» — послать исполнителя переделывать
                     # уже сделанное, то есть заплатить за раунд дважды.
                     if reason == "budget_exhausted":
-                        feedback = {"note": (
-                            "предыдущий раунд обрублен по потолку стоимости "
-                            "вызова до того, как ты вернул отчёт. Твои "
-                            "правки на диске ЦЕЛЫ — прочитай текущее "
-                            "состояние файлов и продолжи с него, не начиная "
-                            "заново; закончи и верни отчёт")}
+                        feedback = {
+                            "note": (
+                                "предыдущий раунд обрублен по потолку стоимости "
+                                "вызова до того, как ты вернул отчёт. Твои "
+                                "правки на диске ЦЕЛЫ — прочитай текущее "
+                                "состояние файлов и продолжи с него, не начиная "
+                                "заново; закончи и верни отчёт"
+                            )
+                        }
                     else:
-                        feedback = {"note": "предыдущий ответ не содержал "
-                                            "валидного JSON-отчёта — повтори, "
-                                            "соблюдая контракт"}
+                        feedback = {
+                            "note": "предыдущий ответ не содержал "
+                            "валидного JSON-отчёта — повтори, "
+                            "соблюдая контракт"
+                        }
                     continue
                 # Отступления — заявление исполнителя О СЕБЕ, не находка
                 # ревьюера: ревьюер их не увидит (асимметрия §3), в журнал
@@ -697,9 +818,12 @@ class Loop:
                 if isinstance(deviations, str) and deviations.strip():
                     deviations = [deviations]
                 if isinstance(deviations, list) and deviations:
-                    self.state.log("deviations_declared", task=tid,
-                                   round=iteration,
-                                   deviations=[str(d)[:200] for d in deviations])
+                    self.state.log(
+                        "deviations_declared",
+                        task=tid,
+                        round=iteration,
+                        deviations=[str(d)[:200] for d in deviations],
+                    )
                 if report.get("status") == "dispute":
                     stash = self.cleanup(task, "dispute")
                     question = report.get("summary", "спор исполнителя")
@@ -708,14 +832,26 @@ class Loop:
                         # Fill-задача (E10): спор чаще всего означает
                         # сломанный контракт скелета, а не саму заливку —
                         # подсказка экономит круг ручного разбора.
-                        question += (f"; контракт скелета спорен — "
-                                    f"рассмотрите swarm replan {deps[0]}")
-                    qid = self.state.ask(tid, "dispute", question,
-                                         stash=stash, round=iteration,
-                                         dispute=report.get("dispute"))
-                    self.state.set_status(tid, "blocked", reason="dispute",
-                                          stash=stash, iterations=iteration,
-                                          question_id=qid)
+                        question += (
+                            f"; контракт скелета спорен — "
+                            f"рассмотрите swarm replan {deps[0]}"
+                        )
+                    qid = self.state.ask(
+                        tid,
+                        "dispute",
+                        question,
+                        stash=stash,
+                        round=iteration,
+                        dispute=report.get("dispute"),
+                    )
+                    self.state.set_status(
+                        tid,
+                        "blocked",
+                        reason="dispute",
+                        stash=stash,
+                        iterations=iteration,
+                        question_id=qid,
+                    )
                     # id вопроса сам по себе ничего не говорит о задаче:
                     # оператор видел «спор исполнителя [q011]» в выводе и
                     # шёл читать сырой JSON, чтобы понять, о чём вообще
@@ -731,8 +867,9 @@ class Loop:
                 # В журнал, а не только в метрики: без этого swarm why и
                 # report показывали пустоту, и разбор «почему сгорели
                 # раунды» шёл через метрики вручную (пилот, k3ad).
-                self.state.log("gate_failed", task=tid, round=iteration,
-                               tail=(tail or "")[-300:])
+                self.state.log(
+                    "gate_failed", task=tid, round=iteration, tail=(tail or "")[-300:]
+                )
                 # Гейт — механическое суждение о РЕАЛЬНОЙ работе: попытка
                 # состоялась и провалилась. Раунд потрачен честно.
                 productive += 1
@@ -741,42 +878,76 @@ class Loop:
 
             violations = self.integrity_check()
             if violations:
-                self.state.log("integrity_violation", task=tid, round=iteration,
-                               violations=violations)
-                self.state.metric(task=tid, iter=iteration, phase="integrity",
-                                  ok=False, violations=violations)
+                self.state.log(
+                    "integrity_violation",
+                    task=tid,
+                    round=iteration,
+                    violations=violations,
+                )
+                self.state.metric(
+                    task=tid,
+                    iter=iteration,
+                    phase="integrity",
+                    ok=False,
+                    violations=violations,
+                )
                 stash = self.cleanup(task, "integrity")
                 # Формулировка нейтральна намеренно: проверка знает ФАКТ
                 # расхождения, но не автора. Обвинение исполнителя, когда
                 # HEAD сдвинул оператор, стоило круга разбирательства.
-                qid = self.state.ask(tid, ASK_USER,
-                                     "нарушена неприкосновенность истории или "
-                                     "состояния петли: "
-                                     + "; ".join(violations), stash=stash)
-                self.state.set_status(tid, "blocked", reason="integrity",
-                                      stash=stash, iterations=iteration,
-                                      question_id=qid)
+                qid = self.state.ask(
+                    tid,
+                    ASK_USER,
+                    "нарушена неприкосновенность истории или "
+                    "состояния петли: " + "; ".join(violations),
+                    stash=stash,
+                )
+                self.state.set_status(
+                    tid,
+                    "blocked",
+                    reason="integrity",
+                    stash=stash,
+                    iterations=iteration,
+                    question_id=qid,
+                )
                 self.ui(f"    ЦЕЛОСТНОСТЬ НАРУШЕНА [{qid}]: {violations[0]}")
                 return "blocked"
 
             sok, bad, tests_touched = self.scope_check(task)
             if not sok:
                 scope_failures.append(sorted(set(bad) | set(tests_touched)))
-                self.state.log("scope_violation", task=tid, round=iteration,
-                               unexpected=bad, protected=tests_touched)
+                self.state.log(
+                    "scope_violation",
+                    task=tid,
+                    round=iteration,
+                    unexpected=bad,
+                    protected=tests_touched,
+                )
                 self.revert()
                 # Работа снесена откатом — ревьюер её не увидит. Судить
                 # нечего, лимит исправлений не тратится (k3ad: три таких
                 # раунда подряд обвинили размер задачи).
-                futile.append({"round": iteration, "cause": "scope_violation",
-                               "detail": ", ".join(sorted(set(bad))[:3])})
-                self.state.log("round_futile", task=tid, round=iteration,
-                               cause="scope_violation",
-                               detail=", ".join(sorted(set(bad))[:3]),
-                               futile=len(futile), of=max_futile)
-                feedback = {"note": "нарушение границ задачи",
-                            "unexpected_files": bad,
-                            "protected_tests": tests_touched}
+                futile.append(
+                    {
+                        "round": iteration,
+                        "cause": "scope_violation",
+                        "detail": ", ".join(sorted(set(bad))[:3]),
+                    }
+                )
+                self.state.log(
+                    "round_futile",
+                    task=tid,
+                    round=iteration,
+                    cause="scope_violation",
+                    detail=", ".join(sorted(set(bad))[:3]),
+                    futile=len(futile),
+                    of=max_futile,
+                )
+                feedback = {
+                    "note": "нарушение границ задачи",
+                    "unexpected_files": bad,
+                    "protected_tests": tests_touched,
+                }
                 continue
 
             if sig_baseline is not None and sig_file is not None:
@@ -787,24 +958,40 @@ class Loop:
                     # СВОЁ. Тело заливки внутри пришпиленной сигнатуры
                     # может быть спасаемо, а откат снёс бы и его.
                     sig_failures.append(changed)
-                    self.state.log("signature_violation", task=tid,
-                                   round=iteration, changed=changed)
+                    self.state.log(
+                        "signature_violation",
+                        task=tid,
+                        round=iteration,
+                        changed=changed,
+                    )
                     # Контракт скелета нарушен — до ревью работа не дошла.
-                    futile.append({"round": iteration,
-                                   "cause": "signature_violation",
-                                   "detail": ", ".join(changed[:3])})
-                    self.state.log("round_futile", task=tid, round=iteration,
-                                   cause="signature_violation",
-                                   detail=", ".join(changed[:3]),
-                                   futile=len(futile), of=max_futile)
-                    feedback = {"note": "сигнатуры контракта изменены — "
-                                        "верни их в точности; если контракт "
-                                        "невыполним, канал dispute",
-                                "changed_signatures": changed}
+                    futile.append(
+                        {
+                            "round": iteration,
+                            "cause": "signature_violation",
+                            "detail": ", ".join(changed[:3]),
+                        }
+                    )
+                    self.state.log(
+                        "round_futile",
+                        task=tid,
+                        round=iteration,
+                        cause="signature_violation",
+                        detail=", ".join(changed[:3]),
+                        futile=len(futile),
+                        of=max_futile,
+                    )
+                    feedback = {
+                        "note": "сигнатуры контракта изменены — "
+                        "верни их в точности; если контракт "
+                        "невыполним, канал dispute",
+                        "changed_signatures": changed,
+                    }
                     continue
 
-            verdict = self._review_with_quota_wait(task, tail, iteration,
-                                                   was_confirmation)
+            verdict = self._review_with_quota_wait(
+                task, tail, iteration, was_confirmation
+            )
             if verdict is None:
                 # Работа могла быть готовой и зелёной — сорвалось РЕВЬЮ.
                 # Молчаливый blocked оставлял оператора без единого слова
@@ -812,35 +999,56 @@ class Loop:
                 # «invalid_verdict». Диагноз обязателен.
                 stash = self.cleanup(task, "invalid-verdict")
                 why = getattr(self.agents, "last_review_failure", None)
-                diagnosis = REVIEW_DIAGNOSIS.get(
-                    why or "", REVIEW_DIAGNOSIS["invalid"])
-                self.state.log("review_failed", task=tid, round=iteration,
-                               why=why or "invalid", stash=stash,
-                               gate_passed=True)
-                qid = self.state.ask(tid, "review_failed", diagnosis,
-                                     stash=stash, round=iteration)
-                self.state.set_status(tid, "blocked", reason="invalid_verdict",
-                                      stash=stash, iterations=iteration,
-                                      question_id=qid, diagnosis=diagnosis)
+                diagnosis = REVIEW_DIAGNOSIS.get(why or "", REVIEW_DIAGNOSIS["invalid"])
+                self.state.log(
+                    "review_failed",
+                    task=tid,
+                    round=iteration,
+                    why=why or "invalid",
+                    stash=stash,
+                    gate_passed=True,
+                )
+                qid = self.state.ask(
+                    tid, "review_failed", diagnosis, stash=stash, round=iteration
+                )
+                self.state.set_status(
+                    tid,
+                    "blocked",
+                    reason="invalid_verdict",
+                    stash=stash,
+                    iterations=iteration,
+                    question_id=qid,
+                    diagnosis=diagnosis,
+                )
                 self.ui(f"    РЕВЬЮ НЕ СОСТОЯЛОСЬ [{qid}]: {diagnosis}")
                 return "blocked"
 
             # Вердикт получен — работа СУДИМА, раунд потрачен по делу.
             productive += 1
             raw_findings = verdict.get("findings") or []
-            findings, suppressed = apply_policies(
-                raw_findings, self.state.policies())
+            findings, suppressed = apply_policies(raw_findings, self.state.policies())
             if suppressed:
-                self.state.log("policy_suppressed", task=tid, round=iteration,
-                               count=len(suppressed),
-                               items=[{"policy": f["suppressed_by"],
-                                       "severity": f.get("severity"),
-                                       "issue": str(f.get("issue"))[:200]}
-                                      for f in suppressed])
-                self.state.metric(task=tid, iter=iteration,
-                                  phase="policy", suppressed=len(suppressed))
-                self.ui(f"    подавлено политиками: {len(suppressed)} "
-                        f"(осталось {len(findings)})")
+                self.state.log(
+                    "policy_suppressed",
+                    task=tid,
+                    round=iteration,
+                    count=len(suppressed),
+                    items=[
+                        {
+                            "policy": f["suppressed_by"],
+                            "severity": f.get("severity"),
+                            "issue": str(f.get("issue"))[:200],
+                        }
+                        for f in suppressed
+                    ],
+                )
+                self.state.metric(
+                    task=tid, iter=iteration, phase="policy", suppressed=len(suppressed)
+                )
+                self.ui(
+                    f"    подавлено политиками: {len(suppressed)} "
+                    f"(осталось {len(findings)})"
+                )
             # решение принимается по действующим находкам: если все замечания
             # относятся к тому, что человек уже отменил, задача прошла ревью
             verdict = dict(verdict, findings=findings)
@@ -864,24 +1072,40 @@ class Loop:
             # раунды значит эскалировать за то, чего не судили. Номер
             # раунда (iteration) остаётся сквозным — по нему журнал, имена
             # файлов вердиктов и история.
-            outcome, code = decide(productive, verdict, history,
-                                   max_rounds=self.max_iter + confirm_rounds,
-                                   confirmations=self.config.get("confirmations", 2),
-                                   diff_sha=work_sha,
-                                   confirming=was_confirmation)
-            history.append({"round": iteration, "verdict": verdict["verdict"],
-                            "findings": len(findings),
-                            # Без этих двух полей диагност не может
-                            # отличить «задача не сходится» от
-                            # «ревьюеры разошлись на одном диффе».
-                            "confirming": was_confirmation,
-                            "diff_sha": work_sha,
-                            **getattr(self.agents, "last_tuning", {}),
-                            "categories": sorted({str(f.get("category") or "")
-                                                  for f in findings})})
-            self.state.log("round", task=tid, round=iteration,
-                           verdict=verdict["verdict"], outcome=outcome,
-                           findings=len(findings), intent=len(intent))
+            outcome, code = decide(
+                productive,
+                verdict,
+                history,
+                max_rounds=self.max_iter + confirm_rounds,
+                confirmations=self.config.get("confirmations", 2),
+                diff_sha=work_sha,
+                confirming=was_confirmation,
+            )
+            history.append(
+                {
+                    "round": iteration,
+                    "verdict": verdict["verdict"],
+                    "findings": len(findings),
+                    # Без этих двух полей диагност не может
+                    # отличить «задача не сходится» от
+                    # «ревьюеры разошлись на одном диффе».
+                    "confirming": was_confirmation,
+                    "diff_sha": work_sha,
+                    **getattr(self.agents, "last_tuning", {}),
+                    "categories": sorted(
+                        {str(f.get("category") or "") for f in findings}
+                    ),
+                }
+            )
+            self.state.log(
+                "round",
+                task=tid,
+                round=iteration,
+                verdict=verdict["verdict"],
+                outcome=outcome,
+                findings=len(findings),
+                intent=len(intent),
+            )
             # Раунд — самая мелкая единица, о которой человеку есть что
             # сказать: он длится минуты, и до конца задачи наблюдать за
             # прогоном было нечем, кроме бегущих строк в терминале.
@@ -892,11 +1116,18 @@ class Loop:
             # цикл не деградировал (приём FuguNano).
             rolled_back_to: int | None = None
             if best["findings"] is None or len(findings) < best["findings"]:
-                best.update(findings=len(findings), round=iteration,
-                            diff=work, items=list(findings))
-            elif (len(findings) > best["findings"] and best["diff"]
-                    and not was_confirmation
-                    and verdict["verdict"] == "request_changes"):
+                best.update(
+                    findings=len(findings),
+                    round=iteration,
+                    diff=work,
+                    items=list(findings),
+                )
+            elif (
+                len(findings) > best["findings"]
+                and best["diff"]
+                and not was_confirmation
+                and verdict["verdict"] == "request_changes"
+            ):
                 # Подтверждающий раунд ревьюет ТОТ ЖЕ дифф: исполнитель в нём
                 # не вызывался, кода никто не трогал. Рост числа находок там
                 # — разброс ревьюера, а не регресс. На PILOT-1 (g2pf) это
@@ -905,21 +1136,31 @@ class Loop:
                 # Approve с лишними minor-находками — тоже не регресс:
                 # откатывать одобренное дерево и коммитить вместо него
                 # прошлый раунд значило бы подменить предмет вердикта.
-                self.ui(f"    регресс: {len(findings)} находок против "
-                        f"{best['findings']} в раунде {best['round']} — откат")
+                self.ui(
+                    f"    регресс: {len(findings)} находок против "
+                    f"{best['findings']} в раунде {best['round']} — откат"
+                )
                 self.revert()
                 if not self._apply_patch(best["diff"]):
                     # Работа снесена, восстановить не удалось. Коммитить
                     # тут нечего, и делать вид, что откат состоялся, нельзя.
-                    diagnosis = ("откат к лучшему раунду не состоялся: "
-                                 "git apply отверг сохранённый дифф, работа "
-                                 "раунда потеряна. Смотри restore_failed в "
-                                 "журнале и переоткрой задачу заново")
-                    qid = self.state.ask(tid, "restore_failed", diagnosis,
-                                         round=iteration)
-                    self.state.set_status(tid, "blocked", reason="restore_failed",
-                                          iterations=iteration,
-                                          question_id=qid, diagnosis=diagnosis)
+                    diagnosis = (
+                        "откат к лучшему раунду не состоялся: "
+                        "git apply отверг сохранённый дифф, работа "
+                        "раунда потеряна. Смотри restore_failed в "
+                        "журнале и переоткрой задачу заново"
+                    )
+                    qid = self.state.ask(
+                        tid, "restore_failed", diagnosis, round=iteration
+                    )
+                    self.state.set_status(
+                        tid,
+                        "blocked",
+                        reason="restore_failed",
+                        iterations=iteration,
+                        question_id=qid,
+                        diagnosis=diagnosis,
+                    )
                     self.ui(f"    ОТКАТ НЕ СОСТОЯЛСЯ [{qid}]")
                     return "blocked"
                 rolled_back_to = int(best["round"])
@@ -928,43 +1169,67 @@ class Loop:
                 if outcome == CONFIRM:
                     confirm_rounds += 1
                     confirming = True
-                    self.ui(f"    approve #{iteration}, нужно ещё подтверждение "
-                            f"(повторное ревью того же диффа, без исполнителя)")
+                    self.ui(
+                        f"    approve #{iteration}, нужно ещё подтверждение "
+                        f"(повторное ревью того же диффа, без исполнителя)"
+                    )
                     continue
                 # `head` в интенте — точка отсчёта для реконсиляции (§5.6):
                 # resume сравнит её с текущим HEAD и решит, состоялся ли
                 # коммит, вместо того чтобы посылать человека смотреть.
-                with self.state.step(tid, "commit",
-                                     head=self.head_before) as step:
+                with self.state.step(tid, "commit", head=self.head_before) as step:
                     sha = self.commit(task)
                     step.result(commit=sha)
-                self.state.set_status(tid, "done", iterations=iteration,
-                                      commit=sha, exit_code=code,
-                                      no_change_needed=report.get("status")
-                                      == "no_change_needed")
-                self.ui(f"    done (итерация {iteration})"
-                        + ("" if sha else " [без коммита: пустой diff]"))
+                self.state.set_status(
+                    tid,
+                    "done",
+                    iterations=iteration,
+                    commit=sha,
+                    exit_code=code,
+                    no_change_needed=report.get("status") == "no_change_needed",
+                )
+                self.ui(
+                    f"    done (итерация {iteration})"
+                    + ("" if sha else " [без коммита: пустой diff]")
+                )
                 return "done"
 
             if outcome == ASK_USER:
                 stash = self.cleanup(task, "ask-user")
                 question = "; ".join(f.get("issue", "")[:200] for f in intent)
                 qid = self.state.ask(
-                    tid, "intent", question,
-                    findings=[{"category": f.get("category"),
-                               "severity": f.get("severity"),
-                               "issue": f.get("issue"),
-                               "suggestion": f.get("suggestion")} for f in intent],
-                    stash=stash, round=iteration,
-                    mechanical_left=len(mechanical))
-                self.state.set_status(tid, "blocked", reason="ask_user",
-                                      stash=stash, iterations=iteration,
-                                      exit_code=code, question_id=qid)
+                    tid,
+                    "intent",
+                    question,
+                    findings=[
+                        {
+                            "category": f.get("category"),
+                            "severity": f.get("severity"),
+                            "issue": f.get("issue"),
+                            "suggestion": f.get("suggestion"),
+                        }
+                        for f in intent
+                    ],
+                    stash=stash,
+                    round=iteration,
+                    mechanical_left=len(mechanical),
+                )
+                self.state.set_status(
+                    tid,
+                    "blocked",
+                    reason="ask_user",
+                    stash=stash,
+                    iterations=iteration,
+                    exit_code=code,
+                    question_id=qid,
+                )
                 # Та же причина, что у спора исполнителя выше: счётчик
                 # находок в одной строке не заменяет саму формулировку,
                 # ради которой петля позвала человека.
-                self.ui(f"    вопрос человеку [{qid}]: {len(intent)} находок "
-                        f"о замысле (механических: {len(mechanical)})")
+                self.ui(
+                    f"    вопрос человеку [{qid}]: {len(intent)} находок "
+                    f"о замысле (механических: {len(mechanical)})"
+                )
                 self.ui(f"        {question[:160]}")
                 self.ui("        детали и ответ: swarm inbox")
                 return "ask_user"
@@ -975,16 +1240,31 @@ class Loop:
                 # эскалация посреди цикла знала меньше, чем эскалация по
                 # выходу из него, и выдавала догадку там, где рядом лежал
                 # механический факт.
-                diagnosis = self._diagnose(outcome, history,
-                                           scope_failures=scope_failures,
-                                           sig_failures=sig_failures,
-                                           exec_failures=exec_failures)
-                qid = self.state.ask(tid, outcome, diagnosis, stash=stash,
-                                     round=iteration, history=history)
-                self.state.set_status(tid, "blocked", reason=outcome,
-                                      stash=stash, iterations=iteration,
-                                      exit_code=code, diagnosis=diagnosis,
-                                      question_id=qid)
+                diagnosis = self._diagnose(
+                    outcome,
+                    history,
+                    scope_failures=scope_failures,
+                    sig_failures=sig_failures,
+                    exec_failures=exec_failures,
+                )
+                qid = self.state.ask(
+                    tid,
+                    outcome,
+                    diagnosis,
+                    stash=stash,
+                    round=iteration,
+                    history=history,
+                )
+                self.state.set_status(
+                    tid,
+                    "blocked",
+                    reason=outcome,
+                    stash=stash,
+                    iterations=iteration,
+                    exit_code=code,
+                    diagnosis=diagnosis,
+                    question_id=qid,
+                )
                 self.ui(f"    эскалация [{qid}]: {diagnosis}")
                 return "blocked"
 
@@ -997,31 +1277,51 @@ class Loop:
                 # уходил на поиск кода, которого нет. Замечания — по тому
                 # состоянию, которое он реально увидит.
                 _, best_mech = classify_findings(list(best.get("items") or []))
-                feedback = {"note": (f"код возвращён к лучшему раунду "
-                                     f"{rolled_back_to}; замечания ниже — "
-                                     f"по нему, дерево ему соответствует"),
-                            "findings": best_mech or list(best.get("items")
-                                                          or [])}
+                feedback = {
+                    "note": (
+                        f"код возвращён к лучшему раунду "
+                        f"{rolled_back_to}; замечания ниже — "
+                        f"по нему, дерево ему соответствует"
+                    ),
+                    "findings": best_mech or list(best.get("items") or []),
+                }
             if human:
                 feedback.update(human)
-            self.ui(f"    request_changes ({len(findings)} замечаний, "
-                    f"механических {len(mechanical)})")
+            self.ui(
+                f"    request_changes ({len(findings)} замечаний, "
+                f"механических {len(mechanical)})"
+            )
 
         # Выход из цикла по исчерпанию раундов — тоже терминальный исход, и
         # он обязан попасть в инбокс. Иначе задача, где исполнитель раз за
         # разом не возвращал валидный отчёт, блокируется МОЛЧА и человек о
         # ней не узнаёт (поймано на приёмке: v3st исчезла из виду).
         stash = self.cleanup(task, "max-iterations")
-        diagnosis = self._diagnose(ESCALATE_MAX, history,
-                                   scope_failures=scope_failures,
-                                   sig_failures=sig_failures,
-                                   exec_failures=exec_failures)
-        qid = self.state.ask(tid, ESCALATE_MAX, diagnosis, stash=stash,
-                             round=self.max_iter, history=history)
-        self.state.set_status(tid, "blocked", reason="max_iterations",
-                              stash=stash, iterations=self.max_iter,
-                              exit_code=EXIT_ESCALATE, diagnosis=diagnosis,
-                              question_id=qid)
+        diagnosis = self._diagnose(
+            ESCALATE_MAX,
+            history,
+            scope_failures=scope_failures,
+            sig_failures=sig_failures,
+            exec_failures=exec_failures,
+        )
+        qid = self.state.ask(
+            tid,
+            ESCALATE_MAX,
+            diagnosis,
+            stash=stash,
+            round=self.max_iter,
+            history=history,
+        )
+        self.state.set_status(
+            tid,
+            "blocked",
+            reason="max_iterations",
+            stash=stash,
+            iterations=self.max_iter,
+            exit_code=EXIT_ESCALATE,
+            diagnosis=diagnosis,
+            question_id=qid,
+        )
         self.ui(f"    эскалация [{qid}]: {diagnosis}")
         return "blocked"
 
@@ -1053,10 +1353,16 @@ class Loop:
             budget = self.config.get("total_budget_usd")
             spent = self.state.total_spend()
             if budget and spent >= float(budget):
-                self.state.log("budget_exhausted", spent=spent, budget=budget,
-                               stopped_before=task["id"])
-                self.ui(f"\nБЮДЖЕТ ПРОГОНА ИСЧЕРПАН: ${spent} из ${budget}. "
-                        f"Остановлено перед задачей {task['id']}.")
+                self.state.log(
+                    "budget_exhausted",
+                    spent=spent,
+                    budget=budget,
+                    stopped_before=task["id"],
+                )
+                self.ui(
+                    f"\nБЮДЖЕТ ПРОГОНА ИСЧЕРПАН: ${spent} из ${budget}. "
+                    f"Остановлено перед задачей {task['id']}."
+                )
                 results["_budget"] = "exhausted"
                 break
             # Любой сбой на задаче (таймаут гейта, отказ провайдера,
@@ -1070,13 +1376,16 @@ class Loop:
                 self._memory_record(task)
             except ExecutorUnavailableError as e:
                 # Задача уже возвращена в pending внутри run_task.
-                self.state.log("executor_unavailable", task=task["id"],
-                               stderr=str(e)[:400])
+                self.state.log(
+                    "executor_unavailable", task=task["id"], stderr=str(e)[:400]
+                )
                 results["_executor"] = "unavailable"
-                self.ui(f"\nИСПОЛНИТЕЛЬ НЕДОСТУПЕН — прогон остановлен.\n"
-                        f"    {str(e)[:200]}\n"
-                        f"    Задача {task['id']} возвращена в очередь; "
-                        f"продолжайте после устранения причины.")
+                self.ui(
+                    f"\nИСПОЛНИТЕЛЬ НЕДОСТУПЕН — прогон остановлен.\n"
+                    f"    {str(e)[:200]}\n"
+                    f"    Задача {task['id']} возвращена в очередь; "
+                    f"продолжайте после устранения причины."
+                )
                 break
             except KeyboardInterrupt:
                 self._rescue(task, "прервано человеком")
@@ -1097,15 +1406,22 @@ class Loop:
                         raise
                     resumes += 1
                     cap = int(self.config.get("quota_resume_max", 3))
-                    until = (dt.datetime.now(dt.UTC)
-                             + dt.timedelta(seconds=wait_s)).astimezone()
-                    self.state.log("quota_resume", attempt=resumes, of=cap,
-                                   wait_s=wait_s,
-                                   until=until.isoformat(timespec="seconds"),
-                                   message=str(e)[:200])
-                    self.ui(f"    АВТОВОЗОБНОВЛЕНИЕ {resumes}/{cap}: ждём "
-                            f"{wait_s // 60} мин (до {until:%H:%M}), "
-                            f"причина: {str(e)[:120]}")
+                    until = (
+                        dt.datetime.now(dt.UTC) + dt.timedelta(seconds=wait_s)
+                    ).astimezone()
+                    self.state.log(
+                        "quota_resume",
+                        attempt=resumes,
+                        of=cap,
+                        wait_s=wait_s,
+                        until=until.isoformat(timespec="seconds"),
+                        message=str(e)[:200],
+                    )
+                    self.ui(
+                        f"    АВТОВОЗОБНОВЛЕНИЕ {resumes}/{cap}: ждём "
+                        f"{wait_s // 60} мин (до {until:%H:%M}), "
+                        f"причина: {str(e)[:120]}"
+                    )
                     time.sleep(wait_s)
                     continue
                 # убивать очередь; задача обязана остаться разбираемой
@@ -1166,14 +1482,15 @@ class Loop:
         try:
             stash = self.cleanup(task, "crash")
         except Exception:
-            log.exception("stash при аварии не создан",
-                          extra={"swarm_task": tid})
+            log.exception("stash при аварии не создан", extra={"swarm_task": tid})
             stash = None
         try:
-            qid = self.state.ask(tid, ASK_USER,
-                                 f"прогон прерван аварией: {reason}", stash=stash)
-            self.state.set_status(tid, "blocked", reason="crash",
-                                  stash=stash, question_id=qid)
+            qid = self.state.ask(
+                tid, ASK_USER, f"прогон прерван аварией: {reason}", stash=stash
+            )
+            self.state.set_status(
+                tid, "blocked", reason="crash", stash=stash, question_id=qid
+            )
         except Exception as e:
             # Отказ самого регистратора аварии нельзя терять: иначе задача
             # молча остаётся в work и оператор не узнает почему.
