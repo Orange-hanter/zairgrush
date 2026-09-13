@@ -39,6 +39,7 @@ if _HERE not in sys.path:
 import engines  # noqa: E402
 import modlock  # noqa: E402
 import pathsafe  # noqa: E402
+import spending  # noqa: E402
 
 log = modlock.load_module("obs").get_logger("tester")
 
@@ -179,15 +180,21 @@ def write_tests(
     # worktree, и запуск тестировщика в общем корне переписал бы работу
     # живого плеча — замер стал бы несравнимым.
     work = str(getattr(agents, "work_root", None) or agents.state.root)
-    cmd = engines.executor_argv(engine, model, text, agents.config, schema, cwd=work)
     drv = agents.driver.AgentDriver(
         cwd=work,
         silence_timeout=agents.config.get("silence_timeout", 600),
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800),
     )
     parser, extract = engines.stream_pipeline(kind, agents.driver)
-    run = drv.start(cmd, parser=parser)
-    result = run.collect(extract)
+    # Тестировщик едет на argv исполнителя — и под потолком его вызова.
+    spending.guard(agents.config, agents.state, "tester",
+                   "executor_budget_usd")
+    # Канал промпта — как у исполнителя (NXT-006): в argv не едет.
+    with engines.prompt_delivery(engine, text) as dlv:
+        cmd = engines.executor_argv(engine, model, dlv, agents.config, schema,
+                                    cwd=work)
+        run = drv.start(cmd, parser=parser, stdin_text=dlv.stdin)
+        result = run.collect(extract)
     # id задачи — данные недоверенные: в имя файла только через санитайзер,
     # иначе '../..' в id уводил запись лога за пределы каталога состояния.
     # Дайджест сырого id рядом: санитайзер детерминированно схлопывает
@@ -217,6 +224,7 @@ def write_tests(
         report=bool(report),
         **facts,
     )
+    spending.guard(agents.config, agents.state, "tester")
     if report is None:
         log.warning(
             "тестировщик не отдал отчёт", extra={"swarm_task": str(task.get("id"))}

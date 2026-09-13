@@ -19,6 +19,8 @@ sys.path.insert(0, str(HERE.parent / "swarm"))
 import engines  # noqa: E402
 import spending  # noqa: E402
 
+_PD = engines.PromptDelivery
+
 
 class TestModeResolution(unittest.TestCase):
 
@@ -97,17 +99,17 @@ class TestArgvActuallyChanges(unittest.TestCase):
     """Политика без следа в argv — пожелание, а не политика."""
 
     def test_executor_argv_carries_no_cap_by_default(self):
-        argv = engines.executor_argv("claude", "sonnet", "p", {})
+        argv = engines.executor_argv("claude", "sonnet", _PD(("p",), None), {})
         self.assertNotIn("--max-budget-usd", argv)
 
     def test_executor_argv_honours_an_explicit_cap(self):
-        argv = engines.executor_argv("claude", "sonnet", "p",
+        argv = engines.executor_argv("claude", "sonnet", _PD(("p",), None),
                                      {"executor_budget_usd": 3})
         self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "3.0")
 
     def test_kimi_argv_never_grew_a_budget_flag(self):
         """Поток kimi цены не знает вовсе; флаг здесь был бы выдумкой."""
-        argv = engines.executor_argv("kimi", "kimi-k2", "p",
+        argv = engines.executor_argv("kimi", "kimi-k2", _PD(("p",), None),
                                      {"executor_budget_usd": 3})
         self.assertNotIn("--max-budget-usd", argv)
 
@@ -135,6 +137,7 @@ class TestArgvActuallyChanges(unittest.TestCase):
             if argv and argv[0] == "claude":
                 seen["argv"] = argv
                 return type("P", (), {
+                    "stdin": io.StringIO(),
                     "stdout": io.StringIO(json.dumps({"type": "result"})),
                     "stderr": io.StringIO(""), "returncode": 0,
                     "poll": lambda s: 0, "wait": lambda s, timeout=None: 0,

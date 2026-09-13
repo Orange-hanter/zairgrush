@@ -22,6 +22,7 @@ import modlock  # noqa: E402
 import parsing as parsing_mod  # noqa: E402
 import pathsafe  # noqa: E402
 import promptbuilder  # noqa: E402
+import spending  # noqa: E402
 from agents_types import AgentsLike  # noqa: E402
 
 # Имя логера оставлено "agents": журнал наблюдаемости — контракт,
@@ -78,14 +79,7 @@ def implement(
         docs=promptbuilder.docs_block(agents, task) or None,
     )
     work = str(getattr(agents, "work_root", None) or agents.state.root)
-    cmd = engines.executor_argv(
-        engine,
-        model,
-        prompt,
-        agents.config,
-        report_schema() if kind == "claude" else "",
-        cwd=work,
-    )
+    schema = report_schema() if kind == "claude" else ""
     # Разборщик потока и способ достать отчёт — свойства ДВИЖКА, а не
     # роли: у kimi финальный JSON лежит в assistant-событии, у claude —
     # в конверте финального result-события (тот же путь, которым живёт
@@ -99,12 +93,23 @@ def implement(
         wall_clock_cap=agents.config.get("wall_clock_cap", 1800),
     )
     parser, extract = engines.stream_pipeline(kind, agents.driver)
-    # Пока идёт вызов — единственная запись о происходящем: метрика
-    # появится только после (state.phase).
-    with agents.state.phase("implement", task["id"], iter=iteration,
-                            engine=engine, model=model or None):
-        run = drv.start(cmd, parser=parser)
-        result = run.collect(extract)
+    # Страж потолка прогона ДО диспетча: между раундами проверка была,
+    # а ход из нескольких вызовов пробивал потолок на любую величину.
+    spending.guard(agents.config, agents.state, "executor",
+                   "executor_budget_usd")
+    # Промпт не едет в argv: ARG_MAX ограничивает командную строку, а
+    # промпт с диффом задачи эту границу уже пробивал (NXT-006). Канал —
+    # свойство движка: stdin у claude, временный файл у kimi и zcode.
+    with engines.prompt_delivery(engine, prompt) as dlv:
+        cmd = engines.executor_argv(
+            engine, model, dlv, agents.config, schema, cwd=work
+        )
+        # Пока идёт вызов — единственная запись о происходящем: метрика
+        # появится только после (state.phase).
+        with agents.state.phase("implement", task["id"], iter=iteration,
+                                engine=engine, model=model or None):
+            run = drv.start(cmd, parser=parser, stdin_text=dlv.stdin)
+            result = run.collect(extract)
     # Метка плеча в имени файла. Без неё оба исполнителя дуэли писали бы
     # сырьё в ОДИН путь из двух потоков: поток теневого плеча затирал бы
     # поток живого, и разбираться потом было бы не по чему — ровно та
@@ -152,6 +157,9 @@ def implement(
         arm=arm,
         **facts,
     )
+    # Цена записана — следующий вызов этого же хода (ревьюер, повтор)
+    # не имеет права уйти, если потолок уже пробит.
+    spending.guard(agents.config, agents.state, "executor")
     if report is None or reason != "done":
         # stderr — единственное место, где провайдер объясняет отказ.
         # Пока он не сохранялся, диагноз «квота Kimi исчерпана» занял

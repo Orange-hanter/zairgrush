@@ -29,6 +29,14 @@ def _load(name):
 eng = _load("engines")
 
 
+def _p(text):
+    """Промпт в упаковке канала доставки (NXT-006): сборщики argv
+    принимают PromptDelivery, а не голую строку — в argv сам промпт
+    не едет (ARG_MAX), здесь он подставлен в слот напрямую, потому что
+    тестам важен скелет argv, а не канал."""
+    return eng.PromptDelivery((text,), None)
+
+
 class TestResolve(unittest.TestCase):
     """Правило одно: префикс старше ключа, ключ старше умолчания."""
 
@@ -108,13 +116,16 @@ class TestResolve(unittest.TestCase):
 class TestArgv(unittest.TestCase):
     def test_kimi_form_is_frozen(self):
         """Регрессионный якорь: всё, что измерено на плече A, обязано
-        собираться сегодня той же строкой, включая порядок `-m` до `-p`."""
+        собираться сегодня той же строкой, включая порядок `-m` до `-p`.
+        Заморожен скелет, а не содержимое слота промпта: с NXT-006 там
+        указатель канала доставки, а не сам промпт (в тесте — токен из
+        `_p`, подставленный в слот как есть)."""
         self.assertEqual(
-            eng.executor_argv("kimi", "k3", "PROMPT", {}),
+            eng.executor_argv("kimi", "k3", _p("PROMPT"), {}),
             ["kimi", "-m", "k3", "-p", "PROMPT", "--output-format", "stream-json"],
         )
         self.assertEqual(
-            eng.executor_argv("kimi", "", "PROMPT", {}),
+            eng.executor_argv("kimi", "", _p("PROMPT"), {}),
             ["kimi", "-p", "PROMPT", "--output-format", "stream-json"],
         )
 
@@ -122,13 +133,13 @@ class TestArgv(unittest.TestCase):
         """Флаги движка claude не имеют права протечь в чужой CLI: kimi
         принял бы их за неизвестные опции и умер бы на старте."""
         argv = eng.executor_argv(
-            "kimi", "k3", "P", {"executor_effort": "high", "executor_budget_usd": 3}
+            "kimi", "k3", _p("P"), {"executor_effort": "high", "executor_budget_usd": 3}
         )
         self.assertNotIn("--effort", argv)
         self.assertNotIn("--max-budget-usd", argv)
 
     def test_claude_carries_permission_and_schema(self):
-        argv = eng.executor_argv("claude", "sonnet", "P", {}, schema="{}")
+        argv = eng.executor_argv("claude", "sonnet", _p("P"), {}, schema="{}")
         self.assertEqual(argv[0], "claude")
         self.assertEqual(argv[argv.index("-p") + 1], "P")
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "acceptEdits")
@@ -139,7 +150,7 @@ class TestArgv(unittest.TestCase):
     def test_claude_executor_may_write_and_run(self):
         """Ревьюер живёт на read-only наборе, исполнитель — нет: без Edit
         он не сделает работу, без Bash не заполнит evidence.tests."""
-        argv = eng.executor_argv("claude", "", "P", {})
+        argv = eng.executor_argv("claude", "", _p("P"), {})
         allowed = argv[argv.index("--allowedTools") + 1]
         for tool in ("Edit", "Write", "Bash", "Read"):
             self.assertIn(tool, allowed)
@@ -147,7 +158,7 @@ class TestArgv(unittest.TestCase):
     def test_git_write_is_a_rule_not_a_sentence(self):
         """Промпт говорит «git только для чтения» с самого начала, но до
         сих пор это была фраза. Отказ обязан приходить ДО выполнения."""
-        argv = eng.executor_argv("claude", "", "P", {})
+        argv = eng.executor_argv("claude", "", _p("P"), {})
         denied = argv[argv.index("--disallowedTools") + 1]
         for cmd in (
             "git commit",
@@ -164,8 +175,8 @@ class TestArgv(unittest.TestCase):
     def test_git_read_stays_allowed(self):
         """Исполнителю нужен `git diff`/`git log`: запрет на запись — не
         запрет на чтение, иначе он не увидит собственную работу."""
-        denied = eng.executor_argv("claude", "", "P", {})[
-            eng.executor_argv("claude", "", "P", {}).index("--disallowedTools") + 1
+        denied = eng.executor_argv("claude", "", _p("P"), {})[
+            eng.executor_argv("claude", "", _p("P"), {}).index("--disallowedTools") + 1
         ]
         self.assertNotIn("Bash(git diff", denied)
         self.assertNotIn("Bash(git log", denied)
@@ -178,8 +189,8 @@ class TestArgv(unittest.TestCase):
         `git branch -l` от `git branch -D`, а инспектировать refs
         исполнителю нужно. clean/rm/revert/cherry-pick read-only форм
         не имеют — они закрыты у claude наравне с zcode."""
-        denied = eng.executor_argv("claude", "", "P", {})[
-            eng.executor_argv("claude", "", "P", {}).index("--disallowedTools") + 1
+        denied = eng.executor_argv("claude", "", _p("P"), {})[
+            eng.executor_argv("claude", "", _p("P"), {}).index("--disallowedTools") + 1
         ]
         entries = _csv_entries(denied)
         for entry in (
@@ -193,7 +204,7 @@ class TestArgv(unittest.TestCase):
             self.assertNotIn(entry, entries)
         # Широкий список (ветки/теги/-C/--git-dir) живёт только у zcode
         # под yolo — см. engines.py.
-        zargv = eng.executor_argv("zcode", "m", "P", {}, cwd="/w")
+        zargv = eng.executor_argv("zcode", "m", _p("P"), {}, cwd="/w")
         zdenied = zargv[zargv.index("--disallowed-tools") + 1]
         for entry in ("Bash(git branch:*)", "Bash(git tag:*)",
                       "Bash(git -C:*)", "Bash(git --git-dir:*)"):
@@ -202,23 +213,24 @@ class TestArgv(unittest.TestCase):
     def test_tuning_flags_only_when_configured(self):
         """То же правило, что у promptbuilder.tuning: без явной настройки
         роль наследует сессионные параметры и поведение не меняется."""
-        bare = eng.executor_argv("claude", "", "P", {})
+        bare = eng.executor_argv("claude", "", _p("P"), {})
         self.assertNotIn("--effort", bare)
         self.assertNotIn("--max-budget-usd", bare)
         tuned = eng.executor_argv(
-            "claude", "", "P", {"executor_effort": "low", "executor_budget_usd": 2.5}
+            "claude", "", _p("P"),
+            {"executor_effort": "low", "executor_budget_usd": 2.5}
         )
         self.assertEqual(tuned[tuned.index("--effort") + 1], "low")
         self.assertEqual(tuned[tuned.index("--max-budget-usd") + 1], "2.5")
 
     def test_schema_is_optional(self):
-        self.assertNotIn("--json-schema", eng.executor_argv("claude", "", "P", {}))
+        self.assertNotIn("--json-schema", eng.executor_argv("claude", "", _p("P"), {}))
 
     def test_ollama_has_no_command_line(self):
         """`ollama:` — маршрут на chat-fill, а не CLI: дошедшее сюда
         значило бы, что маршрутизация в implement() сломана."""
         with self.assertRaises(eng.EngineError):
-            eng.executor_argv("ollama", "m", "P", {})
+            eng.executor_argv("ollama", "m", _p("P"), {})
 
 
 class TestReportFromEnvelope(unittest.TestCase):
@@ -381,7 +393,7 @@ def _csv_entries(value: object) -> list[str]:
 
 class TestZcodeArgv(unittest.TestCase):
     def _argv(self, model="glm-5.3", cwd="/work"):
-        return eng.executor_argv("zcode", model, "P", {}, cwd=cwd)
+        return eng.executor_argv("zcode", model, _p("P"), {}, cwd=cwd)
 
     def test_prompt_json_mode_and_surface(self):
         argv = self._argv()
@@ -440,7 +452,7 @@ class TestZcodeArgv(unittest.TestCase):
             self.assertIn(tool, allowed_set)
 
     def test_cwd_omitted_when_empty(self):
-        argv = eng.executor_argv("zcode", "", "P", {})
+        argv = eng.executor_argv("zcode", "", _p("P"), {})
         self.assertNotIn("--cwd", argv)
 
     def test_claude_flags_do_not_leak(self):

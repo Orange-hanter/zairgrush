@@ -15,6 +15,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
@@ -52,6 +53,9 @@ class FakeClaudeProc:
                               ensure_ascii=False)
             self.stdout = io.StringIO(line + "\n")
         self.stderr = io.StringIO("")
+        # Промпт с NXT-006 едет через stdin (ARG_MAX), и двойник обязан
+        # принять запись потока-кормильца драйвера.
+        self.stdin = _RecordingStdin()
         self.returncode = returncode
 
     def poll(self):
@@ -64,19 +68,53 @@ class FakeClaudeProc:
         pass
 
 
+class _RecordingStdin(io.StringIO):
+    """stdin двойника, читаемый ПОСЛЕ close(): драйвер закрывает канал
+    после записи промпта (EOF для CLI), а тест обязан видеть, что
+    доехало."""
+
+    _saved = ""
+
+    def close(self):
+        self._saved = super().getvalue()
+        super().close()
+
+    def getvalue(self):
+        try:
+            return super().getvalue()
+        except ValueError:
+            return self._saved
+
+
+def _fed_prompt(proc, timeout=5.0):
+    """Промпт из stdin двойника: с NXT-006 он едет потоком, а не в argv
+    (ARG_MAX). Пишет поток-кормилец драйвера — ждём запись."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        text = proc.stdin.getvalue()
+        if text:
+            return text
+        time.sleep(0.01)
+    raise AssertionError("промпт не доехал до stdin процесса")
+
+
 def patch_claude_popen(testcase, reply):
     """Перехват ТОЛЬКО вызова ревьюера: остальные Popen идут по-настоящему.
 
     `reply(argv)` возвращает dict конверта. Подменяется внешний CLI, путь
     review остаётся настоящим — тот же принцип, что у прежнего перехвата
-    subprocess.run.
+    subprocess.run. Двойники складываются в testcase.claude_procs: промпт
+    читается из их stdin, а не из argv.
     """
     orig = subprocess.Popen
+    testcase.claude_procs = []
 
     def fake_popen(argv, **kw):
         if not (argv and argv[0] == "claude"):
             return orig(argv, **kw)
-        return FakeClaudeProc(reply(argv))
+        proc = FakeClaudeProc(reply(argv))
+        testcase.claude_procs.append(proc)
+        return proc
 
     subprocess.Popen = fake_popen
     testcase.addCleanup(lambda: setattr(subprocess, "Popen", orig))
@@ -195,7 +233,7 @@ class TestVerificationIsReachable(RepoCase):
         переживала: настоящий код в тесте не участвовал.
         """
         agents = ag.Agents(self.state, config)
-        self.prompts = []
+        calls = {"n": 0}
         replies = [
             {"analysis": "первый проход по диффу с проверкой критериев приёмки",
              "verdict": "request_changes", "summary": "нужна проверка исполнением",
@@ -211,9 +249,8 @@ class TestVerificationIsReachable(RepoCase):
         ]
 
         def reply(argv):
-            prompt = argv[argv.index("-p") + 1] if "-p" in argv else ""
-            self.prompts.append(prompt)
-            body = replies[min(len(self.prompts), len(replies)) - 1]
+            calls["n"] += 1
+            body = replies[min(calls["n"], len(replies)) - 1]
             return {"structured_output": body, "total_cost_usd": 0.1}
 
         patch_claude_popen(self, reply)
@@ -251,18 +288,25 @@ class TestVerificationIsReachable(RepoCase):
         self.assertIn("Перечисли", text)
         self.assertIn("сам ты ничего не запускаешь", text)
 
+    def _delivered_prompts(self):
+        """Промпты вызовов из канала доставки (NXT-006): в argv их
+        больше нет — ревьюер отдаёт промпт через stdin процесса."""
+        return [_fed_prompt(p) for p in self.claude_procs]
+
     def test_requests_are_executed_and_returned(self):
         agents = self._agents({"verification": "always"})
         verdict = agents.review(dict(self.TASK), "OK", 1)
-        self.assertEqual(len(self.prompts), 2, "второго вызова не было")
-        self.assertIn("Результаты запрошенных тобой проверок", self.prompts[1])
+        prompts = self._delivered_prompts()
+        self.assertEqual(len(prompts), 2, "второго вызова не было")
+        self.assertIn("Результаты запрошенных тобой проверок", prompts[1])
         self.assertEqual(verdict["verdict"], "approve")
 
     def test_second_round_does_not_ask_again(self):
         """Анти-петля: один раунд верификации на итерацию."""
         agents = self._agents({"verification": "always"})
         agents.review(dict(self.TASK), "OK", 1)
-        self.assertNotIn("Проверка исполнением", self.prompts[1])
+        self.assertNotIn("Проверка исполнением",
+                         self._delivered_prompts()[1])
 
     def test_verification_round_is_capped(self):
         """Анти-петля: один раунд верификации на итерацию.
@@ -271,7 +315,7 @@ class TestVerificationIsReachable(RepoCase):
         пара «запрос — исполнение» крутится бесконечно и жжёт бюджет.
         """
         agents = ag.Agents(self.state, {"verification": "always"})
-        self.prompts = []
+        calls = {"n": 0}
         asking = {"analysis": "разбор диффа с проверкой критериев приёмки задачи",
                   "verdict": "request_changes",
                   "summary": "нужна ещё одна проверка исполнением",
@@ -284,17 +328,17 @@ class TestVerificationIsReachable(RepoCase):
                       # крутится, и тест не должен из-за этого идти минуту
                       {"kind": "git_log", "arg": "HEAD", "why": "посмотреть историю"}]}
         def reply(argv):
-            self.prompts.append(argv[argv.index("-p") + 1])
+            calls["n"] += 1
             # Обрываем цикл здесь, а не ждём RecursionError: при регрессе
             # каждый виток запускает внешние команды, и тест шёл бы минуту.
-            if len(self.prompts) > 2:
+            if calls["n"] > 2:
                 raise AssertionError("верификация зациклилась: "
                                      "раунд не ограничен")
             return {"structured_output": asking, "total_cost_usd": 0.1}
 
         patch_claude_popen(self, reply)
         agents.review(dict(self.TASK), "OK", 1)
-        self.assertEqual(len(self.prompts), 2,
+        self.assertEqual(len(self.claude_procs), 2,
                          "верификация зациклилась: раунд не ограничен")
 
     def test_requests_ignored_when_mechanism_disabled(self):
@@ -305,19 +349,17 @@ class TestVerificationIsReachable(RepoCase):
         пришли, и оркестратор их исполнил, удвоив стоимость ревью.
         """
         agents = ag.Agents(self.state, {"verification": "never"})
-        self.prompts = []
         reply = {"analysis": "разбор диффа по критериям приёмки задачи целиком",
                  "verdict": "approve", "summary": "замечаний нет, работа принята",
                  "findings": [], "out_of_scope_notes": [],
                  "verification_requests": [
                      {"kind": "unittest_all", "why": "на всякий случай"}]}
         def answer(argv):
-            self.prompts.append(argv[argv.index("-p") + 1])
             return {"structured_output": reply, "total_cost_usd": 0.1}
 
         patch_claude_popen(self, answer)
         v = agents.review(dict(self.TASK), "OK", 1)
-        self.assertEqual(len(self.prompts), 1,
+        self.assertEqual(len(self.claude_procs), 1,
                          "проверки исполнены, хотя механизм выключен")
         self.assertEqual(v["verdict"], "approve")
 

@@ -122,6 +122,15 @@ MUTATIONS = [
         "    caps = {} if mode(config) == DEFAULT_MODE else dict(CAPPED_DEFAULTS)",
         "test_spending",
     ),
+    (
+        "деньги: страж вызова снова не останавливает ход посреди раунда",
+        "swarm/spending.py",
+        """    if spent + (estimate or 0.0) >= budget:
+        raise BudgetExhaustedError(spent, budget, role)""",
+        """    if spent + (estimate or 0.0) >= budget:
+        return""",
+        "test_budget_guard",
+    ),
     # --- ловушка среды: стенд внутри .claude/ (climisc.py) ---
     (
         "доктор: стенд внутри .claude/ снова считается годным",
@@ -312,6 +321,15 @@ MUTATIONS = [
         """        "cost_usd": env.get("total_cost_usd"),""",
         """        "cost_usd": env.get("total_cost_usd") or 0.0,""",
         "test_engines",
+    ),
+    (
+        "промпт: промпт снова едет целиком в argv (E2BIG на спавне)",
+        "swarm/engines.py",
+        """    if engine in STDIN_PROMPT_ENGINES:
+        yield PromptDelivery((), prompt)""",
+        """    if engine in STDIN_PROMPT_ENGINES:
+        yield PromptDelivery((prompt,), None)""",
+        "test_prompt_channel",
     ),
     # --- спасение вердикта (§4.2.1) ---
     (

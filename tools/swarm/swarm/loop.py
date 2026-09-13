@@ -37,6 +37,7 @@ import gitops  # noqa: E402
 import memory as memory_mod  # noqa: E402
 import obs  # noqa: E402
 import pyindex  # noqa: E402
+import spending  # noqa: E402
 import tester as tester_mod  # noqa: E402
 import unclear as unclear_mod  # noqa: E402
 from gitops import (  # noqa: E402
@@ -265,6 +266,10 @@ class Loop:
         goal = str(self.state.load_tasks().get("goal", ""))
         try:
             report = unclear_mod.find(self.agents, task, goal)
+        except spending.BudgetExhaustedError:
+            # Fail-open прибора — про СБОЙ вызова, не про деньги: страж
+            # бюджета обязан остановить ход, а не сгинуть в журнале.
+            raise
         except Exception:  # noqa: BLE001 — граница деградации прибора
             self.state.log("unclear_failed", task=task["id"], exc_info=True)
             return
@@ -297,6 +302,9 @@ class Loop:
         suite = " ".join(self.config.get("gate_command") or ["по умолчанию"])
         try:
             report = tester.write_tests(self.agents, task, goal, suite)
+        except spending.BudgetExhaustedError:
+            # Как в _find_unclear: деньги — не сбой плеча, страж не глушим.
+            raise
         except Exception:
             # Тестировщик — необязательное плечо замера: его падение не
             # имеет права стоить задачи (§7.3, тот же fail-open).
@@ -588,7 +596,40 @@ class Loop:
 
     def run_task(self, task: dict[str, Any]) -> str:
         with self._ambient_scope(task["id"]):
-            return self._run_task(task)
+            try:
+                return self._run_task(task)
+            except spending.BudgetExhaustedError as e:
+                # Страж вызова (spending.guard) останавливает ход ТЕМ ЖЕ
+                # терминальным путём, что и проверка между раундами:
+                # задача ни в чём не виновата — pending, работа в stash.
+                return self._budget_stop(task, e.spent, e.budget)
+
+    def _budget_stop(
+        self,
+        task: dict[str, Any],
+        spent: float,
+        budget: Any,
+        iteration: int | None = None,
+    ) -> str:
+        """Терминальный исход «бюджет исчерпан» — ОДИН для обеих точек
+        останова: проверки перед раундом и стража отдельного вызова."""
+        tid = task["id"]
+        stash = self.cleanup(task, "budget")
+        self.state.log(
+            "budget_exhausted",
+            task=tid,
+            round=iteration,
+            spent=spent,
+            budget=budget,
+            stash=stash,
+        )
+        self.state.set_status(tid, "pending", stash=stash)
+        self.ui(
+            f"    БЮДЖЕТ ИСЧЕРПАН посреди задачи: ${spent} из "
+            f"${budget}; работа в stash, задача возвращена "
+            f"в очередь"
+        )
+        return "budget_stop"
 
     def _run_task(self, task: dict[str, Any]) -> str:
         tid = task["id"]
@@ -717,22 +758,7 @@ class Loop:
             budget = self.config.get("total_budget_usd")
             spent = self.state.total_spend() if budget else 0.0
             if budget and spent >= float(budget):
-                stash = self.cleanup(task, "budget")
-                self.state.log(
-                    "budget_exhausted",
-                    task=tid,
-                    round=iteration,
-                    spent=spent,
-                    budget=budget,
-                    stash=stash,
-                )
-                self.state.set_status(tid, "pending", stash=stash)
-                self.ui(
-                    f"    БЮДЖЕТ ИСЧЕРПАН посреди задачи: ${spent} из "
-                    f"${budget}; работа в stash, задача возвращена "
-                    f"в очередь"
-                )
-                return "budget_stop"
+                return self._budget_stop(task, spent, budget, iteration)
             iteration += 1
             # В подтверждающем раунде исполнитель не вызывается: гейт и
             # границы перепроверяются (дёшево), ревью идёт по тому же диффу.

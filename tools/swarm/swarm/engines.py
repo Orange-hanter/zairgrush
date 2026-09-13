@@ -8,8 +8,11 @@
 
 Здесь живёт ВЫБОР движка и всё, что из него следует: как собирается
 командная строка, каким разборщиком читается поток, откуда достаётся
-отчёт. Функции чистые — ни subprocess, ни файлов: аргументы вызова
+отчёт. Сборщики argv чистые — ни subprocess, ни файлов: аргументы вызова
 проверяются тестом без запуска агента, как разбор ответов в `parsing`.
+Единственное исключение — `prompt_delivery`: канал промпта (stdin или
+временный файл) требует I/O по природе, и он вынесен из сборщиков
+именно затем, чтобы они остались чистыми.
 
 Правило именования одно, второго способа сказать то же самое нет:
 `executor_model` МОЖЕТ нести префикс движка (`kimi:`, `claude:`,
@@ -25,14 +28,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import shutil
 import sys
-from typing import TYPE_CHECKING, Any
+import tempfile
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
 
 _HERE = str(pathlib.Path(__file__).resolve().parent)
 if _HERE not in sys.path:
@@ -237,26 +242,87 @@ def zcode_cmd() -> list[str]:
     return ["zcode"]
 
 
+# Кому промпт отдаётся через stdin. Канал один на движок, и выбор здесь —
+# факт о CLI, а не вкус: у claude stdin в режиме -p — документированный
+# путь ввода («Input must be provided either through stdin or as a prompt
+# argument»), kimi piped stdin до модели НЕ доводит (проверено пробой:
+# агент отвечает, не видя текста), у zcode stdin нет вовсе (ADR-016).
+STDIN_PROMPT_ENGINES = frozenset({"claude"})
+
+
+class PromptDelivery(NamedTuple):
+    """Как промпт доезжает до процесса: токены слота промпта в argv и
+    текст для stdin (None — stdin процесса закрыт, как было всегда).
+
+    argv связан ARG_MAX (~1 МБ на macOS), а промпт с диффом задачи
+    переваливает за 3.7 млн символов: `kimi -p <промпт>` падает E2BIG
+    на спавне, до всякой модели (NXT-006). Поэтому промпт в argv не
+    едет никогда — в слоте либо пусто (промпт в stdin), либо указатель
+    на временный файл.
+    """
+    tokens: tuple[str, ...]
+    stdin: str | None
+
+
+@contextlib.contextmanager
+def prompt_delivery(engine: str, prompt: str) -> Iterator[PromptDelivery]:
+    """Канал промпта на время одного вызова. Файл живёт, пока идёт
+    `with`: драйвер обязан успеть отдать промпт процессу до выхода.
+
+    Указатель пишется на языке промптов ролей (английском): его читает
+    модель, а не оператор.
+    """
+    if engine in STDIN_PROMPT_ENGINES:
+        yield PromptDelivery((), prompt)
+        return
+    with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", prefix="swarm-prompt-", suffix=".txt",
+            delete=False) as f:
+        f.write(prompt)
+        path = pathlib.Path(f.name)
+    try:
+        if engine == "zcode":
+            # `--attach` — штатный способ zcode приложить файл к --prompt;
+            # модель получает содержимое без чтения инструментом.
+            pointer = (
+                "The full prompt is in the attached file "
+                f"{path}. Follow it exactly."
+            )
+            yield PromptDelivery((pointer, "--attach", str(path)), None)
+        else:
+            # kimi: файлового флага нет, а Read в режиме -p разрешён —
+            # указатель просит прочитать промпт инструментом.
+            pointer = (
+                "The full prompt is in the file "
+                f"{path}. Read it COMPLETELY with the Read tool, "
+                "then follow it exactly. Do not modify the file."
+            )
+            yield PromptDelivery((pointer,), None)
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def _kimi_argv(
-    model: str, prompt: str, config: dict[str, Any], schema: str, cwd: str
+    model: str, prompt: PromptDelivery, config: dict[str, Any], schema: str, cwd: str
 ) -> list[str]:
     # Подпись единая со всеми builders таблицы ниже; настройки чужих
     # движков kimi не берёт (см. тест на утечку флагов).
     del config, schema, cwd
-    cmd = ["kimi", "-p", prompt, "--output-format", "stream-json"]
+    cmd = ["kimi", "-p", *prompt.tokens, "--output-format", "stream-json"]
     if model:
         cmd[1:1] = ["-m", model]
     return cmd
 
 
 def _claude_argv(
-    model: str, prompt: str, config: dict[str, Any], schema: str, cwd: str
+    model: str, prompt: PromptDelivery, config: dict[str, Any], schema: str, cwd: str
 ) -> list[str]:
     del cwd  # рабочий каталог claude получает на спавне, см. executor_argv
     cmd = [
         "claude",
         "-p",
-        prompt,
+        # Слот промпта пуст: текст едет через stdin (PromptDelivery.stdin).
+        *prompt.tokens,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -288,7 +354,7 @@ def _claude_argv(
 
 
 def _zcode_argv(
-    model: str, prompt: str, config: dict[str, Any], schema: str, cwd: str
+    model: str, prompt: PromptDelivery, config: dict[str, Any], schema: str, cwd: str
 ) -> list[str]:
     # Контракт снят с --help CLI 0.16.5. `--model` в нём нет: хвост
     # executor_model пишется в метрику, на argv не кладётся.
@@ -296,7 +362,8 @@ def _zcode_argv(
     cmd = [
         *zcode_cmd(),
         "--prompt",
-        prompt,
+        # Указатель + `--attach <файл>`: сам промпт в argv не едет (ARG_MAX).
+        *prompt.tokens,
         "--json",
         "--mode",
         ZCODE_PERMISSION_MODE,
@@ -359,15 +426,18 @@ def stream_pipeline(kind: str, driver: Any) -> tuple[Any, Any]:
 def executor_argv(
     engine: str,
     model: str,
-    prompt: str,
+    prompt: PromptDelivery,
     config: dict[str, Any],
     schema: str = "",
     cwd: str = "",
 ) -> list[str]:
     """Командная строка исполнителя. Её проверяет тест, а не живой прогон.
 
-    Форма kimi сохранена побайтово (включая порядок `-m` перед `-p`):
-    это регрессионный якорь — всё, что было измерено на плече A, обязано
+    Промпт приезжает УПАКОВАННЫМ (`prompt_delivery`), а не строкой:
+    argv связан ARG_MAX, и промпт с диффом задачи эту границу уже
+    пробивал (E2BIG на спавне, NXT-006). Форма kimi сохранена во всём,
+    кроме слота промпта (порядок `-m` перед `-p` прежний): это
+    регрессионный якорь — всё, что было измерено на плече A, обязано
     собираться сегодня той же строкой.
 
     Единственное обращение к окружению — выбор бинаря zcode в ветке

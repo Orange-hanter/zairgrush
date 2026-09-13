@@ -273,12 +273,16 @@ def call_planner(prompt: str, tag: str, attempt: int = 1,
     """
     t0 = time.time()
     try:
-        r = subprocess.run(["claude", "-p", prompt, "--output-format", "json",
+        # Промпт едет через stdin, не argv: планировочный промпт несёт
+        # цель и список задач целиком и под ARG_MAX не обязан помещаться
+        # (NXT-006). У claude stdin — документированный канал -p.
+        r = subprocess.run(["claude", "-p", "--output-format", "json",
                             "--json-schema", SCHEMA, "--allowedTools",
                             "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*)",
                             "--max-budget-usd",
                             str(budget or DEFAULT_PLAN_BUDGET),
                             *tuning_flags(model, effort)],
+                           input=prompt,
                            capture_output=True, text=True,
                            timeout=timeout or DEFAULT_PLAN_TIMEOUT,
                            # Без cwd планировщик читает репозиторий по каталогу
