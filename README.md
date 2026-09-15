@@ -79,6 +79,8 @@ python3 -m pytest
 | [`09-swarm-decomposition-plan.md`](09-swarm-decomposition-plan.md) | План декомпозиции крупных модулей `tools/swarm` (`cli.py`, `loop.py`, `memory.py`, `agents.py`) без смены публичного API. |
 | [`10-decision-briefs.md`](10-decision-briefs.md) | Брифы для решений «на утверждение» 05-документа: лёгкое ревью, пороги §9.1, таксономия §12 — данные программы и рекомендации. |
 | [`11-architecture-diagrams.md`](11-architecture-diagrams.md) | Архитектура в диаграммах (Mermaid): роли и состояние, конечный автомат задачи, цепочка гейтов раунда, учёт раундов, контракт вердикта, потоки контекста, эскалации, память. Документ на английском. |
+| [`12-pilot-journal.md`](12-pilot-journal.md) | Журнал пилота (PILOT-1 на ZeusLogic, Rust): секции 19, 19a–19e и таблица «Все прогоны», вынесенные из 07 с сохранением нумерации. |
+| [`13-findings-taxonomy.md`](13-findings-taxonomy.md) | Единая таксономия находок: severity/category вердикта, kind журнала, словарь панели/адъюдикатора, disposition goldset и отображения между поверхностями. |
 | [`tools/swarm/`](tools/swarm) | Реализация: CLI `swarm`, оркестратор, индексация кода (ctags/tree-sitter), JSON-схемы контрактов (`schemas/`), тесты (`pytest`). |
 | [`stands/`](stands) | Готовые стенды: эталонный `swarm.toml` и порядок развёртывания под конкретный репозиторий. Первый — [`stands/cod-doc/`](stands/cod-doc/README.md). |
 | [`experiments/adr/`](experiments/adr) | Принятые решения экспериментальной программы (Context → Варианты → Решение → Последствия). |
