@@ -14,6 +14,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import cli  # noqa: E402
+import pair  # noqa: E402 — плоский модуль стенда, сам cli не импортирует
 from cliexplain import _prefix  # noqa: E402
 
 # Коды возврата `run`/`go` — машинный контракт для скрипта поверх петли.
@@ -428,6 +429,127 @@ def cmd_run(args: argparse.Namespace) -> int:
         _print_results(results)
     _board_close()
     return _run_verdict(results)
+
+
+def _pair_preflight(cfg: dict[str, Any], label: str) -> bool:
+    """Арм стенда обязан быть исполним ДО первого потраченного доллара.
+
+    Те же три проверки, что у `_engine_preflight` (режим траты, форма
+    gate_command, выбранный движок), но по конфигу КАЖДОГО арма в
+    отдельности: перекрытие --set-a меняет именно его, и опечатка в
+    арме A не имеет права молча отправить замер не тому движку.
+    """
+    try:
+        cli.load_mod("spending").mode(cfg)
+    except ValueError as e:
+        print(f"арм {label}: режим траты не выбран: {e}", file=sys.stderr)
+        return False
+    gate_cmd = cfg.get("gate_command")
+    if gate_cmd is not None and not (
+        isinstance(gate_cmd, list)
+        and len(gate_cmd) > 0
+        and all(isinstance(x, str) for x in gate_cmd)
+    ):
+        print(
+            f"арм {label}: gate_command задан неверно ({gate_cmd!r}) — "
+            'нужен непустой список аргументов, напр. ["python3", "-m", "pytest"]',
+            file=sys.stderr,
+        )
+        return False
+    try:
+        engine, model = cli.load_mod("engines").resolve(cfg)
+    except ValueError as e:
+        print(f"арм {label}: движок исполнителя не выбран: {e}", file=sys.stderr)
+        return False
+    cli.ui(f"арм {label}: {engine}" + (f" ({model})" if model else ""))
+    return True
+
+
+def _check_override_keys(overrides: list[tuple[tuple[str, ...], Any]]) -> str | None:
+    """Перекрытия стенда — по закрытому списку ключей петли.
+
+    Тот же довод, что у load_config: опечатка в имени ключа (`max_iteration`
+    без s) молча включала бы умолчание, и арм, который оператор считал
+    настроенным, поехал бы на дефолте — замер сравнил бы арми с самим
+    собой. duel/ambient отдельно: петлевые жребии стенд не читает, и
+    молча игнорируемый флаг был бы ложной вывеской над прогоном.
+    """
+    for path, _value in overrides:
+        head = path[0]
+        if head not in cli.KNOWN_CONFIG_KEYS:
+            known = ", ".join(sorted(cli.KNOWN_CONFIG_KEYS))
+            return f"ключ {head!r} петля не читает (проверь имя; известные: {known})"
+        if head == "experiments":
+            if len(path) < 2:
+                return "перекрытие experiments требует флага: experiments.<флаг>"
+            flag = path[1]
+            if flag in ("duel", "ambient"):
+                return (f"флаг {flag!r} разыгрывает жребий петли — парный "
+                        f"стенд его не читает; задай различие армов "
+                        f"значениями флагов (напр. experiments.memory)")
+            if flag not in cli.KNOWN_EXPERIMENT_KEYS:
+                return (f"неизвестный флаг [experiments] {flag!r} "
+                        f"(известные: {', '.join(sorted(cli.KNOWN_EXPERIMENT_KEYS))})")
+    return None
+
+
+def cmd_pair(args: argparse.Namespace) -> int:
+    """Парный прогон одной задачи двумя армами-исполнителями (pair.py).
+
+    Оба арма работают в своих git-worktree, общее дерево и очередь не
+    трогаются. Различие армов — только перекрытия конфига (--set-a /
+    --set-b): это штатная замена ручной сборке A/B-стендов, дуэль с её
+    жребием и адоптацией живого плеча здесь ни при чём.
+    """
+    cfg = cli.load_config(args.root)
+    st = cli.state_mod.SwarmState(args.root)
+    tasks = st.load_tasks().get("tasks", [])
+    task = next((t for t in tasks if t.get("id") == args.task), None)
+    if task is None:
+        known = ", ".join(sorted(str(t.get("id")) for t in tasks)) or "(очередь пуста)"
+        print(f"задача {args.task!r} не найдена; в очереди: {known}",
+              file=sys.stderr)
+        return 2
+    # Жеребьёвочные факторы петли стенд не читает: молчаливый пропуск
+    # был бы ложной вывеской над замером (проверка по базовому конфигу;
+    # перекрытия проверяются ниже, по тому же правилу).
+    for mod_name in ("duel", "ambient"):
+        mod = cli.load_mod(mod_name)
+        try:
+            drawn = mod.factor(cfg)
+        except ValueError as e:
+            print(f"фоновый замер не настроен: {e}" if mod_name == "ambient"
+                  else f"дуэль не настроена: {e}", file=sys.stderr)
+            return 2
+        if drawn:
+            print(f"парный стенд не читает фактор {drawn!r} ({mod_name}): "
+                  f"убери его из swarm.toml на время замера — различие "
+                  f"армов задаётся только --set-a/--set-b",
+                  file=sys.stderr)
+            return 2
+    try:
+        ov_a = [pair.parse_override(s) for s in args.set_a]
+        ov_b = [pair.parse_override(s) for s in args.set_b]
+    except ValueError as e:
+        print(f"перекрытие не разобрано: {e}", file=sys.stderr)
+        return 2
+    for label, ov in (("A", ov_a), ("B", ov_b)):
+        bad = _check_override_keys(ov)
+        if bad:
+            print(f"арм {label}: {bad}", file=sys.stderr)
+            return 2
+    cfg_a, cfg_b = pair.arm_config(cfg, ov_a), pair.arm_config(cfg, ov_b)
+    if not _pair_preflight(cfg_a, "A") or not _pair_preflight(cfg_b, "B"):
+        return 2
+    cli.ui(f"pair: {task['id']} {task.get('title', '')} — два арма параллельно, "
+           f"работа не адоптируется")
+    facts = pair.run_pair_task(st, cfg_a, cfg_b, task,
+                               overrides={"a": ov_a, "b": ov_b})
+    if args.json:
+        cli.ui(json.dumps(facts, ensure_ascii=False))
+    else:
+        cli.ui(pair.render(task, facts))
+    return 0
 
 
 ORCHESTRATOR_EMAIL = "orchestrator@swarm.local"

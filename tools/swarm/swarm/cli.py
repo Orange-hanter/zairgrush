@@ -4,6 +4,7 @@
     swarm go --goal "цель"              ОТ А ДО Я: рой планирует сам и исполняет
     swarm run [--limit N] [--dry-run]   прогнать очередь задач
     swarm resume                        продолжить после падения
+    swarm pair <task> [--set-a ..]      парный прогон задачи двумя армами (A/B-стенд)
     swarm status                        состояние очереди и бюджета
     swarm inbox [--all]                 вопросы к человеку, накопленные петлёй
     swarm answer <id> "текст"           ответить и вернуть задачу в очередь
@@ -363,6 +364,7 @@ from clirun import (  # noqa: E402,F401
     _reconcile_decision,
     _run_verdict,
     cmd_go,
+    cmd_pair,
     cmd_resume,
     cmd_run,
 )
@@ -380,6 +382,7 @@ __all__ = [
     "cmd_inbox",
     "cmd_map",
     "cmd_memory",
+    "cmd_pair",
     "cmd_plan",
     "cmd_policy",
     "cmd_report",
@@ -467,6 +470,35 @@ def main(argv: list[str] | None = None) -> int:
         "--force", action="store_true", help="продолжить, несмотря на незавершённый шаг"
     )
     p.set_defaults(func=cmd_resume)
+
+    p = sub.add_parser(
+        "pair",
+        help="парный прогон задачи двумя армами-исполнителями (A/B-стенд)",
+        description=inspect.getdoc(cmd_pair),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("task", help="id задачи из очереди")
+    p.add_argument(
+        "--set-a",
+        action="append",
+        default=[],
+        metavar="КЛЮЧ=ЗНАЧЕНИЕ",
+        help="перекрытие конфига для арм A: ключ[.подключ]=значение, "
+        "напр. experiments.memory=executor (можно повторять)",
+    )
+    p.add_argument(
+        "--set-b",
+        action="append",
+        default=[],
+        metavar="КЛЮЧ=ЗНАЧЕНИЕ",
+        help="перекрытие конфига для арм B (можно повторять)",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="факты обеих армов одной строкой JSON вместо таблицы",
+    )
+    p.set_defaults(func=cmd_pair)
 
     p = sub.add_parser("plan", help="декомпозиция цели в задачи")
     p.add_argument("--goal", required=True, help="цель прогона одной фразой")
