@@ -258,6 +258,15 @@ def main() -> int:
                          "— принудительно, одинаково для всех (для сравнения "
                          "«с размышлением против без»)")
     ap.add_argument("--out", default=".")
+    # B4 (REV-007, WAV-001): round-земля вместо closing-коммитов. Дифф
+    # читается из <ground-dir>/<key>.raw.diff; ключ (<task>-i<N>) уходит в
+    # кандидаты как task, заголовок и paid-join — по базовой задаче.
+    ap.add_argument("--ground-keys", default="",
+                    help="round-ключи через запятую (e7in-i1,...); "
+                         "пусто — обычный режим closing-коммитов")
+    ap.add_argument("--ground-dir",
+                    default=str(pathlib.Path(__file__).parent
+                                / "rev001" / "ground"))
     args = ap.parse_args()
 
     stand = pathlib.Path(args.stand).expanduser()
@@ -277,6 +286,20 @@ def main() -> int:
         if row.get("commit") and (not only or row["id"] in only):
             tasks.append(row)
 
+    if args.ground_keys:
+        by_id = {t["id"]: t for t in tasks}
+        ground_dir = pathlib.Path(args.ground_dir).expanduser()
+        tasks = []
+        for key in (k.strip() for k in args.ground_keys.split(",") if k.strip()):
+            base = key.split("-")[0]
+            diff_path = ground_dir / f"{key}.raw.diff"
+            if base not in by_id or not diff_path.exists():
+                print(f"  {key}: нет базовой задачи или {diff_path} — пропуск")
+                continue
+            tasks.append({"id": key, "base": base,
+                          "title": by_id[base].get("title", ""),
+                          "_ground": diff_path})
+
     paid = paid_findings(goldset)
     raw_path = out / "panel-raw.jsonl"
     cand_path = out / "panel-candidates.jsonl"
@@ -289,9 +312,12 @@ def main() -> int:
     per_task = []
 
     for task in tasks:
-        diff = diff_of(stand, str(task["commit"]))
+        if task.get("_ground"):
+            diff = task["_ground"].read_text(encoding="utf-8")
+        else:
+            diff = diff_of(stand, str(task["commit"]))
         if not diff:
-            print(f"  {task['id']}: коммит {task['commit']} не читается — пропуск")
+            print(f"  {task['id']}: дифф не читается — пропуск")
             continue
         lines = diff.splitlines()
         skipped = len(lines) > args.max_diff_lines
@@ -332,10 +358,11 @@ def main() -> int:
         for c in merged:
             cand_f.write(json.dumps(c, ensure_ascii=False) + "\n")
         named = {c["file"] for c in merged}
-        overlap = named & paid.get(task["id"], set())
+        overlap = named & paid.get(task.get("base", task["id"]), set())
         per_task.append({"task": task["id"], "files": len(files),
                          "raw": len(cands), "merged": len(merged),
-                         "paid_files": len(paid.get(task["id"], set())),
+                         "paid_files": len(paid.get(task.get("base",
+                                                            task["id"]), set())),
                          "shared_files": len(overlap),
                          "truncated": skipped})
         print(f"  {task['id']}: файлов {len(files)}, кандидатов "

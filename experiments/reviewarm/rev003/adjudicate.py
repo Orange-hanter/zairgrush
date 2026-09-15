@@ -13,6 +13,8 @@ metrics-rev003.jsonl (рука B2 — отдельно: raw-b2/, metrics-rev003-
     python3 adjudicate.py --retry-invalid
     python3 adjudicate.py --contract keep-unless-contradicted   # B2
     python3 adjudicate.py --contract keep-unless-contradicted --dry-run
+    python3 adjudicate.py --tag b4 --cap-total 5.0 \
+        --candidates <panel-candidates.jsonl round-земли>        # B4 (REV-007)
 """
 import argparse
 import hashlib
@@ -221,9 +223,20 @@ def main():
                     help="panel-candidates.jsonl (replay.py --out out2)")
     ap.add_argument("--dry-run", action="store_true",
                     help="собрать и показать промпты БЕЗ вызовов и трат")
+    # B4 (REV-007, WAV-001): та же механика над round-землей. --tag изолирует
+    # выход (raw-<tag>/, metrics-rev003-<tag>.jsonl, свой guard); --cap-total
+    # перекрывает стоп-линию (умолчание $10 REV-003 сохранено).
+    ap.add_argument("--tag", default="",
+                    help="метка прогона (b4); пусто — именование REV-003/B2 "
+                         "по контракту, поведение не меняется")
+    ap.add_argument("--cap-total", type=float, default=CAP_TOTAL)
     args = ap.parse_args()
     template = CONTRACTS[args.contract]
-    if args.contract == "verify-and-drop":
+    if args.tag:
+        RAW = HERE / f"raw-{args.tag}"
+        METRICS = HERE / f"metrics-rev003-{args.tag}.jsonl"
+        exp = f"rev003-{args.tag}"
+    elif args.contract == "verify-and-drop":
         RAW = HERE / "raw"
         METRICS = HERE / "metrics-rev003.jsonl"
         exp = "rev003"
@@ -259,14 +272,19 @@ def main():
           f"диффов: {len(order)}", flush=True)
     for task_id in order:
         cands = per[task_id]
-        diff_key = "s2ky-i2" if task_id == "s2ky" else f"{task_id}-close"
+        # round-ключ (e7in-i1): дифф лежит под собственным именем в ground/,
+        # спека — у базовой задачи; closing-ключи — прежнее правило REV-003.
+        if (GROUND / f"{task_id}.raw.diff").exists():
+            diff_key = task_id
+        else:
+            diff_key = "s2ky-i2" if task_id == "s2ky" else f"{task_id}-close"
         diff_path = GROUND / f"{diff_key}.raw.diff"
         if len(diff_path.read_text()) > 250_000:
             # argv-граница: сыроидный дифф не пролезает в exec;
             # свёрнутая форма — то, что петля послала бы сама (condense)
             diff_path = GROUND / f"{diff_key}.diff"
         diff = diff_path.read_text()
-        prompt = build_prompt(template, tasks[task_id],
+        prompt = build_prompt(template, tasks[task_id.split("-")[0]],
                               cands).replace("@@DIFF@@", diff)
         suffix = ""
         if args.retry_invalid:
@@ -281,8 +299,9 @@ def main():
                   flush=True)
             print(head, flush=True)
             continue
-        if spent() + CAP_CALL > CAP_TOTAL:
-            print(f"BUDGET GUARD: {spent():.2f} + {CAP_CALL} > {CAP_TOTAL}; стоп")
+        if spent() + CAP_CALL > args.cap_total:
+            print(f"BUDGET GUARD: {spent():.2f} + {CAP_CALL} > "
+                  f"{args.cap_total}; стоп")
             return 3
         print(f"=== opus/high / {task_id} ({len(cands)} кандидатов, "
               f"{len(diff)} chars diff)", flush=True)
@@ -308,8 +327,8 @@ def main():
               flush=True)
     if args.dry_run:
         print(f"DRY-RUN завершён: вызовов НЕ сделано, потрачено $0 "
-              f"(guard остался бы: {spent():.2f} + {CAP_CALL} <= {CAP_TOTAL})",
-              flush=True)
+              f"(guard остался бы: {spent():.2f} + {CAP_CALL} <= "
+              f"{args.cap_total})", flush=True)
         return 0
     print("REV-003 adjudication pass complete", flush=True)
     return 0
