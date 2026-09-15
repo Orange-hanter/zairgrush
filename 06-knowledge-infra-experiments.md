@@ -2,9 +2,9 @@
 title: "ZeusLogic — Эксперименты: знаниевая инфраструктура и индексация кода"
 type: design
 status: draft
-version: 0.35
+version: 0.36
 created: 2026-08-06
-updated: 2026-09-14
+updated: 2026-09-15
 related:
   - 05-agent-swarm.md
   - 05-agent-swarm-audit.md
@@ -685,15 +685,16 @@ summary: >
   is equivalent with respect to the contract and must not score against
   the tests — and `unclear` is the mechanical list of where to expect
   one. That was not why the field was added.
-- **Status: open, round 2 designed.** Two changes before it decides
-  anything. (1) The prompt carries a false premise: «tests must fail
-  today» holds for tasks that ADD behaviour (s3nm and s4cli were fully
-  red) and fails for tasks that PRESERVE it while changing how (s1ch 1
-  of 6 red, s2tn 2 of 5) — caching and speed-ups are guarded by tests
-  that pass before and after. Not fixed mid-experiment on purpose.
-  (2) Survival must be scored against the spec, discounting positions
-  the tester declared `unclear`. The sample is thin besides: four tasks,
-  one repository, every task converged in a single round.
+- **Status: round 2 executed, see below.** Two changes were made before
+  it could decide anything. (1) The prompt carried a false premise:
+  «tests must fail today» holds for tasks that ADD behaviour (s3nm and
+  s4cli were fully red) and fails for tasks that PRESERVE it while
+  changing how (s1ch 1 of 6 red, s2tn 2 of 5) — caching and speed-ups
+  are guarded by tests that pass before and after. Not fixed
+  mid-experiment on purpose. (2) Survival is scored against the spec,
+  discounting positions the tester declared `unclear`. The sample is
+  thin besides: four tasks, one repository, and in round 1 every task
+  converged in a single round.
 - **Change (1) done 2026-08-23 (prompt) / 2026-09-14 (bookkeeping,
   NXT-018).** The tester prompt now states both task shapes directly:
   tests encode the SPEC — the expected behaviour after the change — and
@@ -705,9 +706,8 @@ summary: >
   justification of the unchecked gate (above, and the matching comment
   in `loop.py`). The contract is untouched: output schema, `unclear`,
   file list and the survival-scoring hooks are byte-identical. Round 2
-  rerun is prepared and deferred behind budget approval — the exact
-  commands and the cost envelope are in the journal
-  (07-док, §31); no paid calls were made for this preparation.
+  was rerun 2026-09-15 under this prompt — results in the «Round 2
+  measured» bullet below and in the journal (07-док, §31).
 - **Change (2) done 2026-08-24 — and it doubles arm B's margin.** Every
   mutant that survived, and every mutant CAUGHT in the same positions,
   was classified against the spec text into three classes:
@@ -752,6 +752,31 @@ summary: >
   own tests missed the specified thing and caught the unspecified one
   (exit code `2`); the independent tester did the reverse. That is the
   hollow-test failure mode in one line, and it is now a number.
+- **Round 2 measured 2026-09-15 (WAV-002) — the margin did NOT
+  replicate, and the sharpest fact reversed.** Same four tasks, same
+  base commit, fixed tester premise. Raw survival: A 30 % (11/37) vs
+  B-r2 **34 %** (11/32) — arm B is worse raw. Spec-scored
+  (`goldset/e11/classification-r2.jsonl`): **A 15 % (4/27) vs B-r2
+  12 % (3/24)** — one hole of difference on a thin base, where round 1
+  showed 18 % vs 9 %. Per module A→B-r2: stats 14→7 %, rank 0→0 %,
+  normalize 0 %→no mutants at all (straight-line implementation), cli
+  17→**50 %**. The reversal: the two spec-named cli constants that
+  round-1's tester pinned, round-2's tester MISSED (both `real_gap`),
+  plus the strip-loop skip in stats.py. Round 1 measured a lucky tester
+  sample, not a property of the role. The `unclear` field worked again —
+  both surviving exit-code mutants were declared in advance — and one
+  more round-1 «real hole» (`end > start` → `>=`, both arms) turned out
+  unkillable on enumeration (3905 tokens, zero differences) and was
+  dropped symmetrically. Cost: $8.26 of the $10 cap, tester role alone
+  $2.91. The rerun also exposed a harness defect round 1 had hidden by
+  luck: the executor prompt calls a listed protected file editable while
+  the scope guard reverts any edit — 4 burned rounds on s1ch plus two
+  well-argued executor disputes, resolved by owner answers (07-док §31).
+- **Status: closed — rejected on evidence.** By the decision rule
+  (spec-scored survival + USD per task delta): parity within noise at a
+  strictly higher price of a whole extra role. The tester role stays
+  behind `[experiments] tester`, default off, as a measurement
+  instrument — not a default pipeline stage.
 
 ### E12. Frozen replay benches for the loop's own judgements
 
@@ -1140,6 +1165,21 @@ approve), ADR-026; **E12 — оба реплей-стенда
 в общую базу — тот же класс, что метрики хелперов в AUDIT-3).
 
 ## Журнал изменений
+
+### v0.36 (2026-09-15)
+
+- **E11 раунд 2 выполнен (WAV-002), эксперимент закрыт отклонением.**
+  Парный перезапуск с исправленной посылкой промпта: по спеке A 15 %
+  против B-r2 12 % (сырьё 30 % против 34 %) — двукратная маржа раунда 1
+  не воспроизвелась; тестировщик r2 пропустил обе названные спекой
+  константы cli, которые тестировщик r1 пригвоздил. Раунд 1 измерял
+  удачный образец, не свойство роли. Роль остаётся за флагом
+  `[experiments] tester` как инструмент замера. Расход $8.26 из $10.0
+  капа. Попутные находки: противоречие paths/protected_paths в промпте
+  исполнителя (4 сгоревших раунда + 2 спора), невозможный тест на
+  разделяемой фикстуре (систематический класс — тестировщик фикстур репо
+  не видит), неубиваемый мутант `end > start -> >=` снят симметрично у
+  обоих плеч перебором. Протокол и детали — 07-док §31.
 
 ### v0.35 (2026-09-14)
 
