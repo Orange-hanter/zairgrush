@@ -42,6 +42,10 @@ class Agents:
     memory_cache: tuple[str, str] | None = None
     norms_cache: tuple[str, str] | None = None
     docs_cache: tuple[str, str] | None = None
+    # Blast-индекс ревьюера (E3-C): (отпечаток дерева, HybridIndex).
+    # Классовый дефолт по той же причине, что у остальных кэшей — часть
+    # тестов собирает Agents через __new__ без __init__.
+    blast_cache: tuple[tuple[str, int], Any] | None = None
     # Дерево, В КОТОРОМ работает исполнитель. Почти всегда это корень
     # состояния, и тогда всё как было. Отличается ровно в одном случае —
     # теневое плечо дуэли (duel.py) работает в git-worktree, чтобы два
@@ -66,6 +70,9 @@ class Agents:
         self.helpers: ModuleType | None = None
         self.codemap: ModuleType | None = None
         self.map_cache: tuple[tuple[str, int], str] | None = None
+        # Blast-индекс ревьюера (E3-C), инвалидация по отпечатку дерева —
+        # та же схема, что у map_cache.
+        self.blast_cache: tuple[tuple[str, int], Any] | None = None
         # Блоки памяти считаются один раз на ЗАДАЧУ: между раундами они
         # обязаны быть байт-стабильны, иначе каждый раунд переписывает
         # префикс-кэш промпта (§8 — экономика порядка блоков).

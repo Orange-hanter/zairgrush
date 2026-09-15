@@ -18,6 +18,7 @@ class AgentsLike(Protocol):
     helpers: ModuleType | None
     codemap: ModuleType | None
     map_cache: tuple[tuple[str, int], str] | None
+    blast_cache: tuple[tuple[str, int], Any] | None
     memory_cache: tuple[str, str] | None
     norms_cache: tuple[str, str] | None
     docs_cache: tuple[str, str] | None
