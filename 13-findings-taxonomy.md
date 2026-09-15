@@ -1,6 +1,6 @@
 ---
 title: "ZAIrgRush — Единая таксономия находок"
-type: reference
+type: standard
 status: active
 version: 0.1
 created: 2026-09-15
