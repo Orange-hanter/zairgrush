@@ -1,0 +1,55 @@
+{
+ "task": "REV-007 (B4, WAV-001): round-ground adjudication — истинный recall панели",
+ "registered_at": "2026-09-15",
+ "registered_before_adjudicator_calls": true,
+ "registered_before_panel_calls": true,
+ "note": "Источник дизайна: report-rev003.md, «Что это НЕ решает» п.3 — «Адъюдикация над round-ground (REV-001 земля с дефектами) — единственный способ измерить настоящий endorsed-major recall; контракт тот же». REV-003 мерил retention против адресного множества записанного ревью на closing-земле, где endorsed-дефекты уже исправлены и настоящий recall неизмерим (предрегистрированное ограничение REV-003, повторённое в REV-005). B4 переносит ТОТ ЖЕ контур (панель $0 + адъюдикатор verify-and-drop) на round-землю REV-001, где дефекты присутствуют, и считает recall против goldset labels. Замер однофакторный: меняется ТОЛЬКО земля (closing -> round), панель/контракт/схема/модель общие с REV-003.",
+ "question": "What is the TRUE endorsed-finding recall of the free juror panel + opus adjudicator contour, measured on round ground (defects present in the judged diff) against goldset labels.jsonl — and at which funnel stage (panel vs adjudicator) does the signal live or die?",
+ "hypothesis": "H1: контур несёт endorsed-сигнал — адъюдицированный kept-list восстанавливает >= 4/6 endorsed-лейблов, включая >= 2/3 endorsed majors (q002, q004-major, q017), при расходе <= $5.00. H0: recall <= 1/6 — контур не лучше холодного haiku-арма REV-001 (0/6 refind) при ненулевой цене, и панель как pre-filter отвергается. Промежуточный исход (2-3/6) = mixed: решающим артефактом становится локализация стадии потери (панель не подала кандидата vs адъюдикатор отбросил поданного).",
+ "input": {
+  "diffs": "5 round-ground диффов REV-001 (experiments/reviewarm/rev001/ground/, валидации реконструкции — manifest.jsonl и rev001/replay.log): e7in-i1 (земля q004: i2 не менял код, состояние i1 == судимое i2 — rev001/prereg.json), e7in-i3 (контроль: состояние после правок i3), e9tf-i1 (земля q002), s2ky-i1 (земля q013/q015/q017/q018), s2ky-i2 (== closing commit по валидации forward==closing tree, контроль: дефекты исправлены). Сырые *.raw.diff; все < 250K chars — condensed-фолбэк не нужен.",
+  "s2ky_i1_flag_handling": "Манифестная строка s2ky-i1 содержит записи 'UNDO AMBIGUOUS ... count=0'. Разбор replay_ground.py: строки манифеста сериализуются в конце main(), а список validation общий по ссылке на всю задачу — записи UNDO AMBIGUOUS относятся к внутреннему якорю реконструкции старта i2 (undo_edits_from от closing), который НЕ эмитится как дифф и в финале валидирован золотой проверкой 'i2 forward==closing tree: True'. Сам дифф s2ky-i1 = checkout дерева стэша swarm:s2ky-invalid-verdict (c2ce398a + untracked) + реплей регенерации фикстуры — ровно то состояние, которое судили ревьюеры i1-a1/a2 и на котором подняты q013/q015/q017/q018 (rev001/prereg.json s2ky_special). РЕШЕНИЕ: s2ky-i1 остаётся в скоупе как земля четырёх лейблов; флаг задокументирован здесь и в отчёте.",
+  "tasks": "title/spec/acceptance из живого ~/work/zeus-pilot/.swarm/tasks.json (как REV-003; round-ключ <task>-i<N> мапится на базовую задачу <task>)",
+  "labels": "experiments/goldset/labels.jsonl, subject=reviewer_finding, disposition endorsed|endorsed_modified — 6 лейблов на трёх задачах: q002 (e9tf, major), q004 (e7in, batch из 4 находок подтверждающего раунда i2, включая major conf-0.95), q013/q015/q018 (s2ky, minor), q017 (s2ky, major). Каждый лейбл судится на СВОЕЙ round-земле (q004->e7in-i1, q002->e9tf-i1, q013/15/17/18->s2ky-i1) — то же правило, что endorsed-refind REV-001 (6 лейблов)."
+ },
+ "panel": {
+  "harness": "experiments/reviewarm/replay.py, патч B4: режим --ground-keys/--ground-dir (дифф читается из rev001/ground/<key>.raw.diff вместо git show closing-коммита; task-ключ в кандидатах = round-ключ). Остальное без изменений.",
+  "roster": "ровно состав out2 (REPORT.md, воспроизводимая команда): deepseek-v4-flash:0731, glm-5.1, qwen3.5:397b, gpt-oss:120b, kimi-k2.7-code; линзы по кругу correctness/duplication/tests/contract/safety; cap 5; max-diff-lines 1200; think=auto (карта THINK)",
+  "cost": "$0 metered (Ollama Cloud, плоская подписка — тот же статус, что у прогонов Step 0 / регенерации B2)",
+  "declared_deviation": "панельный прогон над round-диффами — НОВЫЙ (в out2 панель видела closing-диффы); сравнение с out2 — только справочное. Provider-side drift Ollama Cloud применим как к любому регену (декларировано в rev005/prereg.json)."
+ },
+ "adjudicator": {
+  "model": "claude-opus-5",
+  "effort": "high",
+  "contract": "verify-and-drop — ИСХОДНЫЙ контракт REV-003 без изменений (report-rev003 п.3: «контракт тот же»). B2-инверсия (keep-unless-contradicted) здесь НЕ замеряется — она отдельная рука отдельного замера.",
+  "schema": "UNCHANGED from REV-003 (analysis, kept[file,severity,claim,rationale,source_jurors], dropped[claim,reason], out_of_scope_notes)",
+  "argv": "claude -p <prompt> --output-format json --json-schema <schema REV-003> --allowedTools Read,Grep,Glob,Bash(git diff:*) --max-budget-usd 0.70 --model claude-opus-5 --effort high",
+  "runner": "experiments/reviewarm/rev003/adjudicate.py, патч B4: --tag b4 (выход raw-b4/ + metrics-rev003-b4.jsonl, отдельный guard от метрик REV-003/B2), --cap-total (умолчание 10.0 сохранено; B4 ставит 5.00), round-ключи: дифф берётся как ground/<key>.raw.diff напрямую, спека — по базовой задаче",
+  "subset": "те же три присяжных, что в REV-003 (SUBSET): glm-5.1 + gpt-oss:120b + qwen3.5:397b",
+  "budget_cap_usd_total": 5.0,
+  "budget_guard": "кумулятивный guard на metrics-rev003-b4.jsonl: стоп перед вызовом, который переведёт сумму B4 через $5.00; per-call кап $0.70. Правило владельца 2026-09-15: начатый вызов/прогон заканчивается даже через линию капа, но новая платная фаза при исчерпанных $5 НЕ стартует. Оценка ДО прогона: 5 диффов x $0.44 (среднее валидных REV-003) = ~$2.20 ожидание, $3.50 худший случай по per-call капу — скоуп из 5 диффов по карману, сокращение не требуется.",
+  "failure_policy": "владелец 2026-09-15: 2 последовательных падения одного шага -> диагностика -> фикс на лету и продолжение; если не чинится -> СТОП эксперимента с отчётом о состоянии. Квотный 403 (класс PILOT-1): ретраи в течение ~10 минут, затем failure policy."
+ },
+ "scoring": {
+  "matching_rule": "консервативный quote-anchor REV-001 без изменений: находка (кандидат панели или kept адъюдикатора) восстанавливает endorsed-лейбл тогда и только тогда, когда (a) тот же файл-якорь (или файл, который цитирует лейбл), (b) ключевые идентификаторы/фразы лейбла присутствуют в тексте находки, (c) тот же класс дефекта. Пограничное = НЕ восстановлено. Ручное суждение документируется по каждому случаю в отчёте.",
+  "funnel": "два среза recall: (1) ПАНЕЛЬ — кандидаты subset-присяжных до адъюдикации (потолок контура); (2) АДЪЮДИЦИРОВАННЫЙ kept-list (реализованный recall контура). Разность локализует стадию потери.",
+  "controls": "e7in-i3 и s2ky-i2: endorsed-дефекты ожидаемо исправлены (s2ky-i2 == closing по золотой валидации; e7in-i3 — пост-i3 состояние, наличие/отсутствие каждого дефекта q004 проверяется инспекцией диффа ДО скоринга). Находки контура на контролях идут в шум/точность, не в recall.",
+  "batch_q004": "q004 — batch-лейбл из 4 находок (labels.jsonl). Основной счёт — на уровне лейбла (как REV-001): лейбл восстановлен, если восстановлена хотя бы находка-ядро батча (major conf-0.95 про атрибуцию мутаций по счётчикам диагностик); дополнительно отчётливая разбивка по 4 под-находкам, насколько позволяет текст лейбла.",
+  "primary_metrics": [
+   "endorsed-label recall: панель и адъюдикатор, per-task и итог (N=6)",
+   "endorsed-MAJOR recall: q002, q004-major, q017 (N=3) — метрика endorsed-majors-per-dollar становится впервые невырожденной",
+   "endorsed majors / $ адъюдикации против 0/$9.24 (REV-003) и 3/$44.93 (прямое ревью)",
+   "kept/diff объём и $/дифф против REV-003 (1.3 kept, $0.44 mean valid)",
+   "mechanical: ноль off-diff файлов в kept (стандарт Step 0)"
+  ]
+ },
+ "decision_rule": "ACCEPT (контур несёт endorsed-сигнал и заслуживает встраивания): адъюдицированный recall >= 4/6 лейблов И >= 2/3 majors И фактический расход <= $5.00. REJECT: <= 1/6 — деньги потрачены, сигнал не лучше haiku 0/6. 2-3/6 = MIXED: вывод формулируется по стадии потери (панель vs адъюдикатор); контрактный вывод REV-003 («verify-and-drop половит major-покрытие») при потере на адъюдикаторе подтверждается на честной земле, при потере на панели — опровергается как главный подозреваемый. Осечки валидности (невалидный конверт) идут по failure policy; частичный замер отчётливается как частичный (прецедент REV-006).",
+ "known_limitations": [
+  "6 лейблов на 3 задачах одного проекта (Rust/zeus); batch q004 снижает разрешение (4 находки одним лейблом)",
+  "панельный прогон новый и однократный: provider drift + LLM недетерминизм; нет второго прогона для стабильности",
+  "round-земля e7in-i1 валидирована doc-claims, не tree equality (ограничение REV-001, наследуется)",
+  "e7in-i3 — частично исправленное состояние: дефект-присутствие для скоринга устанавливается ручной инспекцией диффа, это суждение, а не механика",
+  "сравнение $/majors с REV-003 косвенное: там земля closing (recall неизмерим), здесь round — цены сопоставимы, знаменатели метрики разные",
+  "--max-budget-usd не обрубает длинный ход (находка REV-003/NXT-005): между вызовами стоит guard, внутри вызова — нет"
+ ]
+}
