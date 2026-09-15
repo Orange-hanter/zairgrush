@@ -2,9 +2,9 @@
 title: "ZeusLogic — Cheap models in the review path: a plan"
 type: design
 status: draft
-version: 0.7
+version: 0.8
 created: 2026-08-20
-updated: 2026-09-13
+updated: 2026-09-15
 related:
   - 05-agent-swarm.md
   - 06-knowledge-infra-experiments.md
@@ -389,6 +389,10 @@ It does not touch the review path's verdict machinery.
   model that cannot disable its trace** (`gpt-oss:*`, `minimax*`).
 - Every draw and every helper call lands in metrics. An arm that is not
   in the journal turns the run into unreproducible noise.
+- The unified vocabulary for everything this contour emits — verdict
+  severity/category, journal `kind`, panel candidate → adjudicator
+  `kept`/`dropped` — is [13-findings-taxonomy.md](13-findings-taxonomy.md).
+  The closed enums themselves stay in the verdict schema (05 §12).
 
 ---
 
@@ -438,6 +442,12 @@ confirm it, and both are cheap.
 ---
 
 ## Журнал изменений
+
+### v0.8 (2026-09-15)
+
+- §5: ссылка на единую таксономию находок (13-findings-taxonomy.md,
+  WAV-009) — словарь «кандидат → kept/dropped → finding» больше не
+  определяется этим планом по месту.
 
 ### v0.7 (2026-09-13)
 

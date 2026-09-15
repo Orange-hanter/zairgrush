@@ -31,6 +31,8 @@ updated: 2026-09-12
 | [05-agent-swarm.md](../05-agent-swarm.md) | Системная спецификация петли |
 | [06-knowledge-infra-experiments.md](../06-knowledge-infra-experiments.md) | Программа экспериментов E1–E15 |
 | [07-experiments-journal.md](../07-experiments-journal.md) | Журнал прогонов (нарративный) |
+| [12-pilot-journal.md](../12-pilot-journal.md) | Журнал пилота (PILOT-1, вынос §19–20 из 07) |
+| [13-findings-taxonomy.md](../13-findings-taxonomy.md) | Единая таксономия находок |
 | [08-operators-guide.md](../08-operators-guide.md) | Гайд оператора: движки, конфиги, подводные камни |
 | [10-decision-briefs.md](../10-decision-briefs.md) | Брифы решений |
 | [arch/README.md](../arch/README.md) | Индекс ADR с DAG замещений |
