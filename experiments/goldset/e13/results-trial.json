@@ -1,0 +1,53 @@
+{
+  "experiment": "E13-trial (WAV-004)",
+  "status": "completed_partial_3of6",
+  "date": "2026-09-15",
+  "prereg": "experiments/goldset/e13/prereg-trial.json",
+  "metered_definition": "сумма cost_usd всех строк .swarm/metrics.jsonl стендов прогона (opus-ревью + claude-исполнитель; kimi квотой, в metered не входит)",
+  "cap_usd": 10.0,
+  "total_metered_usd": 18.6061,
+  "cap_note": "кап пересечён мёртвой попыткой ещё на s2ky (локально $11.31 после её раундов); плечо s2ky было начато до линии и дожато по правилу владельца «started run finishes»; e7in/v9lb после капа НЕ запускались; +$7.29 от продолжения: $3.26 легальное дожимание плеча A, $4.03 операторская ошибка рестарта плеча B",
+  "attempts": [
+    {
+      "attempt": 1,
+      "agent": "предыдущий агент (умер на квоте kimi ~09:36 UTC)",
+      "commits": ["5578405", "1301533"],
+      "completed_tasks": ["r3cs", "r4tt", "s5ex"],
+      "partial_tasks": ["s2ky"],
+      "metered_usd": 11.3116,
+      "notes": "пререг + фабрика стендов + 12 стендов посажено; r3cs/r4tt/s5ex закрыты обоими плечами за 1 раунд; s2ky: плечо A 3 crash (квота 403), плечо B iter1 budget_exhausted ($4.06), iter2 request_changes -> ask_user (q001) -> blocked; e7in/v9lb стенды сконфигурированы, НЕ запущены"
+    },
+    {
+      "attempt": 2,
+      "agent": "continuation agent",
+      "actions": [
+        "s2ky-a: дерево восстановлено на frozen red-state (мусор 3 void-раундов сброшен), петля перезапущена 13:49 UTC",
+        "s2ky-b: ответ оператора на q001 (3 решения по находкам ревью) -> swarm answer --force; задача возвращена в очередь; петля перезапущена 13:49 UTC",
+        "ДЕФЕКТ ПРОДОЛЖЕНИЯ: answer+run рестартит задачу с iter 1 (петля не умеет mid-task resume, stash форензический) -> плечо B повторило iter 1 ($4.03, бюджет-обрезано) и уперлось в потолок стенда $12.0 ($11.74) до ревью; операторская ошибка, $4.03 в накладные прогона"
+      ],
+      "metered_usd": 7.2945,
+      "notes": "плечо A доиграно до approve (2 продуктивных раунда); плечо B мертво по потолку стенда, валидного вердикта нет; e7in/v9lb НЕ запущены (кап)"
+    }
+  ],
+  "tasks": {
+    "r3cs": {"family": "wordstat", "rounds_a": 1, "rounds_b": 1, "verdict_a": "approve", "verdict_b": "approve", "valid_pair": true, "diverged": false, "metered_usd": 1.1285, "findings": "1 minor у обоих плеч"},
+    "r4tt": {"family": "wordstat", "rounds_a": 1, "rounds_b": 1, "verdict_a": "approve", "verdict_b": "approve", "valid_pair": true, "diverged": false, "metered_usd": 1.0920, "findings": "a: 0, b: 1 minor (tests)"},
+    "s5ex": {"family": "wordstat", "rounds_a": 1, "rounds_b": 1, "verdict_a": "approve", "verdict_b": "approve", "valid_pair": true, "diverged": false, "metered_usd": 1.3815, "findings": "1 minor у обоих плеч"},
+    "s2ky": {"family": "zeus", "rounds_a": 2, "rounds_b": null, "verdict_a": "approve (iter2, rc@iter1)", "verdict_b": "нет валидного вердикта: rc@iter2, рестарт iter1 обрезан бюджетом, потолок стенда $12.0", "valid_pair": false, "diverged": null, "metered_usd": 15.0041, "status": "исключена из счёта пререг-правилом (нет валидного вердикта на обоих плечах)", "note": "arm A повторило исторический паттерн exec-плеча (2 раунда); arm B убит капами, не сходимостью"},
+    "e7in": {"family": "zeus", "status": "not_started_cap", "metered_usd": 0.0},
+    "v9lb": {"family": "zeus", "status": "not_started_cap", "metered_usd": 0.0}
+  },
+  "verdicts_summary": {
+    "valid_pairs_tested": 3,
+    "divergences": 0,
+    "pairs_excluded": 1,
+    "pairs_not_started": 2
+  },
+  "dataset_verdict": "needs-more: 3/6 валидных пар (порог приёмки 4/6 не достигнут), 0/3 расхождений; первое ограничение §21 НЕ снято; сильная формулировка («расхождения нет даже на нестабильных») НЕ заработана — якорная пара убита инфраструктурой (капы), а не измерена; следующая волна: s2ky со снятыми капами + e7in + v9lb",
+  "failure_policy_events": [
+    "s2ky плечо A попытка 1: 3 подряд crash (kimi quota 403, 5-часовое окно) -> диагноз: квота -> ретрай после окна: УСПЕХ (2 раунда, approve)",
+    "s2ky плечо B: iter1 budget_exhausted при --max-budget-usd 4.0 -> петля доиграла iter2 с rc -> ask_user -> ответ оператора -> РЕСТАРТ С НУЛЯ (дефект resume-семантики) -> повторный budget_exhausted -> потолок стенда $12.0 -> задача blocked; валидного вердикта нет -> СТОП по задаче",
+    "кап $10 пересечён мёртвой попыткой: e7in/v9lb не стартовали (правило владельца)"
+  ],
+  "accounting_files": "стенды experiments/stand-e13t-<task>-{a,b}/.swarm/metrics.jsonl; сводка bench/e13-compare.py"
+}
