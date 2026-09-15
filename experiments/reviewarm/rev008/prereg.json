@@ -1,0 +1,63 @@
+{
+ "task": "REV-008 (E3-C, WAV-006): blast radius в промпте ревьюера — paired-замер на канарейках zeus-pilot",
+ "registered_at": "2026-09-15",
+ "registered_before_reviewer_calls": true,
+ "note": "E3 вариант B закрыт (ADR-006/007: codemap.HybridIndex в handoff исполнителю). Открытый вопрос — вариант C: помогает ли blast radius (кто вызывает изменённые символы) РЕВЬЮЕРУ. Источник дизайна: run_blast.py первой редакции (стенд tenacity, /tmp/accept/tenacity-blast) — контур A/B придуман там; стенд пересажен на живой zeus-pilot (Rust), blast-данные — точные ссылки из rust-analyzer SCIP (scip_rust.py, ADR-007), а не ast/ctags догадки. Замер однофакторный: меняется ТОЛЬКО наличие blast-секции в промпте; модель, схема вердикта, дифф, вывод тестов общие. Канарейки — дефекты, которые тесты стенда не ловят (валидировано прогоном cargo test после внесения каждой), поэтому замечть их можно только проверив вызывающих. PREP-половина (этот файл + стенд + флаг review_blast в оркестраторе, default off) выполнена без платных вызовов; платной является только фаза прогона.",
+ "question": "Does a blast-radius section (resolved callers/callees of changed symbols) in the reviewer prompt increase detection of defects that break an UNCOVERED caller — defects invisible to the test gate and easy to miss in a flat diff — and at what input-cost delta?",
+ "hypothesis": "H1: рука B (с blast) замечает вызывающего у >= 2/3 канареек против <= 1/3 у руки A, без ложных major на обоих чистых контролях, с дельтой цены <= $1.00 на пару. H0: руки равны (B не лучше A по канарейкам) — blast-секция не даёт сигнала и в петль не встраивается. Промежуточный исход (B лучше ровно на 1 канарейке, или ложный major на контроле B) = MIXED: решение откладывается на расширенный замер (N=6 канареек) с тем же протоколом.",
+ "arms": {
+  "A": "дифф + вывод тестов — геометрия промпта ревьюера петли на сегодня (без каких-либо секций)",
+  "B": "то же + blast-секция «кто вызывает изменённые символы» (SCIP-ссылки с уровнями достоверности, тестовые ссылки числом) — текст секции идентичен секции, что за флагом review_blast в promptbuilder.review_prompt_parts (интеграция E3-C)"
+ },
+ "input": {
+  "stand": "~/work/zeus-pilot/zeus (Rust-workspace, 5 крейтов, ~11.7k LOC; baseline: cargo test --workspace = 143 теста зелёные, ~33 с)",
+  "harness": "experiments/repomap/run_blast.py (первичный источник канареек — константы CANARIES/CONTROLS в нём же; blast — scip_rust.RustIndex.impact, индекс кэшируется на процесс)",
+  "canaries": [
+   {"id": "r1", "title": "set_once: первое-выигрывает -> последнее-выигрывает", "file": "crates/zeus-import-qet/src/convert.rs", "symbol": "set_once", "breaks": "у QET-элемента с повторными information-записями (manufacturer/supplier/plant/location/comment) в модель попадает ПОСЛЕДНЕЕ значение вместо первого — перечень показывает не того производителя; контракт задокументирован док-строкой «только если ещё пуст»", "why_tests_miss": "образцы конвертера имеют по одной записи на имя; дубли ни в одном тесте не подаются, порядок победителя не зафиксирован ни одним assert", "correct_verdict": "major (нарушен документированный контракт); blast обязан показать 7 точек записи свойств в build_component", "blast_truth": "set_once <- build_component x7 (convert.rs:522-528), точные ссылки"},
+   {"id": "r2", "title": "pick: приоритет источников инвертирован (inset побеждает атрибут)", "file": "crates/zeus-import-qet/src/convert.rs", "symbol": "pick", "breaks": "лист с явным атрибутом И заполненным inset получает значение из макета вместо своего: штамп листа показывает чужую ревизию/дату/завод; док-строка заявляет обратный приоритет «атрибут фолио, затем <inset>»", "why_tests_miss": "фикстуры содержат либо атрибут, либо inset, не оба сразу; ветка одновременного заполнения в тестах не возникает", "correct_verdict": "major (инвертирован заявленный приоритет); blast обязан показать 8 точек чтения метаданных листа", "blast_truth": "pick <- convert_folio x3, titleblock_extra x5 (convert.rs:790-843), точные ссылки"},
+   {"id": "r3", "title": "informations: фильтр перенесён с значения на имя", "file": "crates/zeus-import-qet/src/convert.rs", "symbol": "informations", "breaks": "information-записи с пустым значением проходят в build_component/component_designator; set_once считает Some(\"\") заполненным слотом — пустая запись 'manufacturer' отравляет слот и реальное значение из более поздней записи не записывается", "why_tests_miss": "в образцах нет записей с пустым значением; связка informations->set_once на Some(\"\") нигде не проверяется", "correct_verdict": "major (пустые значения протекают и блокируют запись реальных); blast обязан показать точки сборки свойств", "blast_truth": "informations <- build_component, component_designator (+1 рекурсивная ссылка, convert.rs:519-611), точные"}
+  ],
+  "controls": [
+   {"id": "k1", "title": "set_once: уточнена док-строка, код не тронут", "correct_verdict": "approve без находок blocker/major", "purpose": "false-positive руки B на чистой правке рядом с тем же символом"},
+   {"id": "k2", "title": "pick: переименованы локальные параметры", "correct_verdict": "approve без находок blocker/major", "purpose": "false-positive руки B на rename с blast-секцией того же символа"}
+  ],
+  "discarded_candidates": [
+   {"candidate": "severity_label (zeus-cli): swap меток Error/Warning", "reason": "НЕВАЛИДНАЯ канарейка — ловят интеграционные тесты zeus-cli (--test cli, 3 падающих теста на swap); урок: SCIP-счётчик тестовых ссылок не видит интеграционных тестов (зовут бинарник, не символ), валидация только прогоном gate"},
+   {"candidate": "meaningful(): пропуск '_' как плейсхолдера имени терминала", "reason": "НЕВАЛИДНАЯ канарейка — ловит интеграционный тест corpus_erc_invariants (имена сетей меняются)"}
+  ]
+ },
+ "reviewer": {
+  "model": "claude (default модель CLI, как в петле; без --model — жребий петли не входит в замер)",
+  "schema": "tools/swarm/schemas/verdict-v1.schema.json (контракт вердикта петли, без изменений)",
+  "argv": "claude -p <prompt> --output-format json --json-schema <verdict-v1> --allowedTools Read,Grep,Glob,Bash(git diff:*) --max-budget-usd 2.00",
+  "prompt_geometry": "один текст на обе руки; различие — ТОЛЬКО blast-блок между диффом и выводом тестов (текст идентичен блоку promptbuilder.review_prompt_parts, флаг review_blast)"
+ },
+ "scoring": {
+  "primary": "caught_caller: строка вызывающей функции из blast_truth (build_component / convert_folio / titleblock_extra / component_designator) встречается в findings/analysis вердикта — механическая проверка mentions_caller, без суждения о качестве формулировки",
+  "secondary": [
+   "вердикт canary: approve = пропуск дефекта; changes_requested/blocked с major+ по затронутому контракту = поимка",
+   "false_alarm: blocker/major-находка на контроле (на чистой правке) = ложная тревога руки",
+   "цена пары (A+B) на канарейку и дельта B-A; токены входа по конверту"
+  ],
+  "decision_rule": "ACCEPT (blast-секцию включать в петлю за review_blast): caught B >= 2/3 канареек И caught B > caught A И 0 ложных major на контролях обеими руками И дельта цены <= $1.00/пару. REJECT: caught B <= caught A, или ложный major руки B на любом контроле, или дельта > $1.00/пару — секция остаётся выключенной, артефакты остаются за флагом. MIXED: ровно +1 канарейка у B и чистые контроли — расширение до N=6 канареек (добавить отбракованные-и-исправленные + кандидаты из erc/graph) до решения. Осечки валидности (конверт пуст, budget_exhausted) по failure policy: ретрай того же вызова 1 раз, иначе строка замера исключается из обеих рук и отчётливается как частичная.",
+  "known_limitations": [
+   "N=3 канарейки, все в одном файле convert.rs одного крейта: сила вывода — направление, не величина; MIXED-ветка правила это признаёт",
+   "однократный прогон: LLM-недетерминизм; стабильность не измеряется",
+   "триггер символов узкий (определения, добавленные строкой диффа): правка ТОЛЬКО тела функции blast не покрывает — ограничение переносится в посадку флага в петлю",
+   "интеграционные тесты невидимы SCIP-счётчику тестовых ссылок — канарейки валидированы только прогоном gate (два кандидата отбракованы)",
+   "blast-слой петли (codemap.HybridIndex) даёт для Rust ссылки уровня «по имени», тогда как стенд меряет SCIP-уровень «точно»: замер оценивает верхнюю границу пользы, посадка может дать меньше"
+  ]
+ },
+ "cost": {
+  "estimate_before_run": "5 диффов x 2 руки = 10 вызовов; промпт B длиннее A на ~0.8-1.0K символов (замер dry-run: A=2508-2679, B=3149-3523), цена входа копеечная. Ожидание по опыту ревью петли: ~$0.5-1.5 за вызов -> ~$8-15 на весь замер; потолок по per-call капу 10 x $2.00 = $20.00 не должен достигаться (диффы < 3K символов, один раунд без верификации)",
+  "budget_cap_usd_total": 20.0,
+  "budget_guard": "каждый вызов под --max-budget-usd 2.00; кумулятивный стоп перед вызовом, переводящим сумму прогона через $20.00 (читается blast-metrics.jsonl); начатый вызов заканчивается, новая платная фаза при исчерпанном капе не стартует",
+  "free_parts": "индексация rust-analyzer scip + protoc decode + cargo test + dry-run контура — CPU-задачи, $0; уже выполнены 2026-09-15"
+ },
+ "commands": {
+  "free_verification": "cd experiments/repomap && python3 run_blast.py --dry-run   # канарейки, gate, диффы, blast, промпты — без LLM",
+  "paid_run": "cd experiments/repomap && python3 run_blast.py   # 10 вызовов, метрики в blast-metrics.jsonl, сырые конверты в raw-blast/",
+  "post": "python3 -c \"import json;rows=[json.loads(l) for l in open('blast-metrics.jsonl')];print([(r.get('id'),r.get('variant'),r.get('caught_caller'),r.get('false_alarm'),r.get('cost_usd')) for r in rows if not r.get('summary')])\""
+ },
+ "integration": "флаг review_blast (default off) уже в оркестраторе: blastnote.py (символы из диффа) + reviewer._blast_note_for (кэш индекса по отпечатку дерева, fail-open, журнал blast_note) + blast-блок в promptbuilder.review_prompt_parts после диффа; гейт tools/swarm/check.sh зелёный. Вердикт REV-008 решает, включать ли флаг в конфиге петли."
+}

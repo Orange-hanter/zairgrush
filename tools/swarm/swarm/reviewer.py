@@ -5,6 +5,7 @@
 Журнальная заметка о границах пишется ОДИН раз на (задача, текст):
 повтор раундов не дублирует строку, смена диффа — да.
 """
+import contextlib
 import hashlib
 import json
 import pathlib
@@ -34,6 +35,7 @@ log = modlock.load_module("obs").get_logger("agents")
 
 _NOTED: set[tuple[str, str]] = set()
 _NOTED_CAP = 10_000
+_BLAST_NOTED: set[tuple[str, str]] = set()
 
 
 def _boundary_note_for(agents: AgentsLike, task: dict[str, Any],
@@ -60,6 +62,55 @@ def _boundary_note_for(agents: AgentsLike, task: dict[str, Any],
                          round=iteration, note=note[:300])
     return note
 
+
+
+def _blast_index(agents: AgentsLike) -> Any:
+    """Индекс для blast-заметки, кэшированный по отпечатку дерева.
+
+    Та же инвалидация, что у repo_map (executor.py): между раундами одной
+    задачи дерево меняется в границах paths, и пересборка индекса на
+    каждом раунде — чистые потери (на 3.2k файлов ~16 с).
+    """
+    key = (promptbuilder.tree_fingerprint(agents), 0)
+    cache = getattr(agents, "blast_cache", None)
+    if cache is not None and cache[0] == key:
+        return cache[1]
+    if agents.codemap is None:
+        agents.codemap = modlock.load_module("codemap")
+    idx = agents.codemap.HybridIndex(
+        getattr(agents, "work_root", None) or agents.state.root)
+    # Протокол старше атрибута: кэш недоступен — индекс без кэша,
+    # заметка всё равно собирается (fail-open на оптимизацию).
+    with contextlib.suppress(AttributeError):
+        agents.blast_cache = (key, idx)
+    return idx
+
+
+def _blast_note_for(agents: AgentsLike, task: dict[str, Any],
+                    diff: str, iteration: int) -> str | None:
+    """Blast radius изменённых символов (E3-C): кто их вызывает. Fail-open.
+
+    За флагом review_blast (по умолчанию ВЫКЛ — замер REV-008 решает,
+    включать ли секцию в петле). Геометрия как у boundary_note: сбой
+    заметки стоит ноль, ревьюер идёт без неё; на чистом диффе и при
+    отсутствии затронутых определений промпт не меняется ни на байт.
+    """
+    try:
+        blastnote = modlock.load_module("blastnote")
+        symbols = blastnote.changed_symbols(diff)
+        if not symbols:
+            return None
+        note = blastnote.blast_note(_blast_index(agents), symbols)
+    except Exception:
+        log.warning("blast radius не собран", exc_info=True)
+        return None
+    if note and (task["id"], note) not in _BLAST_NOTED:
+        if len(_BLAST_NOTED) >= _NOTED_CAP:
+            _BLAST_NOTED.clear()
+        _BLAST_NOTED.add((task["id"], note))
+        agents.state.log("blast_note", task=task["id"], round=iteration,
+                         symbols=symbols, note=note[:300])
+    return note if isinstance(note, str) else None
 
 
 def _giant_excluded(agents: AgentsLike, task: dict[str, Any],
@@ -232,6 +283,13 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     # на спор о границах. Fail-open: на чистом диффе note is None и
     # промпт не меняется ни на байт (параметр по умолчанию пуст).
     note = _boundary_note_for(agents, task, diff, iteration)
+    # Blast radius (E3-C): за флагом review_blast (по умолчанию выкл).
+    # Заметка производная от диффа и потому живёт в его хвосте — та же
+    # геометрия, что у boundary_note; пустая строка при выключенном
+    # флаге не меняет промпт ни на байт, и плечи замера сравнимы.
+    blast = ""
+    if agents.config.get("review_blast"):
+        blast = _blast_note_for(agents, task, diff, iteration) or ""
     schema = (SCHEMAS / "verdict-v1.schema.json").read_text()
     # Самый дорогой вызов системы шёл в обход слоя живости: голый
     # subprocess.run с жёстким таймаутом, который не отличал «думает»
@@ -251,7 +309,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                            and wants_verification(agents, task)),
         verify_results=verify_results,
         memory=promptbuilder.norms_for(agents, task), lens=lens,
-        retry_note=retry_note, boundary_note=note or "")
+        retry_note=retry_note, boundary_note=note or "", blast=blast)
     # sha1[:12] стабильных частей — не для секретности, а как отпечаток
     # (Feature 4): мутация «неизменного» блока меняет rules_sha ровно
     # так же, как мутация кода меняет sha256 в condense_diff — метрика
