@@ -657,6 +657,101 @@ class TestRunFacts(unittest.TestCase):
         self.assertIn('<meta charset="utf-8">', page)
 
 
+class TestEscalations(unittest.TestCase):
+    """WAV-011: маркер «исполнитель сдался» читается доской и выводится
+    отдельным блоком — вместе с тем, ждёт связанный вопрос ответа или
+    оператор его уже закрыл."""
+
+    def test_gave_up_marker_is_collected_with_open_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(
+                tmp,
+                journal=[
+                    {"kind": "question", "qid": "q1", "task": "t1",
+                     "qkind": "dispute", "question": "принять?"},
+                    {"kind": "agent_gave_up", "task": "t1", "round": 2,
+                     "qid": "q1", "summary": "требования противоречат"},
+                ],
+            )
+            board = bd.collect(root)
+        (esc,) = board["escalations"]
+        self.assertEqual(esc["task"], "t1")
+        self.assertEqual(esc["round"], 2)
+        self.assertEqual(esc["summary"], "требования противоречат")
+        self.assertEqual(esc["status"], "open")
+
+    def test_answered_question_marks_escalation_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(
+                tmp,
+                journal=[
+                    {"kind": "question", "qid": "q1", "task": "t1",
+                     "qkind": "dispute", "question": "принять?"},
+                    {"kind": "agent_gave_up", "task": "t1", "round": 1,
+                     "qid": "q1", "summary": "не могу"},
+                    {"kind": "answer", "qid": "q1", "text": "принято"},
+                ],
+            )
+            board = bd.collect(root)
+        self.assertEqual(board["escalations"][0]["status"], "answered")
+
+    def test_marker_without_question_is_still_shown(self):
+        """Журнал читается как данные: запись без связанного вопроса
+        (отвечен вручную, усечённый журнал) не исчезает и не роняет доску."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(
+                tmp,
+                journal=[
+                    {"kind": "agent_gave_up", "task": "t1", "round": 3,
+                     "summary": "сдался"},
+                ],
+            )
+            board = bd.collect(root)
+        self.assertEqual(len(board["escalations"]), 1)
+        self.assertEqual(board["escalations"][0]["status"], "")
+
+    def test_escalations_render_as_section_with_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(
+                tmp,
+                journal=[
+                    {"kind": "question", "qid": "q1", "task": "t1",
+                     "qkind": "dispute", "question": "принять?"},
+                    {"kind": "agent_gave_up", "task": "t1", "round": 2,
+                     "qid": "q1", "summary": "требования противоречат"},
+                ],
+            )
+            board = bd.collect(root)
+        page = bd.render(board)
+        self.assertIn("Эскалации", page)
+        self.assertIn("требования противоречат", page)
+        self.assertIn("вопрос q1", page)
+        self.assertIn("ждёт ответа", page)
+
+    def test_answered_escalation_says_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(
+                tmp,
+                journal=[
+                    {"kind": "question", "qid": "q1", "task": "t1",
+                     "qkind": "dispute", "question": "принять?"},
+                    {"kind": "agent_gave_up", "task": "t1", "round": 1,
+                     "qid": "q1", "summary": "не могу"},
+                    {"kind": "answer", "qid": "q1", "text": "принято"},
+                ],
+            )
+            board = bd.collect(root)
+        page = bd.render(board)
+        self.assertIn("вопрос закрыт", page)
+
+    def test_no_escalations_no_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            board = bd.collect(root)
+        page = bd.render(board)
+        self.assertNotIn("Эскалации", page)
+
+
 class TestDecisionQueue(unittest.TestCase):
     """Очередь человека: вопрос и блокировка ждут его одинаково, и обе
     обязаны называть команду, которой их снимают."""
