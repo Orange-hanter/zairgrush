@@ -23,6 +23,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from types import TracebackType
@@ -92,8 +93,16 @@ def _atomic_write(path: pathlib.Path, text: str) -> None:
     содержимое живёт в кэше страниц, и падение хоста может оставить
     переименованный файл пустым или каталог — без записи о rename.
     Для файла, в котором лежит вся очередь задач, это невосстановимо.
+
+    Имя временного файла уникально на писателя: парный стенд и дуэль
+    пишут фазы из двух потоков, и общее имя `*.tmp` давало гонку —
+    чужой rename уносил файл до replace, и наблюдение падало с
+    FileNotFoundError (поймано смоуком pair 2026-09-15). Литер
+    писателя в имени гонку снимает; атомарность rename от неё не
+    зависит.
     """
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(
+        path.suffix + f".tmp-{os.getpid()}-{threading.get_ident()}")
     with tmp.open("w", encoding="utf-8") as f:
         f.write(text)
         f.flush()

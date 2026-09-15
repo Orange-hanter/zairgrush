@@ -140,10 +140,19 @@ def implement(
     # оператор обязан видеть, за что заплатил: на v9lb (2026-08-24) из
     # $7.30 задачи $2.76 стоило теневое плечо, и в отчёте это выглядело
     # как второй исполнитель, а не как прибор. Сравнение по ЗНАЧЕНИЮ
-    # метки (loop.py ставит engines.SHADOW_LOG_TAG теневому плечу), а не
-    # по непустоте: будущая метка живого плеча не должна притвориться
+    # метки (loop.py ставит engines.SHADOW_LOG_TAG теневому плечу дуэли,
+    # pair.py — `-pair-a`/`-pair-b` армам парного стенда), а не по
+    # непустоте: будущая метка живого плеча не должна притвориться
     # теневым в arm.
-    arm = "shadow" if getattr(agents, "log_tag", "") == engines.SHADOW_LOG_TAG else None
+    tag = str(getattr(agents, "log_tag", "") or "")
+    if tag == engines.SHADOW_LOG_TAG:
+        arm = "shadow"
+    elif tag.startswith("-"):
+        # Армы парного стенда (`-pair-a`/`-pair-b`): тот же контракт
+        # различимости, своя метка (pair.py).
+        arm = tag.lstrip("-")
+    else:
+        arm = None
     agents.state.metric(
         task=task["id"],
         iter=iteration,

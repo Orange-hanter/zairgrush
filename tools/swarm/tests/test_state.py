@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("state", ROOT / "swarm" / "state.py")
@@ -86,7 +87,9 @@ class TestQueue(StateCase):
 
     def test_write_is_atomic_no_tmp_left(self):
         self.state.set_status("aaaa", "done")
-        leftovers = list(self.state.dir.glob("*.tmp"))
+        # суффикс временного файла уникален на писателя (`.tmp-pid-tid`),
+        # поэтому шаблон шире голого `*.tmp`.
+        leftovers = list(self.state.dir.glob("*.tmp*"))
         self.assertEqual(leftovers, [], "временный файл не должен оставаться")
 
 
@@ -297,6 +300,39 @@ class TestPhaseMark(unittest.TestCase):
     def test_broken_mark_is_data_not_a_crash(self):
         self.state.now_path.write_text("{обрезано", encoding="utf-8")
         self.assertIsNone(self.state.current_phase())
+
+    def test_concurrent_phases_from_pair_threads_do_not_break_the_mark(self):
+        """Парный стенд (как и дуэль) пишет фазы из двух потоков одного
+        состояния. Общее имя временного файла давало гонку: чужой
+        rename уносил *.tmp до replace, и наблюдение падало
+        FileNotFoundError (поймано смоуком pair 2026-09-15). Наблюдение
+        не имеет права ронять замер — ни исключением, ни предупреждением.
+        """
+        import threading
+        import types
+
+        warnings: list[tuple[Any, ...]] = []
+        real_log = st.log
+        st.log = types.SimpleNamespace(
+            warning=lambda *a, **k: warnings.append(a))
+        self.addCleanup(lambda: setattr(st, "log", real_log))
+
+        barrier = threading.Barrier(2)
+
+        def work(arm: str) -> None:
+            barrier.wait(timeout=10)
+            for _ in range(30):
+                with self.state.phase("implement", f"t-{arm}"):
+                    pass
+
+        threads = [threading.Thread(target=work, args=(arm,)) for arm in "ab"]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        self.assertFalse(any(t.is_alive() for t in threads))
+        self.assertEqual(warnings, [],
+                         f"отметка о фазе падала: {list(warnings)[:1]}")
 
 
 class TestIsRunning(unittest.TestCase):
