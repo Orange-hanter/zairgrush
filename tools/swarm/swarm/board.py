@@ -91,6 +91,9 @@ PHASE_COLOR = {
     "policy": "var(--mut)",
     "integrity": "var(--bad)",
 }
+# Состояние вопроса, к которому привязана эскалация: внутренние «open»/
+# «answered» на странице читаются фразой, а не кодом.
+_Q_STATUS_RU = {"open": "ждёт ответа", "answered": "вопрос закрыт"}
 
 
 def _key(row: dict[str, Any], field: str = "task") -> str:
@@ -404,6 +407,20 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
         elif row.get("kind") == "answer" and row.get("qid") in questions:
             questions[row["qid"]].update(status="answered", answer=row.get("text"))
 
+    # Эскалации «исполнитель сдался» (WAV-011): маркер ссылается на вопрос
+    # по qid — доска показывает сдачу вместе с тем, ждёт вопрос ответа или
+    # оператор его уже закрыл. Запись без qid (чужая версия, правка руками)
+    # всё равно показывается: сам факт сдачи ценнее целостности ссылки.
+    escalations = [
+        dict(
+            row,
+            asked=_epoch(row.get("ts")),
+            status=questions.get(str(row.get("qid") or ""), {}).get("status", ""),
+        )
+        for row in journal
+        if row.get("kind") == "agent_gave_up"
+    ]
+
     suppressed: dict[str, list[dict[str, Any]]] = {}
     for row in journal:
         if row.get("kind") == "policy_suppressed":
@@ -513,6 +530,7 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
         "goal": data.get("goal", ""),
         "tasks": tasks,
         "questions": list(questions.values()),
+        "escalations": escalations,
         "events": events,
         "run_level": run_level,
         "unfinished": unfinished,
@@ -1449,6 +1467,29 @@ def render(board: dict[str, Any]) -> str:
             f'<h2>Ждут вас <span class="cnt">{len(open_q) + len(blocked)}</span></h2>'
         )
         parts.append(_decisions(board, open_q, blocked))
+
+    # Эскалации «исполнитель сдался»: сдача — это факт журнала, а не только
+    # открытый вопрос; уже закрытые вопросы остаются здесь историей — счёт
+    # сдач за прогон оператор обязан видеть, не раскрывая хронику.
+    escalations = board.get("escalations") or []
+    if escalations:
+        parts.append(
+            f'<h2>Эскалации <span class="cnt">{len(escalations)}</span></h2>'
+        )
+        parts.append('<div class="log">')
+        parts.extend(
+            f'<div class="ev"><span class="tm">'
+            f"{e(str(r.get('ts') or '')[11:19])}</span>"
+            f'<span class="kd">{e(str(r.get("task") or ""))}</span>'
+            f'<span class="dt">раунд {e(str(r.get("round") or ""))}'
+            f" — {e(str(r.get('summary') or 'сдался без объяснения'))}"
+            + (f" · вопрос {e(str(r.get('qid')))}" if r.get("qid") else "")
+            + (f" · {e(_Q_STATUS_RU[str(r.get('status'))])}"
+               if r.get("status") in _Q_STATUS_RU else "")
+            + "</span></div>"
+            for r in escalations
+        )
+        parts.append("</div>")
 
     # События уровня прогона и шаги без исхода — не хроника: остановку по
     # бюджету, сорванное планирование и падение посреди коммита доска

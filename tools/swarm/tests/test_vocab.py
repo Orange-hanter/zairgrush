@@ -113,6 +113,18 @@ class TestPhrases(unittest.TestCase):
         self.assertIn("отступления", text)
         self.assertIn("не добавил тип X", text)
 
+    def test_agent_gave_up_names_round_summary_and_question(self):
+        text = vocab.narrate({"kind": "agent_gave_up", "task": "f1x1",
+                              "round": 2, "qid": "q3",
+                              "summary": "требования противоречат"})
+        self.assertIn("сдался", text)
+        self.assertIn("раунде 2", text)
+        self.assertIn("требования противоречат", text)
+        self.assertIn("q3", text)
+        # Названные поля не дублируются хвостом ключ=значение.
+        self.assertNotIn("summary=", text)
+        self.assertNotIn("qid=", text)
+
     def test_finding_names_severity_class_and_place(self):
         text = vocab.finding({"severity": "major", "category": "correctness",
                               "file": "src/a.py", "line": 12,
@@ -167,7 +179,7 @@ class TestEveryEmittedKindIsNamed(unittest.TestCase):
         "memory_reflect", "memory_unavailable", "memory_forgotten",
         "memory_synced", "quota_resume", "round_futile",
         "executor_denied", "verdict_salvaged", "futile_exhausted",
-        "tests_authored", "tests_not_authored",
+        "tests_authored", "tests_not_authored", "agent_gave_up",
     ]
 
     def test_every_emitted_kind_has_a_russian_name(self):

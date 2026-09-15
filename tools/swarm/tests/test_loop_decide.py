@@ -1078,6 +1078,53 @@ class TestFillTaskDisputeHint(unittest.TestCase):
         self.assertNotIn("swarm replan", questions[0])
 
 
+class TestAgentGaveUpMarker(unittest.TestCase):
+    """WAV-011: сдача исполнителя — собственное событие журнала, а не
+    молчаливый побочный эффект вопроса dispute и причины блокировки."""
+
+    def _run(self, task):
+        state = _FakeState()
+        journal = []
+        state.log = lambda kind, **k: journal.append((kind, k))
+
+        class FakeAgents:
+            def implement(self, task, feedback, iteration):
+                return {"status": "dispute", "summary": "не могу честно",
+                       "dispute": {"claim": "конфликт требований"}}
+
+            def review(self, *a, **k):
+                raise AssertionError("до ревью дойти не должно")
+
+            def commit_message(self, task, diff):
+                return "msg"
+
+        loop = lp.Loop(state, {}, FakeAgents())
+        loop.gate = lambda task: (True, "OK")
+        loop.cleanup = lambda task, reason: None
+        loop.sh = lambda cmd, timeout=900: type(
+            "R", (), {"stdout": "", "returncode": 0})()
+        loop.run_task(task)
+        return journal
+
+    def test_dispute_writes_gave_up_marker(self):
+        journal = self._run({"id": "t1", "title": "t", "type": "feature",
+                             "paths": ["a.py"]})
+        entry = next(p for k, p in journal if k == "agent_gave_up")
+        self.assertEqual(entry["task"], "t1")
+        self.assertEqual(entry["round"], 1)
+        self.assertEqual(entry["qid"], "q001")
+        self.assertEqual(entry["summary"], "не могу честно")
+
+    def test_marker_carries_qid_of_the_escalation_question(self):
+        """Маркер без qid не соединял бы сдачу с открытым вопросом: доска
+        и `swarm report` читают связь именно по нему."""
+        journal = self._run({"id": "t2", "title": "t", "type": "feature",
+                             "paths": ["a.py"]})
+        self.assertTrue(all(p.get("qid") for k, p in journal
+                            if k == "agent_gave_up"),
+                        "каждая сдача ссылается на свой вопрос")
+
+
 class TestDeviationsJournaling(unittest.TestCase):
     """Отступления — заявление исполнителя О СЕБЕ; ревьюер их не видит
     (асимметрия §3), а журнал принимает их как данные, а не контракт."""
