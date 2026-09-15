@@ -1,0 +1,42 @@
+{
+  "experiment": "E13-trial",
+  "wave": "WAV-004",
+  "registered_at": "2026-09-15",
+  "registered_before_runs": true,
+  "base_plan": "experiments/goldset/e13/README.md, раздел «План валидационного прогона» — состав, протокол, ревьюер-константа, правило расхождения, приёмка и учёт берутся оттуда БЕЗ изменений. Здесь только дельта: конкретные коммиты, выбор пилотной задачи, порядок прогона и бюджетные потолки.",
+  "tasks": {
+    "s2ky": {"source": "experiments/stand-e9-s2-exec", "red_state": "ee53c21", "role": "anchor (K1+K2+K3)"},
+    "r3cs": {"source": "experiments/stand-e13r2-a", "red_state": "5c13240", "spec_from": "experiments/bench/b2-tasks.json"},
+    "r4tt": {"source": "experiments/stand-e13r2-a", "red_state": "5c13240", "spec_from": "experiments/bench/b2-tasks.json"},
+    "s5ex": {"source": "experiments/stand-b3", "red_state": "22b88d9", "spec_from": "experiments/bench/b3-tasks.json"},
+    "v9lb": {"source": "experiments/stand-e9-exec", "red_state": "18a126b", "note": "дерево 18a126b == aae377b (stand-e9-off) побайтово, кроме swarm.toml"},
+    "e7in": {"source": "~/work/zeus-pilot", "red_state": "47350db", "note": "выбрана из {e7in, c4rp}: стенд пилота жив; у e7in сильнее K2-запись (флип на одном диффе между семействами)"}
+  },
+  "skipped": {
+    "n2trap": "стенда на диске нет (только neg/metrics.jsonl) — пропуск предусмотрен планом",
+    "pilot_fallback": "c4rp — не нужна, стенд пилота доступен"
+  },
+  "arms": {
+    "A": "executor_engine=kimi, executor_model=kimi-code/k3-256k (квота, цена не измерима потоком)",
+    "B": "executor_engine=claude, executor_model=claude-sonnet-5, executor_budget_usd задан явно (kill-switch --max-budget-usd уходит в argv)",
+    "constant": "review_model=claude-opus-5, review_effort=xhigh на ВСЕХ стендах обеих плеч; конфиги плеч отличаются ровно строками executor_*"
+  },
+  "split_rule": "плечи разошлись, если |rounds_A - rounds_B| >= 1 при валидных вердиктах на обоих плечах (terminal_reason=completed у всех review-вызовов плеча; строки с api_error/budget_exhausted/invalid_verdict исключают ЗАДАЧУ из счёта, а не трактуются как раунд). Вторично: разница вердикт-путей, число и severity находок, цена плеча B.",
+  "acceptance": "из README: >=1 из 6 разошлась -> ADR-012 сужается, §21 снимает первое ограничение; 0/6 -> ограничение остаётся в более сильной формулировке. Частичный прогон на >=4 из 6 задач удовлетворяет приёмке (решение владельца 2026-09-15).",
+  "budget": {
+    "cap_metered_usd": 10.0,
+    "wave_pool_usd": 60.0,
+    "metered_definition": "сумма cost_usd по строкам .swarm/metrics.jsonl всех стендов прогона (исполнитель claude + ревьюер opus; исполнитель kimi квотой, в metered не входит — измерить нечем)",
+    "started_run_finishes": true,
+    "no_new_task_arms_after_cap": true,
+    "per_stand_caps": {
+      "wordstat (r3cs, r4tt, s5ex)": "total_budget_usd=4.0, review_budget_usd=1.5, executor_budget_usd=1.5 (плечо B)",
+      "zeuslogic (s2ky, v9lb, e7in)": "total_budget_usd=8.0 плечо A / 12.0 плечо B, review_budget_usd=3.0, executor_budget_usd=4.0 (плечо B)"
+    },
+    "cost_reality_note": "смета README ($0.4/вызов ревью) выведена из wordstat-диффов E15; записанные вызовы opus/xhigh на ZeusLogic-диффах стоят $1.8-2.7 (goldset/reviews_metrics.jsonl), исполнитель claude на s2ky — $2.5-3.0/раунд. Поэтому порядок прогона: дешёвые wordstat первыми (r3cs, r4tt, s5ex), затем якорь s2ky, затем v9lb и e7in — пока не исчерпан кап; старт плеч новой задачи после достижения $10 запрещён."
+  },
+  "accounting": "bench/e13-compare.py semantics: раунд = пара (задача, iter); переигранные попытки раунда (swarm retry) идут в накладные, не в счёт плеча; деньги несостоявшихся ревью (valid=false) — отдельно от состоявшихся",
+  "failure_policy": "2 подряд сбоя одного шага -> диагноз -> починка на лету, если возможно -> иначе СТОП и отчёт о состоянии. Квотный 403: 2-3 повтора за ~10 минут, затем failure policy.",
+  "stand_layout": "новые стенды experiments/stand-e13t-<task>-{a,b} — git worktree исходного стенда на red-state коммите с отдельной веткой; swarm.toml прогона коммитится в стенд; задача одна на стенд, очередь сидится через SwarmState.save_tasks (отпечаток целостности объявлен)",
+  "config_freeze": "общий шаблон swarm.toml на семейство (wordstat/zeuslogic); между плечами задачи различаются ТОЛЬКО executor_engine/executor_model/executor_budget_usd; между задачами одного семейства конфиг идентичен"
+}
