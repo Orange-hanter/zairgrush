@@ -61,6 +61,53 @@ DEP_MANIFESTS = frozenset({
     "composer.json", "composer.lock",
 })
 
+# Пороги гигантского диффа (NXT-012) выведены из распределения корпуса
+# пилота (experiments/reviewarm/rev001/ground/*.raw.diff, 18 диффов,
+# замер 2026-09-15): нормальные диффы ≤ 692 изменённых строк и
+# ≤ 46_072 символов (z8ck-close и s2ky-i1), гиганты — g1nt-close
+# (16_086 строк / 371_519 символов) и c4rp-close (54_870 / 3_755_327).
+# Между «всем нормальным» и «обоими гигантами» — разрыв в 23 раза по
+# строкам и в 8 раз по символам; дефолты встали внутри разрыва с запасом
+# ≥ ~2x от каждой стороны: 2_000 строк — в 2.9 раза выше максимума
+# нормального и в 8 раз ниже минимального гиганта, 200_000 символов —
+# 4.3x и 1.9x. Дифф за ЛЮБЫМ из порогов не отправляется в LLM-ревью
+# вообще: g1nt и c4rp уже ломали прогоны (rev003/rev004 — таймауты,
+# пустой вывод, rubber-stamping), и порог — защита вызова, а не выбор
+# руки. Стратегический split-and-process — отдельная будущая задача.
+GIANT_MAX_LINES = 2_000
+GIANT_MAX_CHARS = 200_000
+
+
+def giant_reason(diff_lines: int, diff_chars: int,
+                 config: dict[str, Any]) -> str | None:
+    """«lines» | «chars», если дифф гигантский (NXT-012), иначе None.
+
+    Правило стоит ПЕРЕД классификацией бэнды decide(): гигант не
+    маршрутизируется, а исключается из LLM-ревью детерминированно — бэнда
+    выбирает руку для вызова, а здесь вызова нет. Размер приходит тот же,
+    что пишется в метрику ревью (diff_lines по СЫРОМУ диффу), символы —
+    длина того же сырого диффа: второй редакции размера нет и здесь.
+
+    Пороги настраиваемы (`giant_max_lines`/`giant_max_chars`);
+    `giant_exclusion = false` выключает правило целиком (стенд, который
+    измеряет поведение на гигантах). Некорректное значение порога —
+    fail-open на дефолт: исключение по мусорной настройке объяснить
+    невозможно.
+    """
+    if config.get("giant_exclusion") is False:
+        return None
+    max_lines = config.get("giant_max_lines", GIANT_MAX_LINES)
+    max_chars = config.get("giant_max_chars", GIANT_MAX_CHARS)
+    if isinstance(max_lines, bool) or not isinstance(max_lines, int):
+        max_lines = GIANT_MAX_LINES
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int):
+        max_chars = GIANT_MAX_CHARS
+    if diff_lines > max_lines:
+        return "lines"
+    if diff_chars > max_chars:
+        return "chars"
+    return None
+
 
 def is_doc(path: str) -> bool:
     """Документация — по суффиксу: README.md да, docs/schema.sql нет."""

@@ -469,6 +469,14 @@ NARRATORS: dict[str, Narrator] = {
          f"({_s(r.get('reason'))}) — полное ревью "
          f"({r.get('diff_files')} ф., {r.get('diff_lines')} строк)"),
         {"round", "reason", "diff_files", "diff_lines"}),
+    # NXT-012: гигант не дошёл НИ ДО ОДНОГО вызова ревью — молчащее
+    # исключение было бы пропущенным ревью, которого никто не видел.
+    "giant_excluded": lambda r: (
+        (f"гигантский дифф исключён из ревью в раунде {r.get('round')} "
+         f"(порог {_s(r.get('reason'))}: {r.get('diff_files')} ф., "
+         f"{r.get('diff_lines')} строк, {r.get('diff_chars')} символов) — "
+         f"ручное ревью владельца"),
+        {"round", "reason", "diff_files", "diff_lines", "diff_chars"}),
     # Плечо B E11 видно построчно: кто написал тесты — вопрос замера, и
     # «неясное в спецификации» ценнее самих тестов, потому что это
     # находка о ПОСТАНОВКЕ, а не о коде.

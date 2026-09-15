@@ -62,6 +62,31 @@ def _boundary_note_for(agents: AgentsLike, task: dict[str, Any],
 
 
 
+def _giant_excluded(agents: AgentsLike, task: dict[str, Any],
+                    diff_files: int, diff_lines: int, diff_chars: int,
+                    iteration: int) -> str | None:
+    """NXT-012: детерминированное исключение гиганта ДО триажа; fail-open.
+
+    Гигантский дифф не отправляется в LLM-ревью вообще (g1nt/c4rp ломали
+    прогоны: таймауты, пустой вывод, rubber-stamping), поэтому проверка
+    стоит до бэнды: триаж выбирает руку для вызова, а здесь вызова нет.
+    Сбой предиката стоит ноль — обычный путь триажа, как до правила.
+    """
+    try:
+        reason = triage_mod.giant_reason(diff_lines, diff_chars,
+                                         agents.config)
+    except Exception:
+        log.warning("проверка гиганта не решена — обычный путь",
+                    exc_info=True)
+        return None
+    if reason is None:
+        return None
+    agents.state.log("giant_excluded", task=task["id"], round=iteration,
+                     reason=reason, diff_files=diff_files,
+                     diff_lines=diff_lines, diff_chars=diff_chars)
+    return reason
+
+
 def _triage(agents: AgentsLike, task: dict[str, Any], raw_diff: str,
             diff_files: int, diff_lines: int, iteration: int
             ) -> tuple[str, tuple[Any, Any] | None]:
@@ -147,6 +172,38 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
     raw_diff = agents.work_diff()
     diff = parsing_mod.condense_diff(raw_diff)
     diff_files, diff_lines = parsing_mod.diff_size(raw_diff)
+    # NXT-012: гигант исключается ДО триажа — дифф за порогом не уходит
+    # ни в один LLM-вызов ревью. Синтетический blocked (не approve, как у
+    # docs_only: работу никто не судил) петля эскалирует штатным путём
+    # вердикта blocked: state.ask в инбокс владельца + статус blocked —
+    # флаг ручного ревью без новых механизмов.
+    giant = _giant_excluded(agents, task, diff_files, diff_lines,
+                            len(raw_diff), iteration)
+    if giant is not None:
+        agents.state.metric(task=task["id"], iter=iteration, phase="review",
+                          attempt=attempt, dur_s=0.0, run_reason="triaged",
+                          cost_usd=0.0, verdict="blocked", findings=1,
+                          blockers=0, majors=1, minors=0,
+                          diff_files=diff_files, diff_lines=diff_lines,
+                          valid=True, triage="giant-excluded",
+                          confirming=confirming)
+        return {"verdict": "blocked", "triaged": "giant-excluded",
+                "findings": [
+                    {"severity": "major", "category": "scope",
+                     "issue": f"дифф гигантский ({diff_files} ф., "
+                              f"{diff_lines} строк, {len(raw_diff)} "
+                              f"символов; сработал порог «{giant}») — "
+                              f"LLM-ревью детерминированно исключено "
+                              f"(NXT-012)",
+                     "suggestion": "ручное ревью владельца; стратегический "
+                                   "split-and-process — отдельная задача"}],
+                "analysis": "дифф превысил порог гиганта и не отправлен "
+                            "ни в один LLM-вызов ревью: на g1nt/c4rp такие "
+                            "вызовы обрывались таймаутом или давали "
+                            "резиновый approve; отметка giant_excluded "
+                            "в журнале",
+                "summary": "гигантский дифф исключён из ревью — "
+                           "нужно ручное ревью владельца"}
     # P1-триаж (ADR-027): бэнда читает ТЕ ЖЕ diff_files/diff_lines, что
     # уходят в метрику ниже, — второй редакции размера у полосы нет.
     # Мимо бэнды маршрут "full", и путь дальше не меняется ни на байт.
