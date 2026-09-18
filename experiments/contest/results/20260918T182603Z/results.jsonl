@@ -1,0 +1,1 @@
+{"task": "a6-migrate", "slot": "kimi", "model": "moonshotai/kimi-k2.7-code", "dur_s": 125.5, "finish_reason": "length", "prompt_tokens": 557, "completion_tokens": 64000, "cost_usd": 0.22439547, "error": "contract: code block not found or not unique"}
