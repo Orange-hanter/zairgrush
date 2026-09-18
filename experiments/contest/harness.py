@@ -73,8 +73,8 @@ def call_model(model_id, prompt, reasoning=None):
     }
 
 
-def extract_code(text):
-    blocks = re.findall(r"```python\n(.*?)```", text, re.S)
+def extract_code(text, lang="python"):
+    blocks = re.findall(rf"```{lang}\n(.*?)```", text, re.S)
     if len(blocks) == 1:
         return blocks[0]
     if not blocks:
@@ -118,6 +118,25 @@ def run_tests(workdir):
             "rc": r.returncode, "tail": tail}
 
 
+def run_judge(workdir):
+    """Кастомный judge.py задачи: печатает JSON в последней строке stdout.
+
+    Контракт: {"passed": int, "failed": int, "errors": int,
+               "score": float, "details": str}.
+    """
+    r = subprocess.run([PY, "judge.py", "."], cwd=workdir,
+                       capture_output=True, text=True, timeout=TEST_TIMEOUT)
+    last = (r.stdout.strip().splitlines() or [""])[-1]
+    try:
+        out = json.loads(last)
+    except ValueError:
+        return {"passed": 0, "failed": 0, "errors": 1, "rc": r.returncode,
+                "tail": "judge contract fail: " + (r.stdout + r.stderr)[-500:]}
+    out["rc"] = r.returncode
+    out["tail"] = out.get("details", "")
+    return out
+
+
 def main():
     global PY
     PY = find_python()
@@ -156,21 +175,31 @@ def main():
                        prompt_tokens=resp["prompt_tokens"],
                        completion_tokens=resp["completion_tokens"],
                        cost_usd=resp["cost_usd"])
-            code = extract_code(resp["text"])
+            judge = task_dir / "judge.py"
+            lang = "json" if judge.exists() and not test_files else "python"
+            code = extract_code(resp["text"], lang)
             if code is None:
                 row.update(error="contract: code block not found or not unique")
-                print("    CONTRACT FAIL: no unique python block", flush=True)
+                print(f"    CONTRACT FAIL: no unique {lang} block", flush=True)
             else:
                 work = outdir / "work" / tag
                 work.mkdir()
-                (work / "solution.py").write_text(code)
+                if lang == "json":
+                    (work / "answer.json").write_text(code)
+                else:
+                    (work / "solution.py").write_text(code)
                 for tf in test_files:
                     (work / tf.name).write_text(tf.read_text())
                 try:
-                    res = run_tests(work)
+                    if judge.exists():
+                        (work / "judge.py").write_text(judge.read_text())
+                        res = run_judge(work)
+                    else:
+                        res = run_tests(work)
                     row.update(res)
+                    extra = f" score={res['score']}" if "score" in res else ""
                     print(f"    {res['passed']} passed / {res['failed']} failed / "
-                          f"{res['errors']} errors ({resp['dur_s']}s)", flush=True)
+                          f"{res['errors']} errors{extra} ({resp['dur_s']}s)", flush=True)
                 except subprocess.TimeoutExpired:
                     row.update(error="test timeout")
                     print("    TEST TIMEOUT", flush=True)
@@ -194,8 +223,9 @@ def write_report(outdir, rows):
                          f"| {r.get('prompt_tokens', '—')}/{r.get('completion_tokens', '—')} "
                          f"| {r.get('cost_usd') or '—'} |")
         else:
+            score = f" score={r['score']}" if "score" in r else ""
             lines.append(f"| {r['task']} | {r['slot']} | {r['model']} "
-                         f"| {r['passed']} | {r['failed']} | {r['errors']} | {r['dur_s']} "
+                         f"| {r['passed']} | {r['failed']} | {r['errors']}{score} | {r['dur_s']} "
                          f"| {r.get('prompt_tokens')}/{r.get('completion_tokens')} "
                          f"| {r.get('cost_usd') or '—'} |")
     lines += ["", "## Итог по слотам", ""]

@@ -1,0 +1,5 @@
+```json
+{"s1": {"patterns": ["observer"], "antipatterns": ["god-object"]},
+ "s2": {"patterns": [], "antipatterns": ["stringly-typed", "copy-paste"]},
+ "s3": {"patterns": ["object-pool"], "antipatterns": []}}
+```
