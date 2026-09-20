@@ -2,6 +2,7 @@
 """Тесты состояния петли: блокировка, атомарность, step-journal, deps."""
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -106,6 +107,31 @@ class TestLock(StateCase):
         other = st.SwarmState(self.root)
         other.acquire()            # не должно бросить
         other.release()
+
+    def test_holder_pid_is_written(self):
+        self.state.acquire()
+        try:
+            self.assertEqual(self.state.lock_path.read_text(encoding="utf-8"),
+                             f"{os.getpid()}\n")
+        finally:
+            self.state.release()
+
+    def test_refused_acquire_keeps_holder_pid(self):
+        """Отказ второго запуска не стирает запись первого.
+
+        `open("w")` усекал файл до флока: отказанный `resume` обнулял
+        state.lock живого прогона, и pid держателя пропадал как раз
+        тогда, когда его идут смотреть.
+        """
+        self.state.acquire()
+        try:
+            before = self.state.lock_path.read_text(encoding="utf-8")
+            with self.assertRaises(st.StateError):
+                st.SwarmState(self.root).acquire()
+            self.assertEqual(self.state.lock_path.read_text(encoding="utf-8"),
+                             before)
+        finally:
+            self.state.release()
 
 
 class TestStepJournal(StateCase):

@@ -267,6 +267,12 @@ MUTATIONS = [
      """        if True:
             return True            # держим сами: доска строится внутри петли""",
      "test_state"),
+    ("замок: отказанный запуск снова стирает pid держателя",
+     "swarm/state.py",
+     """        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        self._lock = os.fdopen(fd, "r+", encoding="utf-8")""",
+     """        self._lock = self.lock_path.open("w")""",
+     "test_state"),
     ("настоящее: доска называет фазой то, что осталось от обрыва",
      "swarm/board.py",
      '        "now": now if live else None,',

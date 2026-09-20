@@ -201,8 +201,18 @@ class SwarmState:
     # --- блокировка -------------------------------------------------------
 
     def acquire(self) -> None:
-        """Один живой оркестратор на репозиторий (§4.3)."""
-        self._lock = self.lock_path.open("w")
+        """Один живой оркестратор на репозиторий (§4.3).
+
+        Открываем без усечения. `open("w")` обрезает файл ДО того, как
+        выяснится, чей замок, и отказанный второй запуск стирал pid
+        живого первого: на пилоте `swarm resume` в 22:57 обнулил
+        state.lock прогона, начатого в 22:37. Сам замок это не ломает —
+        живость определяет флок, а не содержимое файла (`is_running`), —
+        но единственная запись о том, КТО держит состояние, исчезала
+        ровно в ту минуту, когда оператор приходил это выяснять.
+        """
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        self._lock = os.fdopen(fd, "r+", encoding="utf-8")
         try:
             fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as e:
@@ -210,6 +220,9 @@ class SwarmState:
             self._lock = None
             raise StateError(
                 "состояние занято другим запуском swarm (state.lock)") from e
+        # Усечение — только после захвата: теперь файл наш.
+        self._lock.seek(0)
+        self._lock.truncate()
         self._lock.write(f"{os.getpid()}\n")
         self._lock.flush()
 
