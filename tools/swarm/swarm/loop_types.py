@@ -24,6 +24,8 @@ class LoopLike(Protocol):
     run_dirt: set[str]
     head_before: str | None
     state_before: str | None
+    gate_green: str | None
+    gate_green_tail: str
 
     def sh(self, cmd: list[str],
             timeout: float = 900) -> subprocess.CompletedProcess[str]:

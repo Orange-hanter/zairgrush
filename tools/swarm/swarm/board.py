@@ -246,9 +246,10 @@ def _timeline(metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Фазы на общей шкале времени.
 
     Метрика пишется в конце фазы, поэтому начало — это `ts` минус
-    длительность (`wall_s` у исполнителя, `dur_s` у ревью). У гейта и
-    границ длительности нет: это отметка момента, а не отрезок, и
-    рисуется она засечкой — врать про ширину нельзя.
+    длительность (`wall_s` у исполнителя, `dur_s` у ревью и гейта). У
+    границ, у гейта без прогона (`reused`) и у старых метрик гейта
+    длительности нет: это отметка момента, а не отрезок, и рисуется она
+    засечкой — врать про ширину нельзя.
     """
     segs = []
     for m in metrics:
@@ -268,6 +269,7 @@ def _timeline(metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "ok": m.get("ok"),
                 "cost": _num(m.get("cost_usd")),
                 "verdict": m.get("verdict"),
+                "reused": bool(m.get("reused")),
                 "note": str(m.get("reason") or m.get("run_reason") or ""),
             }
         )
@@ -285,7 +287,7 @@ def _totals(
     """
     phases: dict[str, dict[str, float]] = {}
     tokens = {"in": 0.0, "out": 0.0, "cache_read": 0.0, "cache_write": 0.0}
-    gate = {"ok": 0, "fail": 0}
+    gate = {"ok": 0, "fail": 0, "reused": 0}
     for m in metrics:
         phase = str(m.get("phase") or "")
         if phase:
@@ -295,6 +297,7 @@ def _totals(
             row["sec"] += _num(m.get("wall_s")) or _num(m.get("dur_s")) or 0.0
         if phase == "gate":
             gate["ok" if m.get("ok") else "fail"] += 1
+            gate["reused"] += 1 if m.get("reused") else 0
         for key, field in (
             ("in", "tokens_in"),
             ("out", "tokens_out"),
@@ -848,6 +851,7 @@ function timeline() {
       if (s.dur) bits.push(dur(s.dur));
       if (s.cost) bits.push('$' + s.cost.toFixed(2));
       if (s.verdict) bits.push(s.verdict);
+      if (s.reused) bits.push('без прогона: дерево не менялось');
       if (s.ok === false) bits.push('провал');
       if (s.note) bits.push(s.note);
       return `<i class="seg ${w < 0.4 ? 'mark' : ''}" style="left:${left}%;
@@ -1275,6 +1279,7 @@ def _vitals(
     # 4. Гейт и контекст: зелен ли прогон тестов и сколько стоил контекст.
     gate = totals.get("gate") or {}
     g_ok, g_bad = gate.get("ok", 0), gate.get("fail", 0)
+    g_re = gate.get("reused", 0)
     bar = _bar([(g_ok, "var(--ok)"), (g_bad, "var(--bad)")], g_ok + g_bad)
     tokens = totals.get("tokens") or {}
     read, write = tokens.get("cache_read", 0), tokens.get("cache_write", 0)
@@ -1292,7 +1297,10 @@ def _vitals(
     tiles.append(
         f'<div class="tile"><div class="cap">гейт</div>'
         f'<div class="big">{g_ok}<small> зелёных из {g_ok + g_bad}'
-        f"</small></div>{bar}{ctx}</div>"
+        f"</small></div>{bar}"
+        + (f'<div class="hint">без прогона (дерево то же): {g_re}</div>'
+           if g_re else "")
+        + f"{ctx}</div>"
     )
     return f'<div class="vitals">{"".join(tiles)}</div>'
 
@@ -1537,7 +1545,8 @@ def render(board: dict[str, Any]) -> str:
         parts.append(
             '<div class="hint">строка — задача, отрезок — фаза; '
             "засечка вместо отрезка значит, что у фазы нет "
-            "измеренной длительности (гейт, границы). Наведите "
+            "измеренной длительности (границы; гейт, взятый без "
+            "прогона, потому что дерево не менялось). Наведите "
             "на отрезок — время, деньги и исход; щёлкните по имени "
             "задачи слева — откроется её карточка.</div>"
         )

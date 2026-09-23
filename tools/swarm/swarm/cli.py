@@ -63,6 +63,7 @@ KNOWN_CONFIG_KEYS = frozenset(
         "max_iterations",
         "confirmations",
         "gate_timeout",
+        "gate_reuse",
         "silence_timeout",
         "wall_clock_cap",
         "executor_model",

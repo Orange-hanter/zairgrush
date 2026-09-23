@@ -151,6 +151,9 @@ class Loop:
         self.run_dirt: set[str] = set()  # дерево до старта ПРОГОНА
         self.head_before: str | None = None  # история до старта задачи
         self.state_before: str | None = None  # состояние петли до старта
+        # Отпечаток дерева последнего зелёного гейта (gitops.gate).
+        self.gate_green: str | None = None
+        self.gate_green_tail = ""
         self.live_board = bool(config.get("live_board", False))
 
     # --- механические шаги ------------------------------------------------
@@ -351,6 +354,9 @@ class Loop:
         # Тип отчёта — контракт агентов, а не петли: `agents` здесь Any,
         # и сужать его тут значило бы объявить сузившееся знание, которого
         # у делегата нет (feedback на деле словарь находок, не строка).
+        # Исполнитель волен трогать и игнорируемые файлы, которых не видит
+        # отпечаток дерева: зелёный гейт до него — уже не справка.
+        self.gate_green = None
         plan = duel.plan(self.config, task["id"])
         if plan is None:
             return _rc_implement_with_quota_wait(self, task, feedback, iteration)
@@ -763,8 +769,10 @@ class Loop:
             if budget and spent >= float(budget):
                 return self._budget_stop(task, spent, budget, iteration)
             iteration += 1
-            # В подтверждающем раунде исполнитель не вызывается: гейт и
-            # границы перепроверяются (дёшево), ревью идёт по тому же диффу.
+            # В подтверждающем раунде исполнитель не вызывается: границы
+            # перепроверяются, гейт на неизменном дереве отдаёт прошлый
+            # зелёный результат без прогона (gitops.gate), ревью идёт по
+            # тому же диффу.
             was_confirmation = confirming
             if confirming:
                 confirming = False
