@@ -10,8 +10,11 @@ import fnmatch
 import hashlib
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from typing import TYPE_CHECKING, Any
 
 # Каталог модуля — в путь поиска: рой не устанавливается пакетом (см. obs.py).
@@ -35,18 +38,84 @@ def sh(loop: LoopLike, cmd: list[str],
                           cwd=loop.state.root, timeout=timeout,
                           check=False)
 
+def tree_key(loop: LoopLike, cmd: list[str]) -> str | None:
+    """Отпечаток того, что проверяет гейт: рабочее дерево плюс команда.
+
+    Дерево снимается `git write-tree` через ВРЕМЕННЫЙ индекс (копия
+    настоящего — ради кэша stat, чтобы не перехешировать весь репозиторий):
+    отслеживаемые и неотслеживаемые файлы, кроме игнорируемых и владений
+    петли (`.swarm/`, `swarm.toml` — журнал меняется каждой метрикой).
+    Настоящий индекс не трогается. Любой сбой — None: нет отпечатка, нет
+    и повторного использования, гейт просто прогоняется.
+    """
+    root = pathlib.Path(loop.state.root)
+    try:
+        where = subprocess.run(
+            ["git", "rev-parse", "--git-path", "index"], cwd=root,
+            capture_output=True, text=True, timeout=30, check=False)
+        if where.returncode != 0:
+            return None
+        src = root / where.stdout.strip()
+        with tempfile.TemporaryDirectory() as tmp:
+            index = pathlib.Path(tmp) / "index"
+            if src.is_file():
+                shutil.copyfile(src, index)
+            env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+            # Не `:(exclude).swarm`: если `.swarm` игнорируется, git
+            # отвергает pathspec, названный игнорируемым путём, кодом 1.
+            add = subprocess.run(["git", "add", "-A", "--", "."], cwd=root,
+                                 env=env, capture_output=True, timeout=300,
+                                 check=False)
+            drop = subprocess.run(
+                ["git", "rm", "-r", "-q", "--cached", "--ignore-unmatch",
+                 "--", *state_mod.OWNED_ROOTS],
+                cwd=root, env=env, capture_output=True, timeout=60,
+                check=False)
+            tree = subprocess.run(["git", "write-tree"], cwd=root, env=env,
+                                  capture_output=True, text=True, timeout=60,
+                                  check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if (add.returncode or drop.returncode or tree.returncode
+            or not tree.stdout.strip()):
+        return None
+    blob = tree.stdout.strip() + "\0" + "\0".join(cmd)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def gate(loop: LoopLike, task: dict[str, Any]) -> tuple[bool, str]:
     cmd = loop.config.get("gate_command") or [
         "python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."]
         # Холодная сборка Rust не влезает в 900 с, а таймаут здесь —
         # исключение, топившее задачу в in_progress (до §5.3-починки).
+    # Зелёный результат на ТОМ ЖЕ дереве не перепроверяется: на стенде
+    # cod-doc каждая задача гоняла полный сьют трижды (baseline, после
+    # исполнителя, перед подтверждающим ревью) по ~140 с, и два прогона
+    # из трёх шли по дереву, которое уже прошло гейт, — 60% времени
+    # задачи. Красный не переиспользуется: повтор после красного — это
+    # новая попытка, а не справка. Кэш сбрасывает запуск исполнителя
+    # (Loop._implement_with_quota_wait): он волен менять и игнорируемые
+    # файлы, которых отпечаток не видит.
+    reuse = bool(loop.config.get("gate_reuse", True))
+    key = tree_key(loop, cmd) if reuse else None
+    if key is not None and key == loop.gate_green:
+        loop.state.metric(task=task["id"], phase="gate", ok=True, reused=True,
+                          dur_s=0.0, tail="")
+        return True, loop.gate_green_tail
     # Отметка о настоящем (state.phase): полный сьют идёт минутами, и
     # без неё доска весь гейт показывает последний завершённый раунд.
+    t0 = time.monotonic()
     with loop.state.phase("gate", task["id"]):
         r = loop.sh(cmd, timeout=int(loop.config.get("gate_timeout", 900)))
+    # Длительность пишется наравне с исполнителем и ревью: без неё доска
+    # рисовала гейт засечкой, и минуты сьюта выглядели пустотой на шкале.
+    dur = round(time.monotonic() - t0, 1)
     tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-3:])
     ok = r.returncode == 0
-    loop.state.metric(task=task["id"], phase="gate", ok=ok, tail=tail[:300])
+    loop.gate_green = key if ok else None
+    loop.gate_green_tail = tail if ok else ""
+    loop.state.metric(task=task["id"], phase="gate", ok=ok, dur_s=dur,
+                      tail=tail[:300])
     return ok, tail
 
 def integrity_check(loop: LoopLike) -> list[str]:
