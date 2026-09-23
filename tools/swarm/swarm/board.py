@@ -242,6 +242,32 @@ def _verdicts(swarm_dir: pathlib.Path, tid: str) -> list[dict[str, Any]]:
     return out
 
 
+TITLE_MAX = 140
+
+
+def _goal_parts(goal: str) -> tuple[str, str]:
+    """Заголовок доски и остальная постановка.
+
+    Цель прогона — это часто вся постановка волны: на прогоне cod-doc
+    2026-09-23 `--goal` занял 2036 знаков с критериями приёмки, и доска
+    ставила его целиком в `<h1>` — экран полужирной стены. Заголовком
+    идёт первая строка; длинная — режется по концу первой фразы (не
+    раньше 20-го знака, чтобы «т. е.» не отрезало заголовок в два
+    слова). Остальное уходит в свёрнутый блок под заголовком. Фразы
+    нет — заголовок остаётся длинным: резать посреди слова хуже.
+    """
+    text = goal.strip()
+    first, _, tail = text.partition("\n")
+    rest = tail.strip()
+    if len(first) > TITLE_MAX:
+        m = re.search(r"[.!?…](?=\s)", first[20:])
+        if m:
+            cut = 20 + m.end()
+            rest = (first[cut:].strip() + "\n" + rest).strip()
+            first = first[:cut].rstrip(".").rstrip()
+    return first, rest
+
+
 def _timeline(metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Фазы на общей шкале времени.
 
@@ -699,8 +725,20 @@ white-space:nowrap}
 .sec:last-child{margin-bottom:0}
 .sec h3{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;
 margin:0 0 6px;color:var(--faint)}
-.spec{white-space:pre-wrap;font-size:13.5px;background:var(--sunk);
+.spec{font-size:13.5px;line-height:1.55;background:var(--sunk);
 border:1px solid var(--hair);border-radius:7px;padding:10px 12px}
+.spec code{background:var(--card)}
+.rich p{margin:0 0 7px}
+.rich p:last-child,.rich .ri:last-child{margin-bottom:0}
+.ri{display:grid;grid-template-columns:2.3em 1fr;margin:0 0 6px}
+.ri .rn{color:var(--faint);font:12px/1.9 var(--mono)}
+.rich code,h1 code,.card .t code,ul.acc code,.find code{font-size:.86em;
+padding:0 .3em;overflow-wrap:anywhere}
+h1 code{font-weight:500}
+details.goal{max-width:82ch;margin:0 0 8px}
+details.goal .rich{margin-top:8px;font-size:14px;line-height:1.6;
+background:var(--card);border:1px solid var(--hair);border-radius:7px;
+padding:12px 14px}
 ul.acc{margin:0;padding-left:19px}
 ul.acc li{margin:3px 0}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
@@ -743,6 +781,93 @@ border-radius:8px;padding:16px}
 .foot{color:var(--mut);font-size:12px;margin-top:34px;
 border-top:1px solid var(--hair);padding-top:12px}
 .hidden{display:none!important}
+"""
+
+# Отдельной raw-строкой: в регулярках обратные слэши, и обычная строка
+# Python съела бы их молча. Тесты гоняют этот кусок в node как есть.
+RICH_JS = r"""
+// --- постановки: код, пути, пункты ---------------------------------------
+// Постановки пишут человек и планировщик в полу-markdown: `код` в
+// обратных кавычках, голые пути и идентификаторы, нумерация «(1) … (2) …»
+// прямо внутри строки. Сырым текстом это стена, где технические имена
+// сливаются с прозой. Разбор намеренно узкий — код и пункты, без
+// заголовков, ссылок и HTML: всё нераспознанное остаётся экранированным
+// текстом, и ничего из постановки не теряется.
+const RICH_CODE = new RegExp([
+  '`([^`\n]+)`',
+  // путь с расширением: cod_doc/cli/cmd_ctx.py, tests/x.py:118-126
+  String.raw`(?<![\w/.:-])(?:[\w.-]+\/)+[\w.-]*\.[A-Za-z]\w{0,5}(?:::\w+)?(?::\d+(?:[-–]\d+)?)?`,
+  // точечное или модульное имя: card.drift.issues, x.py::f, meta.counts()
+  String.raw`(?<![\w/.:-])[A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)+(?:\([^()\n]{0,80}\))?`,
+  // snake_case и SCREAMING_CASE: include_skill_bodies, _CURATOR_SKILLS
+  String.raw`(?<![\w/.:-])_*[A-Za-z]\w*_\w*(?:\([^()\n]{0,80}\))?`,
+  // флаг CLI: --json, --include-skill-bodies
+  String.raw`(?<![\w-])--[a-z][\w-]*`,
+].join('|'), 'g');
+
+const richEsc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+  ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+function richInline(text) {
+  const s = String(text ?? '');
+  let out = '', at = 0;
+  for (const m of s.matchAll(RICH_CODE)) {
+    out += richEsc(s.slice(at, m.index)) +
+      '<code>' + richEsc(m[1] ?? m[0]) + '</code>';
+    at = m.index + m[0].length;
+  }
+  return out + richEsc(s.slice(at));
+}
+
+// Пункты: «(1) … (2) …» и «1. … 2. …» — в том числе внутри одной строки;
+// «- …» — в начале строки. Нумерованным пунктом признаётся только ряд
+// 1, 2, 3… одного вида длиной от двух: «8 КБ», «PR #102» или случайное
+// «1.» в прозе пунктом не станут. Пункт кончается на следующем пункте
+// или на переводе строки.
+const RICH_MARK = /(^|\s)(?:\((\d{1,2})\)|(\d{1,2})[.)]|([-*•]))(?=\s)/g;
+
+function richMarks(s) {
+  const found = [];
+  for (const m of s.matchAll(RICH_MARK)) {
+    const at = m.index + m[1].length;
+    if (m[4] && at > 0 && s[at - 1] !== '\n') continue;  // тире в прозе
+    found.push({at, end: m.index + m[0].length,
+      n: m[4] ? 0 : +(m[2] || m[3]), kind: m[4] ? 'b' : (m[2] ? 'p' : 'd'),
+      label: m[0].slice(m[1].length)});
+  }
+  const out = [];
+  let run = [];
+  const flush = () => { if (run.length >= 2) out.push(...run); run = []; };
+  for (const k of found) {
+    if (k.kind === 'b') { flush(); out.push(k); continue; }
+    const last = run[run.length - 1];
+    if (last && k.kind === last.kind && k.n === last.n + 1) { run.push(k); continue; }
+    if (k.n === 1) { flush(); run = [k]; }
+  }
+  flush();
+  return out.sort((a, b) => a.at - b.at);
+}
+
+function richParas(s) {
+  return s.split(/\n+/).map(x => x.trim()).filter(Boolean)
+    .map(x => '<p>' + richInline(x) + '</p>').join('');
+}
+
+function rich(text) {
+  const s = String(text ?? '');
+  const marks = richMarks(s);
+  let out = richParas(s.slice(0, marks.length ? marks[0].at : s.length));
+  marks.forEach((k, i) => {
+    const stop = i + 1 < marks.length ? marks[i + 1].at : s.length;
+    const body = s.slice(k.end, stop);
+    const nl = body.indexOf('\n');
+    const item = nl < 0 ? body : body.slice(0, nl);
+    out += '<div class="ri"><span class="rn">' + richEsc(k.label) +
+      '</span><div>' + richInline(item.trim()) + '</div></div>';
+    if (nl >= 0) out += richParas(body.slice(nl));
+  });
+  return out;
+}
 """
 
 JS = """
@@ -872,19 +997,19 @@ function findings(list) {
   return list.map(f => `<div class="find ${esc(f.severity)}">
     <div class="top">${esc(SEV[f.severity] || f.severity)} · ${esc(CAT[f.category] || f.category)}
     ${f.file ? '· ' + esc(f.file) + (f.line ? ':' + f.line : '') : ''}</div>
-    <div>${esc(f.issue)}</div>
-    ${f.suggestion ? `<div class="sug">→ ${esc(f.suggestion)}</div>` : ''}
+    <div>${richInline(f.issue)}</div>
+    ${f.suggestion ? `<div class="sug">→ ${richInline(f.suggestion)}</div>` : ''}
   </div>`).join('');
 }
 
 function taskBody(t) {
   let h = '';
   if (t.spec) h += `<div class="sec"><h3>Что просили сделать</h3>
-    <div class="spec">${esc(t.spec)}</div></div>`;
+    <div class="spec rich">${rich(t.spec)}</div></div>`;
   if (t.acceptance?.length) h += `<div class="sec"><h3>Критерии приёмки</h3>
-    <ul class="acc">${t.acceptance.map(a => `<li>${esc(a)}</li>`).join('')}</ul></div>`;
+    <ul class="acc">${t.acceptance.map(a => `<li>${richInline(a)}</li>`).join('')}</ul></div>`;
   if (t.human_decisions?.length) h += `<div class="sec"><h3>Ваши решения по задаче</h3>
-    <ul class="acc">${t.human_decisions.map(d => `<li>${esc(d)}</li>`).join('')}</ul></div>`;
+    <ul class="acc">${t.human_decisions.map(d => `<li>${richInline(d)}</li>`).join('')}</ul></div>`;
 
   if (t._rounds?.length) {
     h += `<div class="sec"><h3>Траектория схождения</h3><div class="scroll">
@@ -1005,7 +1130,7 @@ function tasks() {
     return `<div class="card" data-id="${esc(t.id)}" onclick="if(!event.target.closest('button'))
         this.classList.toggle('open')">
       <div class="head"><span class="id">${esc(t.id)}</span>
-      <span class="t">${esc(t.title)}</span>${spark}
+      <span class="t">${richInline(t.title)}</span>${spark}
       <span class="badge ${CLS[t.status] || ''}">${esc(ST[t.status] || t.status)}</span></div>
       <div class="meta">${bits.join(' · ')}</div>
       <div class="body">${taskBody(t)}</div></div>`;
@@ -1043,6 +1168,12 @@ function bind() {
     card.scrollIntoView({block: 'center', behavior: 'smooth'});
   });
 }
+// Шапка отрендерена сервером экранированным текстом — разбор здесь,
+// тем же разборщиком, что и карточки: второй копии правил нет.
+document.querySelectorAll('[data-rich]').forEach(el => {
+  el.innerHTML = el.dataset.rich === 'block'
+    ? rich(el.textContent) : richInline(el.textContent);
+});
 bind();
 render();
 bind();   // строки шкалы появились только что — им тоже нужны обработчики
@@ -1454,14 +1585,23 @@ def render(board: dict[str, Any]) -> str:
     # сервера: файл `.swarm/board.html` открывают и напрямую (file://),
     # где заголовка нет вовсе — и весь русский текст превращался в
     # мусор, хотя руководство оператора велит открывать именно файл.
+    title, brief = _goal_parts(str(board.get("goal") or ""))
     parts = [
         '<meta charset="utf-8">',
         f"<title>Доска прогона</title><style>{CSS}</style>",
         '<div class="wrap">',
         rail,
-        f"<h1>{e(board.get('goal') or 'цель не задана')}</h1>",
-        f'<div class="sub">{" · ".join(sub)}</div>',
+        f'<h1 data-rich="inline">{e(title or "цель не задана")}</h1>',
     ]
+    if brief:
+        # Без JS блок читается как экранированный текст — страницу
+        # открывают и файлом, и разметка не имеет права что-то прятать.
+        parts.append(
+            '<details class="goal"><summary class="det">постановка целиком'
+            f'</summary><div class="rich" data-rich="block">{e(brief)}'
+            "</div></details>"
+        )
+    parts.append(f'<div class="sub">{" · ".join(sub)}</div>')
 
     parts.append(_vitals(board, tasks, by_status))
 
@@ -1620,7 +1760,7 @@ def render(board: dict[str, Any]) -> str:
         ensure_ascii=False,
     ).replace("</", "<\\/")
     parts.append(f'<script type="application/json" id="data">{payload}</script>')
-    parts.append(f"<script>{JS}</script>")
+    parts.append(f"<script>{RICH_JS}{JS}</script>")
     return "\n".join(parts)
 
 

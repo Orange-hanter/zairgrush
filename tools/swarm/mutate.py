@@ -476,6 +476,27 @@ MUTATIONS = [
         plan = duel.plan(self.config, task["id"])""",
      """        plan = duel.plan(self.config, task["id"])""",
      "test_gate_reuse"),
+    # --- доска: заголовок и разбор постановок ---
+    ("доска: цель снова целиком в заголовке",
+     "swarm/board.py",
+     """    if len(first) > TITLE_MAX:""",
+     """    if False:""",
+     "test_board_rich"),
+    ("доска: код в постановке не экранируется",
+     "swarm/board.py",
+     """      '<code>' + richEsc(m[1] ?? m[0]) + '</code>';""",
+     """      '<code>' + (m[1] ?? m[0]) + '</code>';""",
+     "test_board_rich"),
+    ("доска: одинокое «1.» в прозе становится списком",
+     "swarm/board.py",
+     """  const flush = () => { if (run.length >= 2) out.push(...run); run = []; };""",
+     """  const flush = () => { if (run.length >= 1) out.push(...run); run = []; };""",
+     "test_board_rich"),
+    ("доска: тире посреди фразы становится пунктом",
+     "swarm/board.py",
+     """    if (m[4] && at > 0 && s[at - 1] !== '\\n') continue;  // тире в прозе""",
+     """    if (false) continue;""",
+     "test_board_rich"),
 ]
 
 
