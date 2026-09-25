@@ -59,12 +59,12 @@ DEFAULT_ENGINE = "kimi"
 # стенда, а не падение петли на чужом движке.
 ZCODE_BUNDLE = pathlib.Path("/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs")
 
-# Инструменты исполнителя. Имена без привязки к CLI: тот же набор живёт
-# и у claude (--allowedTools), и у zcode (--allowed-tools) — отдельный
-# список на движок превратил бы правку политики в тихую рассинхронизацию.
-# Ревьюер живёт на read-only наборе (§3.2), исполнителю нужно писать
-# файлы и гонять тесты — иначе он не может ни сделать работу, ни
-# заполнить `evidence.tests`.
+# Инструменты исполнителя. Имена без привязки к CLI: набор живёт
+# у claude (--allowedTools); у zcode с CLI 0.16.9 белого списка нет
+# (`--allowed-tools` удалён) — там он остаётся только декларацией
+# дисциплины роли в промпте. Ревьюер живёт на read-only наборе (§3.2),
+# исполнителю нужно писать файлы и гонять тесты — иначе он не может
+# ни сделать работу, ни заполнить `evidence.tests`.
 EXECUTOR_ALLOWED_TOOLS = "Read,Grep,Glob,Edit,Write,Bash"
 
 # Промпт исполнителя говорит «git для тебя ТОЛЬКО ДЛЯ ЧТЕНИЯ», и до сих
@@ -133,10 +133,10 @@ CLAUDE_PERMISSION_MODE = "acceptEdits"
 
 # ZCode `--prompt` по умолчанию уже yolo, но флаг обязан быть в argv:
 # иначе сессионный /mode из TUI мог бы протечь в автономный прогон.
-# Рядом в argv идёт --disallowed-tools: контракт --help 0.16.5 не
-# фиксирует, чей приоритет выше в связке yolo + deny-list, и молча
-# надеяться, что deny-list переживёт режим, нельзя — связка держится
-# тестом (test_git_write_is_denied_not_all_git): сменит ли CLI приоритет,
+# Рядом в argv идёт --disallowed-tools; с 0.16.9 deny-list — ЕДИНСТВЕННАЯ
+# механическая преграда исполнителя (белого списка больше нет), и молча
+# надеяться, что он переживёт режим, нельзя — связка держится тестом
+# (test_git_write_is_denied_not_all_git): сменит ли CLI приоритет,
 # argv меняется ВМЕСТЕ с тестом, а не проходит незамеченной.
 ZCODE_PERMISSION_MODE = "yolo"
 
@@ -356,8 +356,12 @@ def _claude_argv(
 def _zcode_argv(
     model: str, prompt: PromptDelivery, config: dict[str, Any], schema: str, cwd: str
 ) -> list[str]:
-    # Контракт снят с --help CLI 0.16.5. `--model` в нём нет: хвост
+    # Контракт снят с --help CLI 0.16.9. `--model` в нём нет: хвост
     # executor_model пишется в метрику, на argv не кладётся.
+    # `--allowed-tools` из 0.16.5 УДАЛЁН (0.16.9 его не знает и падает
+    # «Unknown option» на спавне): белый список исполнителя у zcode
+    # больше не выразим, роль ограничивает себя одним deny-списком и
+    # дисциплиной промпта.
     del model, config, schema
     cmd = [
         *zcode_cmd(),
@@ -367,8 +371,6 @@ def _zcode_argv(
         "--json",
         "--mode",
         ZCODE_PERMISSION_MODE,
-        "--allowed-tools",
-        EXECUTOR_ALLOWED_TOOLS,
         "--disallowed-tools",
         ZCODE_DENIED_TOOLS,
         "--surface",
