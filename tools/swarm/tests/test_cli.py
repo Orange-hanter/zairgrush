@@ -708,6 +708,64 @@ class TestDoctor(CliCase):
         self.assertIn("[  ok ]", line)
         self.assertIn("грамматики py/rs", line)
 
+    def test_missing_uv_is_optional_not_red(self):
+        """uv нет — строка честно называет отсутствие и отсылает к
+        check.sh, но статус опциональный: за инструмент, без которого
+        работающий гейт живёт, доктор не имеет права красить вывод."""
+        doctor_ns = cli.cmd_doctor.__globals__
+        original_which = doctor_ns["shutil"].which
+
+        def which_without_uv(name, *a, **kw):
+            if name == "uv":
+                return None
+            return original_which(name, *a, **kw)
+
+        doctor_ns["shutil"].which = which_without_uv
+        self.addCleanup(
+            setattr, doctor_ns["shutil"], "which", original_which
+        )
+        _code, out = run_cli("--root", str(self.root), "doctor")
+        line = next(ln for ln in out.splitlines() if " uv " in ln)
+        self.assertIn("[ опц ]", line)
+        self.assertIn("не установлен", line)
+        self.assertIn("check.sh", line)
+        self.assertNotIn("[ПРОБЛ] uv", out)
+
+    def test_present_uv_reports_version(self):
+        """uv есть — строка зелёная и несёт версию. Проба идёт через
+        общий стержень _probe_version: подменяем его, а не запускаем
+        бинарь, — тест не зависит от того, стоит ли uv на машине."""
+        doctor_ns = cli.cmd_doctor.__globals__
+        original_which = doctor_ns["shutil"].which
+
+        def which_with_fake_uv(name, *a, **kw):
+            if name == "uv":
+                return "/fake/bin/uv"
+            return original_which(name, *a, **kw)
+
+        doctor_ns["shutil"].which = which_with_fake_uv
+        self.addCleanup(
+            setattr, doctor_ns["shutil"], "which", original_which
+        )
+        original_run_probe = doctor_ns["_run_probe"]
+
+        def fake_run_probe(cmd, **kw):
+            if cmd[:2] == ["/fake/bin/uv", "--version"]:
+                proc = subprocess.CompletedProcess(
+                    cmd, 0, stdout="uv 0.9.9-test\n", stderr=""
+                )
+                return proc, ""
+            return original_run_probe(cmd, **kw)
+
+        doctor_ns["_run_probe"] = fake_run_probe
+        self.addCleanup(
+            lambda: doctor_ns.__setitem__("_run_probe", original_run_probe)
+        )
+        _code, out = run_cli("--root", str(self.root), "doctor")
+        line = next(ln for ln in out.splitlines() if " uv " in ln)
+        self.assertIn("[  ok ]", line)
+        self.assertIn("uv 0.9.9-test", line)
+
 
 class TestReport(CliCase):
     def test_renders_journal(self):
