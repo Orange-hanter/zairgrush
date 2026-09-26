@@ -406,7 +406,8 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
         quota = agents.loop_mod.quota_error(env)
         if quota:
             agents.state.metric(task=task["id"], phase="review",
-                              quota_wait=True, provider_message=quota)
+                              quota_wait=True, provider_message=quota,
+                              failure="quota")
             raise agents.loop_mod.QuotaExceededError(quota)
         verdict = env.get("structured_output")
         cost = env.get("total_cost_usd")
@@ -416,6 +417,12 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
         verdict = salvage(agents, task, iteration, run.raw_stream())
         salvaged = verdict is not None
     valid = agents.loop_mod.validate_verdict(verdict)
+    # AUD-003: вызов без вердикта различим в метрике — отказ провайдера не
+    # штрафует руку в «мажорах на доллар», невалидный ответ модели штрафует.
+    failure: str | None = None
+    if not valid:
+        failure = (agents.loop_mod.provider_failure(env, result.reason)
+                   or "invalid_verdict")
     # usage — конверт Claude как есть: поле отсутствует на любом исходе
     # без успешного result-события, и это НЕ то же самое, что нулевые
     # токены — журнал читается как данные (§9.3), отсюда None, не 0.
@@ -431,6 +438,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                       diff_files=diff_files, diff_lines=diff_lines,
                       triage=("cheap" if triage_route == "cheap" else None),
                       valid=valid, terminal_reason=terminal,
+                      failure=failure,
                       salvaged=salvaged or None,
                       confirming=confirming, rules_sha=rules_sha,
                       task_sha=task_sha,

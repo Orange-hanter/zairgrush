@@ -78,6 +78,7 @@ from verdicts import (  # noqa: E402,F401
     classify_findings,
     decide,
     parse_quota_reset,
+    provider_failure,
     quota_error,
     quota_exception,
     validate_verdict,
@@ -92,6 +93,7 @@ __all__ = [
     "EscalationError",
     "ExecutorUnavailableError",
     "QuotaExceededError",
+    "provider_failure",
     "quota_error",
 ]
 

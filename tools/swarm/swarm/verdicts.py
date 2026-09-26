@@ -153,6 +153,41 @@ def quota_error(envelope: Any) -> str | None:
     return None
 
 
+# AUD-003: вызов ревью, умерший без вердикта по вине ПРОВАЙДЕРА. Деньги
+# такого вызова потрачены и обязаны оставаться в total_spend (иначе потолок
+# прогона врёт в другую сторону), но руке он не принадлежит: в знаменатель
+# «мажоров на доллар» он не идёт. Невалидный вердикт от живой модели —
+# другое дело: это провал руки (`invalid_verdict`), он в знаменателе.
+PROVIDER_FAILURES = ("quota", "safeguard", "timeout", "network")
+SAFEGUARD_MARKERS = ("safeguards flagged", "safeguard")
+
+
+def provider_failure(envelope: Any, run_reason: str | None) -> str | None:
+    """Причина отказа провайдера — quota | safeguard | timeout | network.
+
+    None — отказа провайдера нет (вердикт мог быть и невалидным: это уже
+    вина руки). `network` — любая ошибка API/транспорта без более узкого
+    признака: провайдер не дал ответа, модель тут ни при чём. Живой
+    случай — d4rn (2026-09-20): `is_error` при `subtype: "success"`,
+    terminal_reason api_error, «Opus 5's safeguards flagged this
+    message», $0.50 и 8 ходов оплаченной работы без вердикта.
+    """
+    if quota_error(envelope):
+        return "quota"
+    if isinstance(envelope, dict) and envelope.get("is_error"):
+        text = str(envelope.get("result") or "").lower()
+        if any(m in text for m in SAFEGUARD_MARKERS):
+            return "safeguard"
+        if (envelope.get("terminal_reason") == "api_error"
+                or text.startswith("api error")):
+            return "network"
+    if run_reason in ("silence", "wall_clock"):
+        return "timeout"
+    if run_reason == "crash" and not isinstance(envelope, dict):
+        return "network"
+    return None
+
+
 def validate_verdict(v: Any) -> bool:
     """Форма И смысл (§4.2): схема не ловит заглушку вроде analysis='test'.
 

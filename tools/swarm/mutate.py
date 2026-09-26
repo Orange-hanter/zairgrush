@@ -525,6 +525,27 @@ MUTATIONS = [
      """    unclear = task.get("_unclear") or {}
     if False:""",
      "test_cli"),
+    # --- AUD-003: отказ провайдера не штрафует руку ---
+    ("отказ провайдера: снова в знаменателе мажоров/$ руки",
+     "swarm/clireport.py",
+     """        if failure in verdicts.PROVIDER_FAILURES:
+            lost.append(dict(e, failure=failure))""",
+     """        if False:
+            lost.append(dict(e, failure=failure))""",
+     "test_provider_failure"),
+    ("отказ провайдера: строка ревью без метки failure",
+     "swarm/reviewer.py",
+     """        failure = (agents.loop_mod.provider_failure(env, result.reason)
+                   or "invalid_verdict")""",
+     """        failure = None""",
+     "test_provider_failure"),
+    ("отказ провайдера: safeguard неотличим от сетевой ошибки",
+     "swarm/verdicts.py",
+     '''        if any(m in text for m in SAFEGUARD_MARKERS):
+            return "safeguard"''',
+     '''        if False:
+            return "safeguard"''',
+     "test_provider_failure"),
 ]
 
 
