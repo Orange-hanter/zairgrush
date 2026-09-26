@@ -518,8 +518,18 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
                     "intent": r.get("intent"),
                 }
             )
+    # Развилки пуриста (AUD-002): адресованы человеку, а до сих пор жили
+    # только в промпте исполнителя и в сыром потоке. Берётся последняя
+    # запись задачи — пурист зовётся один раз до работы, повтор = новый ход.
+    unclear: dict[str, dict[str, Any]] = {}
+    for r in journal:
+        if r.get("kind") == "unclear_found":
+            unclear[_key(r)] = {"count": r.get("count"),
+                                "summary": r.get("summary"),
+                                "items": vocab.unclear_items(r)}
     for t in tasks:
         t["_rounds"] = rounds.get(_key(t, "id"), [])
+        t["_unclear"] = unclear.get(_key(t, "id"))
 
     # Записи без задачи — это события ПРОГОНА, а не чьи-то: сгруппировать их
     # «по задачам» значит потерять ровно то, что объясняет остановку очереди.

@@ -70,6 +70,8 @@ KIND_RU = {
     "verdict_salvaged": "вердикт добыт из потока",
     "tests_authored": "тесты написаны независимо",
     "tests_not_authored": "независимых тестов не получилось",
+    "unclear_found": "пурист нашёл развилки спецификации",
+    "unclear_failed": "пурист не отработал",
     "memory_written": "память пополнена",
     "memory_injected": "память подмешана в промпт",
     "memory_reflect": "память переосмыслена",
@@ -390,6 +392,43 @@ def _executor_unavailable(r: dict[str, Any]) -> tuple[str, set[str]]:
             {"stderr"})
 
 
+def unclear_items(r: dict[str, Any]) -> list[dict[str, str]]:
+    """Находки пуриста из записи `unclear_found` — обеих форм журнала.
+
+    С AUD-002 запись несёт `items` (вопрос, от чего зависит, где молчит
+    спека). Записи до неё — только `questions`, строки, обрезанные до 160
+    знаков: их показываем как есть, а не теряем.
+    """
+    out = [
+        {k: str(i[k]) for k in ("question", "why_it_matters", "where")
+         if i.get(k)}
+        for i in _seq(r.get("items"))
+        if isinstance(i, dict) and str(i.get("question") or "").strip()
+    ]
+    if not out:
+        out = [{"question": str(q)} for q in _seq(r.get("questions"))
+               if str(q).strip()]
+    return out
+
+
+def unclear_line(item: dict[str, str]) -> str:
+    """Одна развилка одной строкой — без обрезки: суть вопроса бывает в
+    его последних словах."""
+    extra = [f"{label}: {item[k]}" for k, label in
+             (("why_it_matters", "зависит"), ("where", "где")) if item.get(k)]
+    return item.get("question", "?") + (f" ({'; '.join(extra)})" if extra else "")
+
+
+def _unclear_found(r: dict[str, Any]) -> tuple[str, set[str]]:
+    # Находка пуриста адресована ЧЕЛОВЕКУ (E14): счётчик без вопросов —
+    # ровно тот провал, который нашёл полевой аудит (AUD-002).
+    items = unclear_items(r)
+    lead = f"пурист: развилок спецификации {r.get('count')}"
+    if items:
+        lead += " — " + " | ".join(unclear_line(i) for i in items)
+    return lead, {"count", "items", "questions"}
+
+
 NARRATORS: dict[str, Narrator] = {
     "round": _round,
     "question": _question,
@@ -481,6 +520,7 @@ NARRATORS: dict[str, Narrator] = {
     # Плечо B E11 видно построчно: кто написал тесты — вопрос замера, и
     # «неясное в спецификации» ценнее самих тестов, потому что это
     # находка о ПОСТАНОВКЕ, а не о коде.
+    "unclear_found": _unclear_found,
     "tests_authored": lambda r: (
         ("тесты написаны независимо: "
          + ", ".join(map(str, _seq(r.get("files")) or ["?"]))

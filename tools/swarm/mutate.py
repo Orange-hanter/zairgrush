@@ -512,6 +512,19 @@ MUTATIONS = [
      """    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
         return False""",
      "test_triage"),
+    # --- AUD-002: находка пуриста доходит до человека ---
+    ("пурист: журнал снова режет вопрос до 160 знаков",
+     "swarm/unclear.py",
+     """        items.append({k: str(i[k]).strip()[:JOURNAL_TEXT_MAX]""",
+     """        items.append({k: str(i[k]).strip()[:160]""",
+     "test_unclear"),
+    ("пурист: why молчит о развилках спецификации",
+     "swarm/cliexplain.py",
+     """    unclear = task.get("_unclear") or {}
+    if unclear.get("items"):""",
+     """    unclear = task.get("_unclear") or {}
+    if False:""",
+     "test_cli"),
 ]
 
 

@@ -831,6 +831,29 @@ class TestReportIsProse(CliCase):
 class TestWhy(CliCase):
     """Один ответ на «почему встало», собранный из тех же файлов."""
 
+    def _unclear(self):
+        self.state.log(
+            "unclear_found", task="aaaa", count=1, summary="почти всё закрыто",
+            items=[{"question": "suppressed пустым массивом или без ключа?",
+                    "why_it_matters": "клиент JSON ведёт себя по-разному",
+                    "where": "docs/09 §9"}])
+
+    def test_purist_questions_are_text_not_a_counter(self):
+        """AUD-002: вопрос пуриста виден человеку целиком, с тем, от
+        чего зависит ответ и где молчит спека."""
+        self._unclear()
+        _, out = run_cli("--root", str(self.root), "why", "aaaa")
+        self.assertIn("развилки спецификации", out)
+        self.assertIn("suppressed пустым массивом или без ключа?", out)
+        self.assertIn("зависит: клиент JSON ведёт себя по-разному", out)
+        self.assertIn("где: docs/09 §9", out)
+
+    def test_report_chronicle_carries_the_question(self):
+        self._unclear()
+        _, out = run_cli("--root", str(self.root), "report", "--task", "aaaa")
+        self.assertIn("suppressed пустым массивом или без ключа?", out)
+        self.assertIn("пурист", out)
+
     def _stall(self):
         self.state.set_status(
             "aaaa",

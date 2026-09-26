@@ -62,6 +62,13 @@ if TYPE_CHECKING:
 # спеке, скорее пересказывает спеку, чем находит развилки.
 MAX_ITEMS = 6
 
+# Потолок одного поля находки в журнале — от мусора, не от длины. Журнал —
+# то место, куда блок промпта отсылает за полным списком, и единственное,
+# что видит человек (AUD-002): прежняя обрезка до 160 знаков съела у j4vs
+# ровно суть вопроса («…присутствует пустым массивом или отсутствует»).
+JOURNAL_TEXT_MAX = 2000
+ITEM_FIELDS = ("question", "why_it_matters", "where")
+
 
 def enabled(config: dict[str, Any]) -> bool:
     """Флаг `[experiments] unclear`. Умолчание — выключено."""
@@ -155,6 +162,24 @@ def block(report: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def journal_items(report: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Находки пуриста для журнала — ВСЕ и со всеми полями контракта.
+
+    В промпт исполнителя идёт не больше MAX_ITEMS (block), а журнал
+    держит полный список: блок сам отсылает туда за остатком. Пустое поле
+    не пишется — отсутствие факта не факт; находка без вопроса — не
+    находка (та же отбраковка, что у block).
+    """
+    raw = report.get("unclear") if isinstance(report, dict) else None
+    items: list[dict[str, str]] = []
+    for i in raw if isinstance(raw, list) else []:
+        if not isinstance(i, dict) or not str(i.get("question") or "").strip():
+            continue
+        items.append({k: str(i[k]).strip()[:JOURNAL_TEXT_MAX]
+                      for k in ITEM_FIELDS if str(i.get(k) or "").strip()})
+    return items
+
+
 def find(agents: AgentsLike, task: dict[str, Any], goal: str) -> dict[str, Any] | None:
     """Один вызов пуриста. Отчёт либо None.
 
@@ -228,11 +253,7 @@ def find(agents: AgentsLike, task: dict[str, Any], goal: str) -> dict[str, Any] 
         "unclear_found",
         task=task["id"],
         count=found,
-        summary=str((report or {}).get("summary") or "")[:300],
-        questions=[
-            str(i.get("question"))[:160]
-            for i in ((report or {}).get("unclear") or [])
-            if isinstance(i, dict)
-        ][:MAX_ITEMS],
+        summary=str((report or {}).get("summary") or "")[:JOURNAL_TEXT_MAX],
+        items=journal_items(report),
     )
     return report
