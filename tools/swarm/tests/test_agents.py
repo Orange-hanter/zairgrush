@@ -503,7 +503,7 @@ class TestExecutorEngineWiring(AgentsCase):
             # суффикс ловил бы любой бинарь на «node». Опознавание по
             # форме argv, а не патчем движка: подмена сработает и тогда,
             # когда модули петли загружены в нескольких копиях.
-            is_zcode = head == "zcode" or (
+            is_zcode = pathlib.Path(head).name == "zcode" or (
                 pathlib.Path(head).name == "node"
                 and any(str(a).endswith("zcode.cjs") for a in argv[1:])
             )

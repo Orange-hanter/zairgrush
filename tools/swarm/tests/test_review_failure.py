@@ -711,6 +711,18 @@ class TestVerdictSalvagedFromStream(RepoCase):
         self.assertEqual(verdict["verdict"], "approve",
                          "нечитаемые находки не имеют права стать вердиктом")
 
+    def test_salvaged_null_findings_go_to_retry_not_crash(self):
+        """Поток схему не проходил: `findings: null` ронял ревью TypeError
+        (валидатор, затем строка метрики) вместо отказа с повтором."""
+        odd = dict(VALID, verdict="request_changes", findings=None)
+        agents = self._patch([
+            [_tool_call(odd), {"type": "result", "structured_output": None}],
+            [{"type": "result", "structured_output": VALID}],
+        ])
+        verdict = agents.review(dict(self.TASK), "OK", 1)
+        self.assertEqual(len(self.prompts), 2)
+        self.assertEqual(verdict["verdict"], "approve")
+
     def test_nothing_to_salvage_stays_a_failure(self):
         agents = self._patch([[{"type": "result", "structured_output": None}]])
         self.assertIsNone(agents.review(dict(self.TASK), "OK", 1))

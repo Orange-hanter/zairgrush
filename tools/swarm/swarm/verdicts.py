@@ -176,7 +176,13 @@ def verdict_problem(v: Any) -> str | None:
     if v.get("verdict") not in ("approve", "request_changes", "blocked"):
         return (f"поле verdict={v.get('verdict')!r} — не одно из "
                 f"approve|request_changes|blocked")
-    for f in v.get("findings", []):
+    # Вердикт из разбора хвоста (salvage) схему не проходил: findings не
+    # той формы должен дать отказ с повтором, а не исключение.
+    findings = v.get("findings", [])
+    if not isinstance(findings, list) or not all(
+            isinstance(f, dict) for f in findings):
+        return "поле findings — не список объектов находок"
+    for f in findings:
         if f.get("severity") not in SEVERITIES:
             return f"severity={f.get('severity')!r} вне закрытого списка"
         if f.get("category") not in CATEGORIES:

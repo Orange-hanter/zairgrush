@@ -426,7 +426,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                       attempt=attempt, dur_s=round(result.wall_s, 1),
                       run_reason=result.reason,
                       cost_usd=cost, verdict=(verdict or {}).get("verdict"),
-                      findings=len((verdict or {}).get("findings", [])),
+                      findings=len((verdict or {}).get("findings") or []),
                       **_severity_counts(verdict),
                       diff_files=diff_files, diff_lines=diff_lines,
                       triage=("cheap" if triage_route == "cheap" else None),

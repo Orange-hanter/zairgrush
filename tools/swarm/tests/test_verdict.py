@@ -53,6 +53,15 @@ class TestVerdictForm(unittest.TestCase):
         for bad in (None, [], "approve", 42):
             self.assertFalse(lp.validate_verdict(bad))
 
+    def test_malformed_findings_rejected_not_raised(self):
+        """Вердикт из разбора хвоста (salvage) схему не проходил: findings
+        не того типа ронял валидатор исключением вместо отказа с повтором."""
+        for bad in (None, "нет", ["строка"], [None], {"a": 1}):
+            v = verdict("request_changes", [finding()])
+            v["findings"] = bad
+            self.assertFalse(lp.validate_verdict(v), repr(bad))
+            self.assertTrue(lp.verdict_problem(v), repr(bad))
+
     def test_missing_verdict_key(self):
         v = verdict()
         del v["verdict"]
