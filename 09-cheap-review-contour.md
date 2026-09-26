@@ -2,9 +2,9 @@
 title: "ZeusLogic — Cheap models in the review path: a plan"
 type: design
 status: draft
-version: 0.8
+version: 0.9
 created: 2026-08-20
-updated: 2026-09-15
+updated: 2026-09-26
 related:
   - 05-agent-swarm.md
   - 06-knowledge-infra-experiments.md
@@ -158,6 +158,30 @@ the Haiku arm or skip with an explicit journal mark. A cheap classifier
 runs **only** in the ambiguous band, and it holds one asymmetric right:
 it may *downgrade* the arm, never approve and never skip on its own.
 Fail-open = full review.
+
+**Decision on the docs-only diff (AUD-001, ADR-028, 2026-09-26).** As
+shipped under ADR-027, `docs_only` skipped review at *any* size:
+`BAND_MAX_LINES` bounds only the code band. The ZeusLogic field audit
+(15-field-audit-zeuslogic.md §1) showed the cost of that: where a
+document is the source of truth and is edited before the code, a docs
+diff is a contract, and four specs of 168–245 lines each went unread.
+The chosen fix is a threshold, off by default:
+
+- `doc_skip_max_lines = N` in `swarm.toml` — a docs-only diff with more
+  than N changed lines goes to full review, journalled as
+  `guard_block reason=doc_size`; at or below N it is skipped as before.
+- No key — ADR-027 behaviour unchanged. The threshold is not measured,
+  so turning it on is a stand's decision, not the loop's default.
+- A garbage value (not an int, a bool, negative) errs towards full
+  review (threshold 0).
+- "Docs-only" keeps its definition: every path in the diff ends in
+  `.md`/`.rst`/`.adoc`; `.txt` is data, not docs (the g1nt lesson).
+
+Not measured: what a full review of a large docs diff finds, and what
+it costs. The estimate is the order of a pilot code review (~$1–3);
+the measurement is deferred because experiments were paused on
+2026-09-26. The cheap arm on docs (≈$0.1–0.3) was rejected as blind:
+REV-001 found 0/3 endorsed majors on code, and prose was never measured.
 
 ### P2 — A free juror panel with one expensive adjudicator
 
@@ -442,6 +466,14 @@ confirm it, and both are cheap.
 ---
 
 ## Журнал изменений
+
+### v0.9 (2026-09-26)
+
+- §3 P1: решение по документному диффу (AUD-001, ADR-028) — порог
+  `doc_skip_max_lines`, выключен по умолчанию; крупный docs-only дифф при
+  заданном ключе уходит на полное ревью (`guard_block doc_size`).
+  Определение docs-only прежнее. Замер цены и находок на документах не
+  проводился (эксперименты остановлены 2026-09-26) — названо как оценка.
 
 ### v0.8 (2026-09-15)
 

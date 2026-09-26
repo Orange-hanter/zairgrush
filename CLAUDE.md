@@ -32,7 +32,7 @@ Kimi Code (исполнитель по умолчанию, модель K3), о�
 - `stands/<проект>/` — готовые стенды: эталонный `swarm.toml` плюс README
   с порядком развёртывания и списком мин конкретного репозитория
   (`stands/cod-doc/`);
-- `experiments/adr/` — принятые решения экспериментальной программы (ADR 001–013, 016); канонические ADR — таблица `adr` в БД cod-doc (ADR-025), `docs/adr/ADR-NNN.md` — их проекции (ADR-001…027); `experiments/findings.jsonl` — сырой журнал наблюдений; `experiments/goldset/` — замороженный золотой набор ревью PILOT-1; `experiments/reviewarm/` — харвестер и отчёт нулевого шага дешёвого контура (`replay.py`, `analyze.py`, `bakeoff.py`, `REPORT.md` — в git; артефакты прогона в `out*/` — нет). Рабочие стенды экспериментов (`experiments/stand*`, `bench/`, `repomap/` и т.п.) — воспроизводимый scratch, в git не попадают (`.gitignore`).
+- `experiments/adr/` — принятые решения экспериментальной программы (ADR 001–013, 016); канонические ADR — таблица `adr` в БД cod-doc (ADR-025), `docs/adr/ADR-NNN.md` — их проекции (ADR-001…028); `experiments/findings.jsonl` — сырой журнал наблюдений; `experiments/goldset/` — замороженный золотой набор ревью PILOT-1; `experiments/reviewarm/` — харвестер и отчёт нулевого шага дешёвого контура (`replay.py`, `analyze.py`, `bakeoff.py`, `REPORT.md` — в git; артефакты прогона в `out*/` — нет). Рабочие стенды экспериментов (`experiments/stand*`, `bench/`, `repomap/` и т.п.) — воспроизводимый scratch, в git не попадают (`.gitignore`).
 
 Проверка — одна команда: `cd tools/swarm && ./check.sh` (линт → типы →
 тесты, в этом порядке). Отдельно от гейта — мутационный аудит

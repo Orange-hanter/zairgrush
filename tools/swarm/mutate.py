@@ -497,6 +497,21 @@ MUTATIONS = [
      """    if (m[4] && at > 0 && s[at - 1] !== '\\n') continue;  // тире в прозе""",
      """    if (false) continue;""",
      "test_board_rich"),
+    # --- AUD-001: порог документного диффа ---
+    ("триаж: doc_skip_max_lines игнорируется, крупный документ снова skip",
+     "swarm/triage.py",
+     """        if doc_over_limit(diff_lines, config):
+            return {"route": "full", "guard_block": "doc_size"}""",
+     """        if False:
+            return {"route": "full", "guard_block": "doc_size"}""",
+     "test_triage"),
+    ("триаж: мусорный doc_skip_max_lines даёт пропуск, а не полное ревью",
+     "swarm/triage.py",
+     """    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        limit = 0""",
+     """    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        return False""",
+     "test_triage"),
 ]
 
 

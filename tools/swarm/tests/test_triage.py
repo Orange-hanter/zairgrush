@@ -124,6 +124,41 @@ class TestGuard(unittest.TestCase):
         self.assertEqual(d["guard_block"], "protected")
 
 
+class TestDocSizeLimit(unittest.TestCase):
+    """AUD-001: `doc_skip_max_lines` — крупный документный дифф (контракт,
+    а не проза) уходит на полное ревью; без ключа — прежний skip."""
+
+    DOC = staticmethod(lambda n: _diff_for("docs/09-spec.md", ["x"] * n))
+
+    def test_without_key_any_size_skips(self):
+        """Умолчание не меняет поведения ADR-027: порог не мерен."""
+        self.assertEqual(tr.decide(self.DOC(245), 1, 245, {})["route"], "skip")
+
+    def test_limit_is_inclusive(self):
+        cfg = {"doc_skip_max_lines": 40}
+        self.assertEqual(tr.decide(self.DOC(40), 1, 40, cfg)["route"], "skip")
+        d = tr.decide(self.DOC(41), 1, 41, cfg)
+        self.assertEqual(d, {"route": "full", "guard_block": "doc_size"})
+
+    def test_garbage_limit_errs_towards_full_review(self):
+        """Пропуск по нечитаемой настройке объяснить нельзя: мусор = 0."""
+        for bad in ("40", 4.5, True, -1, None, [40]):
+            d = tr.decide(self.DOC(1), 1, 1, {"doc_skip_max_lines": bad})
+            self.assertEqual(d["route"], "full", repr(bad))
+            self.assertEqual(d["guard_block"], "doc_size", repr(bad))
+
+    def test_code_band_ignores_the_doc_limit(self):
+        """Порог документный: кодовая бэнда живёт по BAND_MAX_LINES."""
+        d = tr.decide(_diff_for("src/a.py", ["x"] * 50), 1, 50,
+                      {"doc_skip_max_lines": 10})
+        self.assertEqual(d["route"], "cheap")
+
+    def test_triage_off_wins(self):
+        d = tr.decide(self.DOC(500), 1, 500,
+                      {"triage": False, "doc_skip_max_lines": 10})
+        self.assertEqual(d, {"route": "full"})
+
+
 class TestStandRestriction(unittest.TestCase):
     """Канареечный/adversarial стенд: `triage = false` — полосы нет."""
 
@@ -245,6 +280,26 @@ class TestSkipRoute(RepoCase):
         self.assertEqual(verdict["verdict"], "approve")
         self.assertEqual(verdict["triaged"], "skip",
                          "пропуск обязан быть отличим от вердикта руки")
+
+    def test_doc_over_limit_calls_the_reviewer(self):
+        """AUD-001: документ крупнее порога читается рукой ревьюера, а
+        причина видна в журнале — не молчаливая смена маршрута."""
+        (self.root / "README.md").write_text(
+            "".join(f"строка {i}\n" for i in range(30)))
+        calls = []
+
+        def reply(argv):
+            calls.append(argv)
+            return {"structured_output": VALID, "total_cost_usd": 0.5}
+
+        patch_claude_popen(self, reply)
+        agents = ag.Agents(self.state, {"doc_skip_max_lines": 5})
+        verdict = agents.review(dict(self.SKIP_TASK), "OK", 1)
+        self.assertEqual(len(calls), 1, "крупный документ обязан ревьюиться")
+        self.assertNotIn("triaged", verdict)
+        blocks = [r for r in _journal(self.state)
+                  if r["kind"] == "guard_block"]
+        self.assertEqual([b["reason"] for b in blocks], ["doc_size"])
 
     def test_skip_is_journalled_and_metered(self):
         (self.root / "README.md").write_text("# документация\n")
