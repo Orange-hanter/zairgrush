@@ -25,6 +25,7 @@ Kimi Code (исполнитель по умолчанию, модель K3), о�
 - `12-pilot-journal.md` — журнал пилота PILOT-1 (вынос §19–20 из 07, нумерация сохранена);
 - `13-findings-taxonomy.md` — единая таксономия находок (severity/category вердикта, kind журнала, панель/адъюдикатор, goldset);
 - `14-kimi-vs-sonnet-contest.md` — состязание Kimi 2.8 Code vs Claude Sonnet 5 (4 дисциплины, слепое судейство; без frontmatter);
+- `15-field-audit-zeuslogic.md` — полевой аудит петли по сессии ZeusLogic 2026-09-20 (16 задач, $58.13): минусы по коду и журналам, из них задачи AUD-001…004;
 - `MASTER.md` — реестр cod-doc (хэши документов, журнал действий); `AGENTS.md` — входной гид для любого coding-агента (ZCode читает его автоматически);
 - `.cursor/mcp.json` / `.kimi-code/mcp.json` / `.zcode/config.json` — MCP-хосты IDE: `cod-doc` (слаг `zairgrush`) и `ai-reviewer` (превью, `REVIEW_MCP_ROOT` = этот репозиторий). Не merge-гейт. Пути в этих файлах абсолютные и machine-local (`/Users/dakh/...`) — осознанно: MCP-хосты не раскрывают `${workspaceFolder}`/env-плейсхолдеры; на другой машине конфиги правятся под локальный layout, это не переносимая часть репозитория;
 - `tools/swarm/` — сама реализация: CLI `swarm`, оркестратор, индексация кода, тесты (`pytest`, `tools/swarm/tests/`), JSON-схемы контрактов (`tools/swarm/schemas/`);
