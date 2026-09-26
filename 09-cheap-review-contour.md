@@ -467,7 +467,7 @@ confirm it, and both are cheap.
 ### v0.6 (2026-09-12)
 
 - Рабочие шаги перенесены в cod-doc: план `swarm-review-path` (REV-001…REV-005,
-  `cod-doc plan show swarm-review-path -p zairgrush`). Этот документ остаётся
+  `cod-doc plan show 'Дешёвый контур ревью: P0–P4' -p zairgrush`). Этот документ остаётся
   обоснованием и контекстом; статусы исполнения — в DB (ADR-014).
 
 ### v0.5 (2026-08-22)

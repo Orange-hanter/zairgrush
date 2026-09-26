@@ -1,0 +1,36 @@
+{
+  "mcp": {
+    "servers": {
+      "cod-doc": {
+        "type": "http",
+        "url": "http://127.0.0.1:8801/mcp"
+      },
+      "ai-reviewer": {
+        "type": "stdio",
+        "command": "/bin/sh",
+        "args": [
+          "/Users/dakh/Git/_my/ai-reviewer/cursor-plugin/bin/review-mcp.sh"
+        ],
+        "env": {
+          "AI_REVIEWER_ROOT": "/Users/dakh/Git/_my/ai-reviewer",
+          "AI_REVIEWER_NODE": "/Users/dakh/.local/bin/node",
+          "REVIEW_MCP_ROOT": "/Users/dakh/Git/_my/ZAIrgRush",
+          "STRUCTURE_MCP_ROOT": "/Users/dakh/Git/_my/ZAIrgRush"
+        }
+      },
+      "ai-reviewer-structure": {
+        "type": "stdio",
+        "command": "/bin/sh",
+        "args": [
+          "/Users/dakh/Git/_my/ai-reviewer/cursor-plugin/bin/structure-mcp.sh"
+        ],
+        "env": {
+          "AI_REVIEWER_ROOT": "/Users/dakh/Git/_my/ai-reviewer",
+          "AI_REVIEWER_NODE": "/Users/dakh/.local/bin/node",
+          "REVIEW_MCP_ROOT": "/Users/dakh/Git/_my/ZAIrgRush",
+          "STRUCTURE_MCP_ROOT": "/Users/dakh/Git/_my/ZAIrgRush"
+        }
+      }
+    }
+  }
+}

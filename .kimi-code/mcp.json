@@ -1,14 +1,15 @@
 {
   "mcpServers": {
     "cod-doc": {
-      "type": "stdio",
-      "command": "/Users/dakh/Git/_my/cod-doc/.venv/bin/cod-doc-mcp",
-      "args": ["--profile", "standard"]
+      "type": "http",
+      "url": "http://127.0.0.1:8801/mcp"
     },
     "ai-reviewer": {
       "type": "stdio",
       "command": "/bin/sh",
-      "args": ["/Users/dakh/Git/_my/ai-reviewer/cursor-plugin/bin/review-mcp.sh"],
+      "args": [
+        "/Users/dakh/Git/_my/ai-reviewer/cursor-plugin/bin/review-mcp.sh"
+      ],
       "env": {
         "AI_REVIEWER_ROOT": "/Users/dakh/Git/_my/ai-reviewer",
         "AI_REVIEWER_NODE": "/Users/dakh/.local/bin/node",
@@ -19,7 +20,9 @@
     "ai-reviewer-structure": {
       "type": "stdio",
       "command": "/bin/sh",
-      "args": ["/Users/dakh/Git/_my/ai-reviewer/cursor-plugin/bin/structure-mcp.sh"],
+      "args": [
+        "/Users/dakh/Git/_my/ai-reviewer/cursor-plugin/bin/structure-mcp.sh"
+      ],
       "env": {
         "AI_REVIEWER_ROOT": "/Users/dakh/Git/_my/ai-reviewer",
         "AI_REVIEWER_NODE": "/Users/dakh/.local/bin/node",
