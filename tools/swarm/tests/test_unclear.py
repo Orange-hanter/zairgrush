@@ -172,3 +172,76 @@ class TestReportShapeIsNotTheExecutors(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+J4VS = HERE / "fixtures" / "j4vs-unclear-envelope.json"
+# Хвост вопроса j4vs — ровно то, что съедала обрезка журнала до 160 знаков.
+J4VS_TAIL = "как пустой массив [], или отсутствует в документе вовсе"
+
+
+class TestJournalReachesTheHuman(unittest.TestCase):
+    """AUD-002: находка пуриста адресована человеку — журнал обязан
+    держать её целиком, а поверхности вывода — показывать текстом."""
+
+    def test_all_items_with_all_fields(self):
+        """Промпт получает MAX_ITEMS, журнал — всё: блок сам отсылает
+        туда за остатком («…и ещё N, см. журнал»)."""
+        many = [dict(ITEM, question=f"вопрос {n}?", where=f"§{n}")
+                for n in range(unclear.MAX_ITEMS + 3)]
+        items = unclear.journal_items({"unclear": many})
+        self.assertEqual(len(items), unclear.MAX_ITEMS + 3)
+        self.assertEqual(items[-1], {"question": f"вопрос {unclear.MAX_ITEMS + 2}?",
+                                     "why_it_matters": ITEM["why_it_matters"],
+                                     "where": f"§{unclear.MAX_ITEMS + 2}"})
+
+    def test_malformed_items_are_dropped_not_raised(self):
+        for bad in (None, "строка", {"unclear": "не список"},
+                    {"unclear": [None, "x", {"question": " "},
+                                 {"why_it_matters": "w"}]}):
+            self.assertEqual(unclear.journal_items(bad), [], repr(bad))
+
+    def test_real_j4vs_question_survives_whole(self):
+        """Живой случай аудита: сырой поток пуриста j4vs (стенд
+        zeus-pilot, 2026-09-20) → запись журнала → фраза отчёта. Суть
+        вопроса — в его конце, и она обязана дойти."""
+        import engines
+        import vocab
+        env = json.loads(J4VS.read_text(encoding="utf-8"))
+        report = engines.report_from_envelope(env, "unclear")
+        items = unclear.journal_items(report)
+        self.assertEqual(len(items), 1)
+        self.assertIn(J4VS_TAIL, items[0]["question"])
+        self.assertIn("DOC-10", items[0]["why_it_matters"])
+        self.assertIn("docs/09-erc.md §9", items[0]["where"])
+        line = vocab.narrate({"kind": "unclear_found", "task": "j4vs",
+                              "count": 1, "items": items})
+        self.assertIn(J4VS_TAIL, line)
+        self.assertIn("зависит:", line)
+
+    def test_block_is_unchanged_by_the_journal(self):
+        """Кэш блока для промпта байт-стабилен: журнал — отдельный путь."""
+        env = json.loads(J4VS.read_text(encoding="utf-8"))
+        import engines
+        report = engines.report_from_envelope(env, "unclear")
+        before = unclear.block(report)
+        unclear.journal_items(report)
+        self.assertEqual(unclear.block(report), before)
+
+
+class TestOldJournalRowsStillRead(unittest.TestCase):
+    """Журнал — данные: записи до AUD-002 несут `questions` строками."""
+
+    def test_old_questions_are_shown(self):
+        import vocab
+        row = {"kind": "unclear_found", "task": "j4vs", "count": 1,
+               "questions": ["обрезанный вопрос присутс"]}
+        self.assertIn("обрезанный вопрос присутс", vocab.narrate(row))
+        self.assertEqual(vocab.unclear_items(row),
+                         [{"question": "обрезанный вопрос присутс"}])
+
+    def test_wrong_shapes_do_not_crash_the_phrase(self):
+        import vocab
+        for items in ("строка", [None, 3, {"question": ""}], {"a": 1}, 7):
+            line = vocab.narrate({"kind": "unclear_found", "count": 0,
+                                  "items": items})
+            self.assertIn("пурист", line, repr(items))

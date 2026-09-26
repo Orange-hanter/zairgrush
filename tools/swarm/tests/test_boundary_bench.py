@@ -9,12 +9,18 @@ E12/boundary-lint: первая версия была 1/7).
 
 В отличие от бенча диагнозов (test_diagnosis_bench.py), ground truth
 здесь включает СТЕНД — репозиторий ZeusLogic, а стенды по правилу §1.4
-06-дока в git не входят. Поэтому: стенд есть — бенч бежит по-настоящему
-и падает при регрессе линтера; стенда нет — громкий skip с причиной,
-а не молчаливая зелень (тот же договор, что у replay.py: честно сказать,
-что мерить нечего). Падение на машине со стендом — сигнал: либо линтер
-сломали, либо стенд ушёл так далеко, что замер перестал что-то значить, —
-и тогда набор пересматривает человек, а не тест подбирается под ответ.
+06-дока в git не входят. Поэтому мерить бенч обязан по ЗАМОРОЖЕННОМУ
+снапшоту пилота (worktree стенда на теге `pilot-2026-08`), а не по живому
+чекауту: живой стенд уехал вперёд 2026-09-20 (XlsxRenderer и пр.) —
+спорные файлы engine.rs и golden/nets.txt удалились, производители
+размножились, и замер по нему обнулился (0/7 вместо 4/7) без всякого
+регресса линтера (проверено 2026-09-25; сам линтер с даты заморозки не
+менялся ни разу — один коммит в его истории, 150a5db). Снапшота нет —
+громкий skip с рецептом, а не молчаливая зелень и не ложная краснота
+(тот же договор, что у replay.py: честно сказать, что мерить нечего).
+Падение на поднятой машине со снапшотом — сигнал: либо линтер сломали,
+либо снапшот подменили, — и тогда набор пересматривает человек, а не
+тест подбирается под ответ.
 """
 import importlib.util
 import json
@@ -34,18 +40,32 @@ spec.loader.exec_module(replay)
 FROZEN_CAUGHT, FROZEN_TOTAL = 4, 7
 EXPECTED_QIDS = {"q005", "q011", "q012", "q014", "q016", "q017", "q020"}
 
+# Снапшот пилота в worktree стенда; SWARM_BOUNDARY_STAND перекрывает.
+# Живой чекаут — НЕ фолбэк: на нём замер честен, но бессмыслен (см.
+# докстринг), и молча мерить по нему — та же ловушка, что молчаливый skip.
+SNAPSHOT = pathlib.Path.home() / "work" / "zeus-pilot-bench"
+SNAPSHOT_RECIPE = (
+    "git -C ~/work/zeus-pilot worktree add ~/work/zeus-pilot-bench "
+    "pilot-2026-08 && mkdir -p ~/work/zeus-pilot-bench/.swarm && "
+    "cp ~/work/zeus-pilot/.swarm/tasks.json ~/work/zeus-pilot-bench/.swarm/"
+)
+
 
 def stand() -> pathlib.Path:
-    return pathlib.Path(os.environ.get(
-        "SWARM_BOUNDARY_STAND", pathlib.Path.home() / "work" / "zeus-pilot"))
+    env = os.environ.get("SWARM_BOUNDARY_STAND")
+    if env:
+        return pathlib.Path(env)
+    return SNAPSHOT
 
 
 class TestBoundaryAgainstGoldSet(unittest.TestCase):
     def setUp(self):
         self.ranks = replay.measure(stand())
         if self.ranks is None:
-            self.skipTest(f"стенд {stand()} недоступен — бенчу нечего "
-                          f"мерить (стенды в git не входят, §1.4 06-дока)")
+            self.skipTest(
+                f"снапшот {stand()} не поднят — бенчу нечего мерить "
+                f"(стенды в git не входят, §1.4 06-дока). Поднять: "
+                f"{SNAPSHOT_RECIPE}")
 
     def test_cases_cover_all_seven_granted_disputes(self):
         rows = [json.loads(ln) for ln in

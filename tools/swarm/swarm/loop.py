@@ -78,6 +78,7 @@ from verdicts import (  # noqa: E402,F401
     classify_findings,
     decide,
     parse_quota_reset,
+    provider_failure,
     quota_error,
     quota_exception,
     validate_verdict,
@@ -92,6 +93,7 @@ __all__ = [
     "EscalationError",
     "ExecutorUnavailableError",
     "QuotaExceededError",
+    "provider_failure",
     "quota_error",
 ]
 
@@ -281,6 +283,10 @@ class Loop:
             self.agents.unclear_cache = (str(task["id"]), block)
             count = len((report or {}).get("unclear") or [])
             self.ui(f"    пурист: развилок спецификации {count}")
+            # Вопросы — человеку, а не только исполнителю (AUD-002): полный
+            # текст в журнале, здесь — начало каждого, чтобы было видно.
+            for item in unclear_mod.journal_items(report)[:unclear_mod.MAX_ITEMS]:
+                self.ui(f"      ? {item['question'][:200]}")
         else:
             # Пустой список — законный и частый ответ, и говорить о нём
             # надо ровно так, а не молчать: молчание тут неотличимо от

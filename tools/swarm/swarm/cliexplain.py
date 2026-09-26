@@ -226,6 +226,20 @@ def _explain(task: dict[str, Any], root: str) -> None:
         if len(counts) > 1:
             print("  " + _read_trend(counts))
 
+    # Пурист нашёл развилки ДО работы и намеренно их не закрыл (E14):
+    # решать их — человеку, исполнитель лишь обязан назвать свой выбор в
+    # deviations. Счётчик на экране прогона эту находку не доносил (AUD-002).
+    unclear = task.get("_unclear") or {}
+    if unclear.get("items"):
+        print("\nразвилки спецификации (пурист, до работы; свой выбор "
+              "исполнитель обязан был назвать в deviations):")
+        for item in unclear["items"]:
+            print(f"  ? {item.get('question')}")
+            if item.get("why_it_matters"):
+                print(f"      зависит: {item['why_it_matters']}")
+            if item.get("where"):
+                print(f"      где: {item['where']}")
+
     verdicts = task.get("_verdicts") or []
     if verdicts:
         last = verdicts[-1]

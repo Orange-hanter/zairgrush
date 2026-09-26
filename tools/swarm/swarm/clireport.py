@@ -35,6 +35,33 @@ def cmd_impact(args: argparse.Namespace) -> int:
 
 
 
+def _review_failure(row: dict[str, Any], log_dir: pathlib.Path) -> str | None:
+    """Причина провала вызова ревью; None — вердикт валиден.
+
+    Строки до AUD-003 поля `failure` не несут: причину восстанавливаем по
+    сохранённому конверту (тот же классификатор, что пишет поле сейчас),
+    иначе прошлые отказы провайдера — d4rn, safeguard, $0.50 — остались бы
+    в знаменателе руки навсегда. Конверта нет — вина руки не доказана, но
+    и провайдера тоже: `unknown`, в знаменателе остаётся.
+    """
+    if row.get("failure"):
+        return str(row["failure"])
+    if row.get("quota_wait"):
+        return "quota"
+    if row.get("valid"):
+        return None
+    verdicts = cli.load_mod("verdicts")
+    stem = f"{row.get('task')}-i{row.get('iter')}"
+    for phase in ("a", "v"):
+        path = log_dir / f"{stem}-{phase}{row.get('attempt')}-review.json"
+        with contextlib.suppress(OSError, ValueError):
+            env = json.loads(path.read_text(encoding="utf-8"))
+            reason = verdicts.provider_failure(env, row.get("run_reason"))
+            return str(reason or "invalid_verdict")
+    reason = verdicts.provider_failure(None, row.get("run_reason"))
+    return str(reason) if reason else "unknown"
+
+
 def cmd_ab(args: argparse.Namespace) -> int:
     """Сводка по рукам замера: что дал жребий за все прогоны.
 
@@ -58,17 +85,48 @@ def cmd_ab(args: argparse.Namespace) -> int:
     if not st.metrics_path.exists():
         print("метрик нет")
         return 0
+    verdicts = cli.load_mod("verdicts")
     rows = []
+    # Отказы провайдера (AUD-003): деньги потрачены и в total_spend
+    # остаются, но руке не принадлежат — отдельная строка сводки.
+    lost: list[dict[str, Any]] = []
+    # Всё, что оплачено РУКОЙ: валидные вердикты и её собственные провалы
+    # (невалидный ответ живой модели) — знаменатель «мажоров на доллар».
+    arm_paid: list[dict[str, Any]] = []
     for line in st.metrics_path.read_text(encoding="utf-8").splitlines():
         try:
             e = json.loads(line)
         except ValueError:
             continue
-        if e.get("phase") != "review" or not e.get("valid"):
+        if not isinstance(e, dict) or e.get("phase") != "review":
             continue
         if args.run and e.get("run_id") != args.run:
             continue
-        rows.append(e)
+        failure = _review_failure(e, st.dir / "log")
+        if failure in verdicts.PROVIDER_FAILURES:
+            lost.append(dict(e, failure=failure))
+            continue
+        arm_paid.append(e)
+        if failure is None:
+            rows.append(e)
+    if lost:
+        spent = sum(e.get("cost_usd") or 0 for e in lost)
+        by: dict[str, int] = {}
+        for e in lost:
+            by[e["failure"]] = by.get(e["failure"], 0) + 1
+        print(f"потеряно на отказах провайдера: ${spent:.2f} в {len(lost)} "
+              f"вызов(ах) — " + ", ".join(f"{k} {v}" for k, v in sorted(by.items()))
+              + "; в total_spend учтены, в знаменатель рук не идут")
+        for e in lost:
+            # Строка ожидания квоты пишется до вызова: ни итерации, ни
+            # модели в ней нет — печатаем только то, что известно.
+            where = ", ".join(
+                f"{label} {e[k]}" for k, label in
+                (("iter", "итерация"), ("attempt", "попытка"), ("model", "модель"))
+                if e.get(k) is not None)
+            print(f"  {e.get('task')}{': ' + where if where else ''} — "
+                  f"{e['failure']}, ${e.get('cost_usd') or 0:.2f}")
+        print()
     if not rows:
         print("нет валидных ревью в метриках")
         return 0
@@ -87,16 +145,35 @@ def cmd_ab(args: argparse.Namespace) -> int:
     for e in rows:
         groups.setdefault(arm(e), []).append(e)
 
+    paid: dict[tuple[str, str], float] = {}
+    for e in arm_paid:
+        paid[arm(e)] = paid.get(arm(e), 0.0) + (e.get("cost_usd") or 0)
+
+    def per_dollar(key: tuple[str, str], g: list[dict[str, Any]]) -> str:
+        # Числитель — blocker+major ПО СЛОВУ РЕВЬЮЕРА, а не принятые
+        # человеком: принятия в метриках нет. Строки до разложения по
+        # тяжести (без поля majors) в счёт не идут — ноль был бы выдумкой.
+        split = [e for e in g if "majors" in e]
+        if not split or not paid.get(key):
+            return "—"
+        heavy = sum((e.get("majors") or 0) + (e.get("blockers") or 0)
+                    for e in split)
+        return f"{heavy / paid[key]:.2f}"
+
     print(f"=== руки замера ({len(rows)} валидных ревью) ===")
     print(f"{'модель':<20}{'усилие':<14}{'n':>4}{'$/вызов':>10}"
-          f"{'находок':>10}{'approve':>9}")
+          f"{'находок':>10}{'approve':>9}{'мажоров/$':>11}")
     for key in sorted(groups):
         g = groups[key]
         cost = sum(e.get("cost_usd") or 0 for e in g) / len(g)
         find = sum(e.get("findings") or 0 for e in g) / len(g)
         appr = sum(1 for e in g if e.get("verdict") == "approve")
         print(f"{key[0]:<20}{key[1]:<14}{len(g):>4}{cost:>10.2f}"
-              f"{find:>10.1f}{appr:>6}/{len(g)}")
+              f"{find:>10.1f}{appr:>6}/{len(g)}{per_dollar(key, g):>11}")
+    print("мажоров/$ — blocker+major по вердиктам руки на доллар, оплаченный "
+          "рукой (провалы руки — в знаменателе"
+          + (f"; исключено отказов провайдера: {len(lost)}" if lost else "")
+          + ")")
 
     # Пары: один и тот же дифф (задача + итерация) двумя разными руками.
     # Итерация — правильный ключ диффа: внутри неё исполнитель не

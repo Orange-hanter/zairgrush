@@ -497,6 +497,55 @@ MUTATIONS = [
      """    if (m[4] && at > 0 && s[at - 1] !== '\\n') continue;  // тире в прозе""",
      """    if (false) continue;""",
      "test_board_rich"),
+    # --- AUD-001: порог документного диффа ---
+    ("триаж: doc_skip_max_lines игнорируется, крупный документ снова skip",
+     "swarm/triage.py",
+     """        if doc_over_limit(diff_lines, config):
+            return {"route": "full", "guard_block": "doc_size"}""",
+     """        if False:
+            return {"route": "full", "guard_block": "doc_size"}""",
+     "test_triage"),
+    ("триаж: мусорный doc_skip_max_lines даёт пропуск, а не полное ревью",
+     "swarm/triage.py",
+     """    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        limit = 0""",
+     """    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        return False""",
+     "test_triage"),
+    # --- AUD-002: находка пуриста доходит до человека ---
+    ("пурист: журнал снова режет вопрос до 160 знаков",
+     "swarm/unclear.py",
+     """        items.append({k: str(i[k]).strip()[:JOURNAL_TEXT_MAX]""",
+     """        items.append({k: str(i[k]).strip()[:160]""",
+     "test_unclear"),
+    ("пурист: why молчит о развилках спецификации",
+     "swarm/cliexplain.py",
+     """    unclear = task.get("_unclear") or {}
+    if unclear.get("items"):""",
+     """    unclear = task.get("_unclear") or {}
+    if False:""",
+     "test_cli"),
+    # --- AUD-003: отказ провайдера не штрафует руку ---
+    ("отказ провайдера: снова в знаменателе мажоров/$ руки",
+     "swarm/clireport.py",
+     """        if failure in verdicts.PROVIDER_FAILURES:
+            lost.append(dict(e, failure=failure))""",
+     """        if False:
+            lost.append(dict(e, failure=failure))""",
+     "test_provider_failure"),
+    ("отказ провайдера: строка ревью без метки failure",
+     "swarm/reviewer.py",
+     """        failure = (agents.loop_mod.provider_failure(env, result.reason)
+                   or "invalid_verdict")""",
+     """        failure = None""",
+     "test_provider_failure"),
+    ("отказ провайдера: safeguard неотличим от сетевой ошибки",
+     "swarm/verdicts.py",
+     '''        if any(m in text for m in SAFEGUARD_MARKERS):
+            return "safeguard"''',
+     '''        if False:
+            return "safeguard"''',
+     "test_provider_failure"),
 ]
 
 

@@ -109,6 +109,25 @@ def giant_reason(diff_lines: int, diff_chars: int,
     return None
 
 
+def doc_over_limit(diff_lines: int, config: dict[str, Any]) -> bool:
+    """Документный дифф крупнее `doc_skip_max_lines` — на полное ревью.
+
+    AUD-001 (15-field-audit §1): на проекте, где документ — источник
+    истины и правится ДО кода, документный дифф — контракт, а не проза,
+    и безусловный skip снимал проверку ровно с него. Ключа нет — прежнее
+    поведение ADR-027 (пропуск при любом размере): порог не мерен, и
+    включать его — решение стенда, а не умолчание петли. Мусорное
+    значение ошибается в сторону полного ревью (порог 0): пропуск по
+    настройке, которую никто не может прочитать, объяснить невозможно.
+    """
+    if "doc_skip_max_lines" not in config:
+        return False
+    limit = config["doc_skip_max_lines"]
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        limit = 0
+    return diff_lines > limit
+
+
 def is_doc(path: str) -> bool:
     """Документация — по суффиксу: README.md да, docs/schema.sql нет."""
     return path.lower().endswith(DOC_SUFFIXES)
@@ -159,6 +178,8 @@ def decide(diff: str, diff_files: int, diff_lines: int,
     if any(is_dep_manifest(p) for p in paths):
         return {"route": "full", "guard_block": "new_dependency"}
     if docs_only:
+        if doc_over_limit(diff_lines, config):
+            return {"route": "full", "guard_block": "doc_size"}
         return {"route": "skip", "docs_only": True}
     return {"route": "cheap"}
 

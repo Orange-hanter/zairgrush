@@ -101,6 +101,7 @@ KNOWN_CONFIG_KEYS = frozenset(
         "confirm_lens",
         "triage",
         "triage_arm",
+        "doc_skip_max_lines",
         "giant_exclusion",
         "giant_max_lines",
         "giant_max_chars",

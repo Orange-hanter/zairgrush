@@ -16,19 +16,49 @@ Ground truth здесь — решения владельца: каждый из
    появились. Сегодняшнее число — верхняя оценка того, что линтер знал
    бы в день планирования.
 
-Стенд в git не входит (воспроизводимый scratch, §1.4 06-дока): без него
-скрипт честно говорит, что мерить нечего, и выходит с кодом 0.
+Стенд в git не входит (воспроизводимый scratch, §1.4 06-дока), но замер
+обязан быть воспроизводимым, поэтому мерит он не по живому чекауту, а по
+ЗАМОРОЖЕННОМУ снапшоту пилота: worktree стенда на теге `pilot-2026-08`
+(владелец зафиксировал им пилотное дерево перед сбросом стенда). Живой
+стенд уехал вперёд 2026-09-20 (XlsxRenderer и пр.): спорные файлы
+удалились, производители размножились — и замер по нему обнулился без
+всякого регресса линтера (0/7 вместо 4/7, проверено 2026-09-25).
+
+Поднять снапшот на новой машине (один раз):
+
+    git -C ~/work/zeus-pilot worktree add ~/work/zeus-pilot-bench pilot-2026-08
+    mkdir -p ~/work/zeus-pilot-bench/.swarm
+    cp ~/work/zeus-pilot/.swarm/tasks.json ~/work/zeus-pilot-bench/.swarm/
+
+(`.swarm/tasks.json` — некоммитимое состояние пилота: по нему бенч
+восстанавливает до-спорные границы.) Без снапшота скрипт честно говорит,
+что мерить нечего, и выходит с кодом 0; путь к снапшоту можно передать
+аргументом или через SWARM_BOUNDARY_STAND.
 """
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 PLANNER = REPO / "tools" / "swarm" / "swarm" / "planner.py"
-STAND = pathlib.Path(sys.argv[1] if len(sys.argv) > 1
-                     else pathlib.Path.home() / "work" / "zeus-pilot")
+# Замороженный снапшот пилота — по умолчанию; живой чекаут стенда
+# уезжает вперёд и обнуляет замер без всякого регресса линтера, поэтому
+# фолбэка на него нет. SWARM_BOUNDARY_STAND и позиционный аргумент
+# перекрывают умолчание целиком (живой стенд можно померить ЯВНО).
+SNAPSHOT = pathlib.Path.home() / "work" / "zeus-pilot-bench"
+
+
+def default_stand() -> pathlib.Path:
+    env = os.environ.get("SWARM_BOUNDARY_STAND")
+    if env:
+        return pathlib.Path(env)
+    return SNAPSHOT
+
+
+STAND = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else default_stand()
 
 
 def load_planner():
@@ -73,8 +103,10 @@ def measure(stand: pathlib.Path) -> dict[str, int | None] | None:
 def main() -> int:
     ranks = measure(STAND)
     if ranks is None:
-        print(f"стенд {STAND} недоступен — замер пропущен "
-              f"(стенды в git не входят; путь можно передать аргументом)")
+        print(f"{STAND} не поднят или без .swarm/tasks.json — замер "
+              f"пропущен (стенды в git не входят; снапшот пилота: "
+              f"git -C ~/work/zeus-pilot worktree add ~/work/zeus-pilot-bench "
+              f"pilot-2026-08, путь можно передать аргументом)")
         return 0
     pl = load_planner()
     cases = [json.loads(ln) for ln in

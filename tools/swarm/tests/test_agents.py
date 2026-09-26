@@ -498,14 +498,21 @@ class TestExecutorEngineWiring(AgentsCase):
 
         def fake(argv, **kw):
             head = argv[0] if argv else ""
-            # zcode вне PATH идёт как `node …/zcode.cjs`: имя бинаря
-            # сверяем ТОЧНО (basename == "node"), а не суффиксом строки —
-            # суффикс ловил бы любой бинарь на «node». Опознавание по
-            # форме argv, а не патчем движка: подмена сработает и тогда,
-            # когда модули петли загружены в нескольких копиях.
-            is_zcode = pathlib.Path(head).name == "zcode" or (
-                pathlib.Path(head).name == "node"
-                and any(str(a).endswith("zcode.cjs") for a in argv[1:])
+            # zcode приходит в трёх формах: голое имя `zcode` (когда
+            # zcode_cmd не нашёл бинарь и вернул fallback), абсолютный
+            # путь из `which` (шим ~/.local/bin/zcode) и `node
+            # …/zcode.cjs` вне PATH. Имя бинаря сверяем ТОЧНО
+            # (basename), а не суффиксом строки — суффикс ловил бы любой
+            # бинарь на «node». Опознавание по форме argv, а не патчем
+            # движка: подмена сработает и тогда, когда модули петли
+            # загружены в нескольких копиях.
+            is_zcode = (
+                head == "zcode"
+                or pathlib.Path(head).name == "zcode"
+                or (
+                    pathlib.Path(head).name == "node"
+                    and any(str(a).endswith("zcode.cjs") for a in argv[1:])
+                )
             )
             if not (argv and (head in ("kimi", "claude") or is_zcode)):
                 return orig(argv, **kw)

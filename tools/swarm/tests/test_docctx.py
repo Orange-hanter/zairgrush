@@ -48,13 +48,22 @@ class TestCodctxFailOpen(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("TimeoutExpired", out)
 
+    # Спавн реального /bin/sh под нагрузкой полного сьюта изредка живёт
+    # дольше секунды, и проверка парсинга превращалась в ложный
+    # TimeoutExpired (два падения на семи прогонах 2026-09-25, в
+    # одиночку — никогда). Голова в 5 с убирает гонку со спавном, не
+    # трогая проверяемое: парсинг ответа, не скорость. Путь таймаута
+    # проверяет отдельный тест выше — там tight 0.1 и остаётся.
+    SPAWN_TIMEOUT = 5
+
     def test_non_zero_exit_returns_failure(self):
         """cod-doc вернул ошибку — берём stderr как диагностику."""
         bin_path = pathlib.Path(self.config["cod_doc_bin"])
         bin_path.write_text("#!/bin/sh\necho 'no such project' >&2\nexit 1\n",
                             encoding="utf-8")
         bin_path.chmod(0o755)
-        ok, out = docctx.codctx(self.config, self.args, timeout=1)
+        ok, out = docctx.codctx(self.config, self.args,
+                                timeout=self.SPAWN_TIMEOUT)
         self.assertFalse(ok)
         self.assertIn("no such project", out)
 
@@ -64,7 +73,8 @@ class TestCodctxFailOpen(unittest.TestCase):
         bin_path.write_text("#!/bin/sh\necho 'not json'\n",
                             encoding="utf-8")
         bin_path.chmod(0o755)
-        ok, out = docctx.codctx(self.config, self.args, timeout=1)
+        ok, out = docctx.codctx(self.config, self.args,
+                                timeout=self.SPAWN_TIMEOUT)
         self.assertFalse(ok)
         self.assertIn("invalid json", out)
 
@@ -76,7 +86,8 @@ class TestCodctxFailOpen(unittest.TestCase):
         bin_path.write_text(f"#!/bin/sh\necho '{json.dumps(payload)}'\n",
                             encoding="utf-8")
         bin_path.chmod(0o755)
-        ok, out = docctx.codctx(self.config, self.args, timeout=1)
+        ok, out = docctx.codctx(self.config, self.args,
+                                timeout=self.SPAWN_TIMEOUT)
         self.assertTrue(ok)
         self.assertEqual(json.loads(out), payload)
 

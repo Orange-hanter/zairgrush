@@ -444,12 +444,13 @@ class TestZcodeArgv(unittest.TestCase):
         self.assertNotIn("Bash(git:*)", _csv_entries(denied))
 
     def test_executor_may_write_and_run(self):
-        allowed = self._argv()[self._argv().index("--allowed-tools") + 1]
-        # Поэлементная сверка: подстрочный поиск по строке молча нашёл бы
-        # "Edit" внутри "MultiEdit", "Bash" — внутри "BashOutput".
-        allowed_set = set(_csv_entries(allowed))
-        for tool in ("Edit", "Write", "Bash", "Read"):
-            self.assertIn(tool, allowed_set)
+        # CLI 0.16.9 удалил --allowed-tools: белый список исполнителя
+        # больше не выразим, и флаг в argv — гарантированный спавн-фолл
+        # («Unknown option»). Якоримся на ОТСУТСТВИЕ: вернётся ли флаг —
+        # argv меняется ВМЕСТЕ с этим тестом. Инструменты записи и
+        # запуска тестов (Edit/Write/Bash) остаются декларацией роли
+        # (EXECUTOR_ALLOWED_TOOLS) и дисциплиной промпта.
+        self.assertNotIn("--allowed-tools", self._argv())
 
     def test_cwd_omitted_when_empty(self):
         argv = eng.executor_argv("zcode", "", _p("P"), {})
