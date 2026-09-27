@@ -10,9 +10,11 @@
 import importlib.util
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
 spec = importlib.util.spec_from_file_location("board", ROOT_DIR / "board.py")
@@ -219,6 +221,24 @@ class TestRunLevelIsVisible(unittest.TestCase):
         self.assertIn("События прогона", page)
         self.assertIn(bd.vocab.KIND_RU["budget_exhausted"], page)
         self.assertIn("Шаги без исхода", page)
+
+    def test_routine_goes_below_tasks_alarm_stays_above(self):
+        # 98 из 98 событий прогона на стенде cod-doc были рутиной (версии
+        # агентов, память, план) и занимали экран над задачами.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, journal=[
+                {"kind": "agent_versions", "ts": "2026-09-24T10:00:00+00:00"},
+                {"kind": "plan_failed", "why": "x", "ts": "2026-09-25T10:00:00+00:00"},
+                {"kind": "memory_reflect", "ts": "2026-09-26T10:00:00+00:00"},
+            ])
+            page = bd.render(bd.collect(root))
+        tasks_at = page.index("<h2>Задачи")
+        self.assertLess(page.index(bd.vocab.KIND_RU["plan_failed"]), tasks_at)
+        self.assertGreater(page.index("Служебные события прогонов"), tasks_at)
+        routine = bd.vocab.ru(bd.KIND_RU, "agent_versions")
+        self.assertGreater(page.index(routine), tasks_at)
+        # свежие сверху и с датой: история тянется днями
+        self.assertLess(page.index("26.09 10:00"), page.index("24.09 10:00"))
 
     def test_reconciled_step_failed_is_not_unfinished(self):
         """Копия формулы незавершённости закрывала шаг только по
@@ -781,6 +801,87 @@ class TestDecisionQueue(unittest.TestCase):
         self.assertIn("Ждут вас", page)
         self.assertIn("retry t9", page)
         self.assertIn("why t9", page)
+
+    def test_commands_copy_by_click_without_a_button(self):
+        # Отдельная кнопка «скопировать» была лишней, а разбор причины не
+        # копировался вовсе: обе команды — щелчком по самому тексту.
+        board = {"goal": "цель", "questions": [], "root": "/r",
+                 "tasks": [{"id": "t9", "status": "blocked", "title": "x"}]}
+        page = bd.render(board)
+        self.assertIn('<code class="copy big">swarm --root /r why t9</code>', page)
+        self.assertIn('<code class="copy big">swarm --root /r retry t9</code>', page)
+        self.assertNotIn('<button class="copy"', page)
+
+
+def _commit(root, name, text):
+    def run(*a):
+        return subprocess.run(["git", *a], cwd=root, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    run("init", "-q")
+    (root / name).write_text(text, encoding="utf-8")
+    run("add", name)
+    run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "тема коммита")
+    return run("rev-parse", "--short", "HEAD")
+
+
+def _one_task(root, sha):
+    (root / ".swarm" / "tasks.json").write_text(json.dumps(
+        {"goal": "g", "tasks": [{"id": "t1", "status": "done", "commit": sha}]}))
+
+
+class TestDiffIsWhole(unittest.TestCase):
+    """Дифф задачи: целиком до потолка, а обрезка — по границе строки."""
+
+    def test_patch_and_subject_are_collected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            _one_task(root, _commit(root, "a.py", "x = 1\n"))
+            t = bd.collect(root)["tasks"][0]
+        self.assertEqual(t["_subject"], "тема коммита")
+        self.assertIn("+x = 1", t["_patch"])
+        self.assertEqual(t["_patch_cut"], 0)
+
+    def test_long_patch_is_cut_on_a_line_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp)
+            line = "y = '" + "z" * 70 + "'\n"
+            text = line * (bd.MAX_DIFF_CHARS // len(line) + 50)
+            _one_task(root, _commit(root, "b.py", text))
+            t = bd.collect(root)["tasks"][0]
+        self.assertGreater(t["_patch_cut"], bd.MAX_DIFF_CHARS)
+        self.assertLessEqual(len(t["_patch"]), bd.MAX_DIFF_CHARS)
+        self.assertTrue(t["_patch"].endswith("'\n"))
+
+
+class TestCoddocBase(unittest.TestCase):
+    """Куда ведут ID задач: ключ стенда сильнее реестра cod-doc."""
+
+    def _home(self, tmp, root):
+        home = pathlib.Path(tmp) / "home"
+        (home / ".cod-doc").mkdir(parents=True)
+        (home / ".cod-doc" / "config.yaml").write_text(
+            "api_host: 127.0.0.1\napi_port: 8766\nprojects:\n"
+            "- enabled: true\n  name: other\n  path: /nowhere\n"
+            f"- enabled: true\n  name: mine\n  path: {root}\n", encoding="utf-8")
+        return home
+
+    def test_registry_project_matched_by_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp).resolve()
+            home = self._home(tmp, root)
+            with mock.patch.object(pathlib.Path, "home", return_value=home):
+                self.assertEqual(bd._coddoc_base(root), "http://127.0.0.1:8766/p/mine")
+
+    def test_stand_key_wins_and_unknown_root_has_no_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp).resolve()
+            home = self._home(tmp, "/elsewhere")
+            with mock.patch.object(pathlib.Path, "home", return_value=home):
+                self.assertIsNone(bd._coddoc_base(root))
+                (root / "swarm.toml").write_text(
+                    'cod_doc_url = "http://h:1/p/cod-doc/"\n', encoding="utf-8")
+                self.assertEqual(bd._coddoc_base(root), "http://h:1/p/cod-doc")
 
 
 if __name__ == "__main__":
