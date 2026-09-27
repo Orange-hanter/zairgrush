@@ -222,6 +222,24 @@ class TestRunLevelIsVisible(unittest.TestCase):
         self.assertIn(bd.vocab.KIND_RU["budget_exhausted"], page)
         self.assertIn("Шаги без исхода", page)
 
+    def test_routine_goes_below_tasks_alarm_stays_above(self):
+        # 98 из 98 событий прогона на стенде cod-doc были рутиной (версии
+        # агентов, память, план) и занимали экран над задачами.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_root(tmp, journal=[
+                {"kind": "agent_versions", "ts": "2026-09-24T10:00:00+00:00"},
+                {"kind": "plan_failed", "why": "x", "ts": "2026-09-25T10:00:00+00:00"},
+                {"kind": "memory_reflect", "ts": "2026-09-26T10:00:00+00:00"},
+            ])
+            page = bd.render(bd.collect(root))
+        tasks_at = page.index("<h2>Задачи")
+        self.assertLess(page.index(bd.vocab.KIND_RU["plan_failed"]), tasks_at)
+        self.assertGreater(page.index("Служебные события прогонов"), tasks_at)
+        routine = bd.vocab.ru(bd.KIND_RU, "agent_versions")
+        self.assertGreater(page.index(routine), tasks_at)
+        # свежие сверху и с датой: история тянется днями
+        self.assertLess(page.index("26.09 10:00"), page.index("24.09 10:00"))
+
     def test_reconciled_step_failed_is_not_unfinished(self):
         """Копия формулы незавершённости закрывала шаг только по
         step_done — разобранный step_failed висел на доске вечно."""

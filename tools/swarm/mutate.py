@@ -523,6 +523,11 @@ MUTATIONS = [
      """        if pathlib.Path(where.group(1)).expanduser() == want:""",
      """        if True:""",
      "test_board"),
+    ("доска: рутина прогона снова над задачами",
+     "swarm/board.py",
+     """    alarms = [r for r in run_level if r.get("kind") not in ROUTINE_KINDS]""",
+     """    alarms = list(run_level)""",
+     "test_board"),
     # --- AUD-001: порог документного диффа ---
     ("триаж: doc_skip_max_lines игнорируется, крупный документ снова skip",
      "swarm/triage.py",

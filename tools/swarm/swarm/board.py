@@ -95,6 +95,13 @@ PHASE_COLOR = {
     "policy": "var(--mut)",
     "integrity": "var(--bad)",
 }
+# События прогона, которые сопровождают КАЖДЫЙ запуск и остановку не
+# объясняют: версии агентов, пересборка памяти, применённый план. На
+# стенде cod-doc их было 98 из 98 — блок «События прогона» над задачами
+# стал экраном рутины. Список закрытый в обратную сторону: рутиной
+# считается только названное здесь, всё незнакомое (plan_failed,
+# остановка по бюджету, новый вид) остаётся наверху.
+ROUTINE_KINDS = frozenset({"agent_versions", "memory_reflect", "plan_applied"})
 # Состояние вопроса, к которому привязана эскалация: внутренние «open»/
 # «answered» на странице читаются фразой, а не кодом.
 _Q_STATUS_RU = {"open": "ждёт ответа", "answered": "вопрос закрыт"}
@@ -941,9 +948,10 @@ table.dl tr.h td{background:var(--accbg);color:var(--acc)}
 .log{background:var(--card);border:1px solid var(--line);border-radius:8px;
 padding:4px 13px}
 .ev{font-size:13.5px;padding:6px 0;border-bottom:1px solid var(--hair);
-display:grid;grid-template-columns:70px 170px 1fr;gap:10px}
+display:grid;grid-template-columns:92px 170px 1fr;gap:10px}
 .ev:last-child{border-bottom:none}
-.ev .tm{color:var(--faint);font-family:var(--mono);font-size:12px;
+.log.capped{max-height:15.5em;overflow-y:auto;overscroll-behavior:contain}
+.ev .tm{color:var(--faint);font-family:var(--mono);font-size:12px;white-space:nowrap;
 font-variant-numeric:tabular-nums}
 .ev .kd{font-family:var(--mono);font-size:12.5px}
 .ev .dt{color:var(--mut);overflow-wrap:anywhere}
@@ -1955,6 +1963,29 @@ function apply(txt) {
 """
 
 
+def _evtime(ts: Any) -> str:
+    """Дата и время события: история прогонов тянется днями, и одни
+    часы без даты у события трёхдневной давности врут о его свежести."""
+    t = str(ts or "")
+    return f"{t[8:10]}.{t[5:7]} {t[11:16]}" if len(t) >= 16 else t
+
+
+def _run_log(rows: list[dict[str, Any]], hot: bool = False) -> str:
+    """Лента событий прогона: свежие сверху, высота ограничена прокруткой."""
+    e = html.escape
+    return (
+        '<div class="log capped">'
+        + "".join(
+            f'<div class="ev{" hot" if hot else ""}"><span class="tm">'
+            f"{e(_evtime(r.get('ts')))}</span>"
+            f'<span class="kd">{e(vocab.ru(KIND_RU, r.get("kind")))}</span>'
+            f'<span class="dt">{e(vocab.narrate(r))}</span></div>'
+            for r in reversed(rows)
+        )
+        + "</div>"
+    )
+
+
 def _k(n: float) -> str:
     """Тысячи — только там, где они есть: 480 токенов не «0k»."""
     return f"{n / 1000:.0f}k" if n >= 1000 else f"{n:.0f}"
@@ -2336,17 +2367,13 @@ def render(board: dict[str, Any]) -> str:
     # бюджету, сорванное планирование и падение посреди коммита доска
     # прятала за кнопкой «показать хронику», и прогон, встав, выглядел
     # спокойным. То, что объясняет тишину очереди, обязано быть видно сразу.
-    if run_level:
-        parts.append("<h2>События прогона</h2>")
-        parts.append('<div class="log">')
-        parts.extend(
-            f'<div class="ev"><span class="tm">'
-            f"{e(str(r.get('ts') or '')[11:19])}</span>"
-            f'<span class="kd">{e(vocab.ru(KIND_RU, r.get("kind")))}</span>'
-            f'<span class="dt">{e(vocab.narrate(r))}</span></div>'
-            for r in run_level
+    alarms = [r for r in run_level if r.get("kind") not in ROUTINE_KINDS]
+    routine = [r for r in run_level if r.get("kind") in ROUTINE_KINDS]
+    if alarms:
+        parts.append(
+            f'<h2>События прогона <span class="cnt">{len(alarms)}</span></h2>'
         )
-        parts.append("</div>")
+        parts.append(_run_log(alarms, hot=True))
     if unfinished:
         parts.append("<h2>Шаги без исхода — прогон падал</h2>")
         parts.append('<div class="log">')
@@ -2388,6 +2415,16 @@ def render(board: dict[str, Any]) -> str:
             "сам. Страница наполнится, как только в "
             "<code>.swarm/tasks.json</code> появится очередь.</div>"
         )
+
+    # Рутина прогона — внизу, над хроникой: она нужна, когда ищут «какая
+    # версия агента была» или «когда пересобрали план», а не при взгляде
+    # на доску.
+    if routine:
+        parts.append(
+            f'<h2>Служебные события прогонов <span class="cnt">{len(routine)}'
+            "</span></h2>"
+        )
+        parts.append(_run_log(routine))
 
     events = board.get("events") or []
     parts.append("<h2>Хроника</h2>")
