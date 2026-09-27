@@ -66,15 +66,21 @@ class TestHeader(unittest.TestCase):
         h1 = page.split("<h1", 1)[1].split("</h1>", 1)[0]
         self.assertIn("advisory отдельно", h1)
         self.assertNotIn("Две причины", h1)
-        self.assertIn('<details class="goal">', page)
         self.assertIn('data-rich="block">Две причины', page)
+
+    def test_brief_is_visible_not_hidden_behind_a_link(self):
+        # Постановку раньше прятали в свёрнутый <details> — её никто не
+        # раскрывал. Теперь она стоит на странице открытым блоком.
+        page = bd.render(_board(LONG))
+        self.assertIn('<section class="brief">', page)
+        self.assertNotIn("<details", page.split("<h1", 1)[1].split("<h2", 1)[0])
 
     def test_brief_is_escaped(self):
         page = bd.render(_board("цель\n<b>жирная</b> `x`"))
         self.assertIn("&lt;b&gt;жирная&lt;/b&gt;", page)
 
-    def test_short_goal_has_no_details(self):
-        self.assertNotIn('<details class="goal">', bd.render(_board("цель")))
+    def test_short_goal_has_no_brief(self):
+        self.assertNotIn('<section class="brief">', bd.render(_board("цель")))
 
 
 NODE = shutil.which("node")
@@ -150,6 +156,15 @@ class TestRichJs(unittest.TestCase):
         self.assertNotIn("<script>", html)
         self.assertNotIn("<img", html)
 
+    def test_standalone_line_with_colon_is_a_heading(self):
+        html = self.block("Суть.\n\nКритерии приёмки:\n1. раз 2. два")
+        self.assertIn('<p class="rh">Критерии приёмки:</p>', html)
+        self.assertEqual(html.count('class="ri"'), 2)
+
+    def test_colon_followed_by_text_is_not_a_heading(self):
+        self.assertNotIn('class="rh"', self.block("Две причины: (1) раз; (2) два."))
+        self.assertNotIn('class="rh"', self.block("Итог:"))
+
     def test_nothing_is_lost(self):
         text = "Две причины: (1) `a_b` раз; (2) два.\nхвост - тире"
         html = self.block(text)
@@ -157,6 +172,49 @@ class TestRichJs(unittest.TestCase):
                     .replace("<p>", " ").replace("</p>", " "))
         for word in ("Две", "причины", "a_b", "раз", "два", "хвост", "тире"):
             self.assertIn(word, stripped)
+
+
+
+@unittest.skipUnless(NODE, "нет node — ссылки и дифф доски не проверены")
+class TestLinksAndDiffJs(unittest.TestCase):
+    def run_js(self, prelude, expr):
+        js = bd.RICH_JS + "\n" + prelude + f"\nconsole.log(JSON.stringify({expr}));"
+        r = subprocess.run([NODE, "-e", js], capture_output=True, text=True,
+                           timeout=30, check=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    LINK = ("RICH_LINK = {base: 'http://h/p/x', "
+            "prefixes: new Set(['ADO', 'ADR'])};")
+
+    def test_no_coddoc_no_links(self):
+        html = self.run_js("", "richInline('ADO-226 и ADR-028')")
+        self.assertNotIn("<a", html)
+
+    def test_task_and_adr_ids_link_to_coddoc(self):
+        html = self.run_js(self.LINK, "richInline('ADO-226 — см. ADR-028')")
+        self.assertIn('href="http://h/p/x/tasks/ADO-226"', html)
+        self.assertIn('href="http://h/p/x/adr/ADR-028"', html)
+
+    def test_unknown_prefix_and_code_stay_text(self):
+        # `UTF-8` и `TA-1` из прозы ссылкой наугад не становятся; ID в
+        # обратных кавычках — код, а не ссылка.
+        html = self.run_js(self.LINK, "richInline('UTF-8, TA-1 и `ADO-5`')")
+        self.assertNotIn("<a", html)
+        self.assertIn("<code>ADO-5</code>", html)
+
+    def test_diff_counts_lines_and_numbers_them(self):
+        diff = ("diff --git a/x.py b/x.py\nindex 1..2 100644\n--- a/x.py\n"
+                "+++ b/x.py\n@@ -10,3 +10,3 @@ def f():\n a\n-b\n+c\n++d\n"
+                "diff --git a/y.md b/y.md\nnew file mode 100644\n--- /dev/null\n"
+                "+++ b/y.md\n@@ -0,0 +1 @@\n+new\n")
+        files = self.run_js("", f"parseDiff({json.dumps(diff)})")
+        self.assertEqual([(f["path"], f["add"], f["del"]) for f in files],
+                         [("x.py", 2, 1), ("y.md", 1, 0)])
+        self.assertTrue(files[1]["created"])
+        kinds = [[k, o, n] for k, o, n, _ in files[0]["lines"]]
+        self.assertEqual(kinds, [["h", "", ""], ["c", 10, 10], ["d", 11, ""],
+                                 ["a", "", 11], ["a", "", 12]])
 
 
 if __name__ == "__main__":

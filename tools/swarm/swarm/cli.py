@@ -76,6 +76,7 @@ KNOWN_CONFIG_KEYS = frozenset(
         "live_board",
         "board_open",
         "board_port",
+        "cod_doc_url",
         "map_budget",
         "tuning_seed",
         "quota_backoff_s",
@@ -421,8 +422,9 @@ EPILOG = """
 
 тонкая настройка — swarm.toml в корне репозитория: гейт, бюджеты, пулы
 моделей ревьюера, память E9, эксперименты ([experiments] memory|skeleton),
-confirm_lens, board_open/board_port. Опечатку в имени ключа петля назовёт
-при старте; примеры значений — в руководстве оператора (08-док).
+confirm_lens, board_open/board_port, cod_doc_url (ссылки доски в cod-doc).
+Опечатку в имени ключа петля назовёт при старте; примеры значений — в
+руководстве оператора (08-док).
 
 коды возврата run/go — машинный контракт для скрипта поверх петли:
   0   очередь отработана: все взятые задачи done

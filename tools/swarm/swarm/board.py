@@ -67,7 +67,11 @@ STATUS_RU = vocab.STATUS_RU
 SEVERITY_RU = vocab.SEVERITY_RU
 CATEGORY_RU = vocab.CATEGORY_RU
 KIND_RU = vocab.KIND_RU
-MAX_DIFF_CHARS = 12000  # больше человек в браузере всё равно не читает
+# Потолок диффа на задачу. Прежние 12 000 знаков резали 39 коммитов из 69
+# на прогоне cod-doc 2026-09 — дифф нельзя было увидеть целиком. Страница
+# показывает его свёрнутым по файлам и рисует строки только по запросу,
+# поэтому размер встроенного текста больше не равен размеру DOM.
+MAX_DIFF_CHARS = 80000
 
 # Порядок фаз на шкале и в легенде — тот же, что в жизни прогона.
 PHASE_ORDER = (
@@ -164,6 +168,48 @@ def _budget(root: pathlib.Path) -> float | None:
     except (tomllib.TOMLDecodeError, OSError):
         return None
     return _num(cfg.get("total_budget_usd"))
+
+
+def _coddoc_base(root: pathlib.Path) -> str | None:
+    """Адрес проекта в веб-интерфейсе cod-doc — куда ведут ID задач и ADR.
+
+    Задачи роя носят ID задачи cod-doc в названии (`ADO-226 — …`), но на
+    доске это был мёртвый текст: чтобы открыть задачу, её искали руками.
+    Первым спрашивается `cod_doc_url` в `swarm.toml` — стенд часто клон
+    проекта (`cod-doc-swarm`), и сопоставить его с проектом cod-doc по
+    пути нельзя. Без ключа — реестр `~/.cod-doc/config.yaml`: проект, чей
+    `path` совпал с корнем, на `api_host:api_port`. Не нашлось — ссылок
+    нет: ссылка наугад хуже текста.
+    """
+    path = root / "swarm.toml"
+    try:
+        cfg = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError):
+        cfg = {}
+    url = cfg.get("cod_doc_url")
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        return url.rstrip("/")
+    try:
+        text = (pathlib.Path.home() / ".cod-doc" / "config.yaml").read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return None
+    # YAML разбирается узко, без зависимости: плоские ключи верхнего уровня
+    # и пары name/path внутри элементов списка `projects`.
+    top = dict(re.findall(r"(?m)^(api_host|api_port):\s*(\S+)\s*$", text))
+    host, port = top.get("api_host", "127.0.0.1"), top.get("api_port")
+    if not port:
+        return None
+    want = root.resolve()
+    for block in re.split(r"(?m)^- ", text)[1:]:
+        name = re.search(r"(?m)^\s*name:\s*(\S+)\s*$", block)
+        where = re.search(r"(?m)^\s*path:\s*(.+?)\s*$", block)
+        if not (name and where):
+            continue
+        if pathlib.Path(where.group(1)).expanduser() == want:
+            return f"http://{host}:{port}/p/{name.group(1)}"
+    return None
 
 
 def _round_key(stem: str) -> tuple[int, int, str, int, str]:
@@ -480,18 +526,19 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
             for m in metrics
             if m.get("task") == tid and m.get("phase")
         ]
-        diff = ""
+        subject, patch, cut = "", "", 0
         # Источников коммита два и они расходятся: step_done в журнале и поле
         # `commit` в задаче (его мог проставить оператор). Берём поле задачи —
         # иначе принятая вручную работа выглядит как «в код ничего не вошло».
         if t.get("commit"):
-            diff = _git(root, "show", "--stat", "--format=%s%n", t["commit"])
+            subject = _git(root, "show", "-s", "--format=%s", t["commit"]).strip()
             full = _git(root, "show", "--format=", t["commit"])
-            if full:
-                diff += "\n" + (
-                    full[:MAX_DIFF_CHARS]
-                    + ("\n… дифф обрезан" if len(full) > MAX_DIFF_CHARS else "")
-                )
+            patch = full
+            if len(full) > MAX_DIFF_CHARS:
+                # Режем по границе строки: полстроки в раскраске диффа
+                # читается как строка, которой в коммите нет.
+                patch = full[: full.rfind("\n", 0, MAX_DIFF_CHARS) + 1]
+                cut = len(full)
         streams = sorted(p.name for p in (swarm / "log").glob(f"{tid}-*executor.jsonl"))
         tasks.append(
             dict(
@@ -499,7 +546,9 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
                 _phases=phases,
                 _cost=spend.get(tid),
                 _verdicts=_verdicts(swarm, tid),
-                _diff=diff,
+                _subject=subject,
+                _patch=patch,
+                _patch_cut=cut,
                 _suppressed=suppressed.get(tid, []),
                 _streams=streams,
                 _questions=[q for q in questions.values() if q.get("task") == tid],
@@ -579,39 +628,48 @@ def collect(root: str | pathlib.Path) -> dict[str, Any]:
         "totals": _totals(metrics, tasks),
         "run": _run_facts(st, root, journal, metrics, segments),
         "root": str(root),
+        "coddoc": _coddoc_base(root),
         "swarm_dir": str(swarm),
         "built": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
 CSS = """
-:root{--paper:#f7f5f0;--card:#fffefb;--sunk:#f0ede6;--ink:#1b1a17;
---mut:#6c665b;--faint:#a1998a;--line:#e2ddd1;--hair:#ede8dd;
---ok:#2f7d4f;--warn:#a97706;--bad:#a83a2f;--acc:#2e5fa3;--live:#b9800f;
---okbg:#e7f0e8;--warnbg:#f7edd8;--badbg:#f7e3e0;--accbg:#e4ebf7;
+:root{--paper:#f6f4ef;--card:#fffefb;--sunk:#efece5;--ink:#1b1a17;
+--mut:#57524a;--faint:#7c7568;--line:#dcd6ca;--hair:#e8e3d8;
+--ok:#2c7a4b;--warn:#9a6a00;--bad:#b0372b;--acc:#2a5ca8;--live:#a8720a;
+--okbg:#e4f0e6;--warnbg:#f8ecd2;--badbg:#f8e1dd;--accbg:#e2eaf7;
+--addbg:#e6f3e8;--delbg:#fbe7e4;--addfg:#1e6b3c;--delfg:#a3322a;
 --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif}
 @media(prefers-color-scheme:dark){:root:not([data-theme=light]){
---paper:#131418;--card:#191b20;--sunk:#15171c;--ink:#e7e5e0;--mut:#989286;
---faint:#6d675c;--line:#2b2e35;--hair:#23262c;--ok:#79c48d;--warn:#dfa94f;
---bad:#e5786c;--acc:#82a9ea;--live:#e0a836;--okbg:#1a2a20;--warnbg:#2d2617;
---badbg:#2e1d1b;--accbg:#1b2436}}
-:root[data-theme=dark]{--paper:#131418;--card:#191b20;--sunk:#15171c;
---ink:#e7e5e0;--mut:#989286;--faint:#6d675c;--line:#2b2e35;--hair:#23262c;
---ok:#79c48d;--warn:#dfa94f;--bad:#e5786c;--acc:#82a9ea;--live:#e0a836;
---okbg:#1a2a20;--warnbg:#2d2617;--badbg:#2e1d1b;--accbg:#1b2436}
+--paper:#131418;--card:#1a1c21;--sunk:#15171b;--ink:#e9e7e2;--mut:#aaa498;
+--faint:#857f73;--line:#30333a;--hair:#25282e;--ok:#7cc890;--warn:#e2ad55;
+--bad:#ec8175;--acc:#8ab0ee;--live:#e5ad3c;--okbg:#1a2b20;--warnbg:#2e2616;
+--badbg:#321e1c;--accbg:#1b2538;--addbg:#16291d;--delbg:#2f1a18;
+--addfg:#8fd6a2;--delfg:#f19a8f}}
+:root[data-theme=dark]{--paper:#131418;--card:#1a1c21;--sunk:#15171b;
+--ink:#e9e7e2;--mut:#aaa498;--faint:#857f73;--line:#30333a;--hair:#25282e;
+--ok:#7cc890;--warn:#e2ad55;--bad:#ec8175;--acc:#8ab0ee;--live:#e5ad3c;
+--okbg:#1a2b20;--warnbg:#2e2616;--badbg:#321e1c;--accbg:#1b2538;
+--addbg:#16291d;--delbg:#2f1a18;--addfg:#8fd6a2;--delfg:#f19a8f}
 *{box-sizing:border-box}
 body{margin:0;background:var(--paper);color:var(--ink);
-font:14.5px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
-.wrap{max-width:1180px;margin:0 auto;padding:20px 22px 90px}
+font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1240px;margin:0 auto;padding:20px 22px 90px}
 .mono{font-family:var(--mono)}
 .num{font-variant-numeric:tabular-nums}
+a{color:var(--acc)}
+a.cd{text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--acc) 40%,transparent);
+white-space:nowrap}
+a.cd:hover{border-bottom-color:var(--acc)}
+a.cd::after{content:"↗";font-size:.75em;margin-left:1px;vertical-align:super}
 
 /* --- шапка --- */
 .rail{display:flex;gap:12px;align-items:center;flex-wrap:wrap;
-font:11px/1.4 var(--mono);letter-spacing:.1em;text-transform:uppercase;
-color:var(--faint)}
-.rail .brand{color:var(--ink);letter-spacing:.22em}
+font:12px/1.4 var(--mono);color:var(--faint)}
+.rail .brand{color:var(--ink);font-weight:600;letter-spacing:.12em;
+text-transform:uppercase}
 .grow{flex:1}
 .tag{border:1px solid var(--line);border-radius:3px;padding:1px 6px}
 .pill{display:inline-flex;gap:6px;align-items:center;border-radius:3px;
@@ -621,40 +679,50 @@ padding:1px 7px;border:1px solid var(--line)}
 .pill.on .dot{animation:pulse 2.2s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.2}}
 @media(prefers-reduced-motion:reduce){.pill.on .dot{animation:none}}
-h1{font:600 23px/1.28 var(--sans);letter-spacing:-.015em;margin:12px 0 5px;
-max-width:72ch}
-.sub{color:var(--mut);font-size:13px;margin-bottom:18px}
+h1{font:650 25px/1.3 var(--sans);letter-spacing:-.015em;margin:14px 0 8px;
+max-width:70ch}
+.sub{color:var(--mut);font-size:13.5px;margin:10px 0 18px}
 button{font:inherit;font-size:13px;padding:5px 11px;border-radius:6px;
 border:1px solid var(--line);background:var(--card);color:var(--ink);
 cursor:pointer}
 button:hover{border-color:var(--mut)}
-button.on{border-color:var(--acc);color:var(--acc)}
+button.on{border-color:var(--acc);color:var(--acc);background:var(--accbg)}
+button.link{border:none;background:none;padding:0;color:var(--acc);
+font-size:13px}
+button.link:hover{text-decoration:underline}
 #theme{padding:2px 8px;font-size:12px;line-height:1.4}
 
+/* --- постановка прогона --- */
+.brief{max-width:84ch;background:var(--card);border:1px solid var(--line);
+border-left:3px solid var(--acc);border-radius:8px;padding:13px 16px 12px}
+.brief .rich{font-size:15px;line-height:1.65}
+.brief.clamp .rich{max-height:19em;overflow:hidden;
+-webkit-mask-image:linear-gradient(#000 70%,transparent);
+mask-image:linear-gradient(#000 70%,transparent)}
+.brief .more{margin-top:6px}
+
 /* --- заголовки разделов --- */
-h2{font:600 11px/1 var(--mono);letter-spacing:.13em;text-transform:uppercase;
-color:var(--faint);margin:30px 0 11px;display:flex;gap:11px;align-items:center}
+h2{font:650 14px/1.2 var(--sans);color:var(--mut);margin:34px 0 12px;
+display:flex;gap:10px;align-items:center}
 h2::after{content:"";flex:1;height:1px;background:var(--hair)}
-h2 .cnt{color:var(--mut);letter-spacing:.05em}
+h2 .cnt{font:12px var(--mono);color:var(--faint);font-weight:400}
 
 /* --- показатели --- */
 .vitals{display:grid;gap:10px;
-grid-template-columns:repeat(auto-fit,minmax(202px,1fr))}
+grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
 .tile{background:var(--card);border:1px solid var(--line);border-radius:8px;
 padding:11px 13px 12px}
-.cap{font:11px/1 var(--mono);letter-spacing:.11em;text-transform:uppercase;
-color:var(--faint)}
-.tile .big{font:600 21px/1.1 var(--mono);font-variant-numeric:tabular-nums;
-margin-top:7px}
-.tile .big small{font-size:12px;font-weight:400;color:var(--mut);
-letter-spacing:0}
+.cap{font:600 12px/1 var(--sans);color:var(--mut)}
+.tile .big{font:600 22px/1.1 var(--mono);font-variant-numeric:tabular-nums;
+margin-top:8px}
+.tile .big small{font:400 13px var(--sans);color:var(--mut)}
 .split{display:flex;height:6px;border-radius:3px;overflow:hidden;
 background:var(--sunk);margin-top:9px}
 .split i{display:block;height:100%}
-.legend{display:flex;gap:9px;flex-wrap:wrap;font-size:12px;color:var(--mut);
-margin-top:7px}
-.legend .sw{display:inline-block;width:8px;height:8px;border-radius:2px;
-margin-right:4px;vertical-align:baseline}
+.legend{display:flex;gap:4px 11px;flex-wrap:wrap;font-size:13px;
+color:var(--mut);margin-top:7px}
+.legend .sw{display:inline-block;width:9px;height:9px;border-radius:2px;
+margin-right:5px}
 .legend b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
 
 /* --- сейчас --- */
@@ -662,11 +730,11 @@ margin-right:4px;vertical-align:baseline}
 padding:12px 14px;display:flex;gap:13px;align-items:flex-start}
 .now.dead{border-color:var(--bad);background:var(--badbg)}
 .now .beat{width:9px;height:9px;border-radius:50%;background:var(--live);
-margin-top:6px;flex:none;animation:pulse 2.2s ease-in-out infinite}
+margin-top:7px;flex:none;animation:pulse 2.2s ease-in-out infinite}
 .now.dead .beat{background:var(--bad);animation:none}
 @media(prefers-reduced-motion:reduce){.now .beat{animation:none}}
 .now .what{font-weight:600}
-.now .meta{color:var(--mut);font-size:13px;margin-top:2px}
+.now .meta{color:var(--mut);font-size:13.5px;margin-top:2px}
 .now .grow{flex:1}
 .now .el{font:600 19px var(--mono);font-variant-numeric:tabular-nums;
 color:var(--live)}
@@ -676,119 +744,217 @@ color:var(--live)}
 .ask{background:var(--card);border:1px solid var(--line);border-left:3px solid
 var(--live);border-radius:7px;padding:11px 14px;margin-bottom:8px}
 .ask.blocked{border-left-color:var(--bad)}
-.ask .top{font:11px/1.4 var(--mono);letter-spacing:.06em;color:var(--faint);
-text-transform:uppercase;margin-bottom:4px;display:flex;gap:9px;
-flex-wrap:wrap;align-items:baseline}
-.ask .q{margin-bottom:8px}
-.cmd{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.cmd code{flex:1;min-width:220px;padding:6px 9px;overflow-x:auto;
-white-space:nowrap}
-.hint{color:var(--mut);font-size:12.5px;margin-top:6px}
+.ask .top{font:12px/1.4 var(--mono);color:var(--faint);margin-bottom:4px;
+display:flex;gap:9px;flex-wrap:wrap;align-items:baseline}
+.ask .top b{color:var(--ink)}
+.ask .q{margin-bottom:8px;font-weight:500}
+.acts{display:grid;grid-template-columns:auto 1fr;gap:5px 10px;
+align-items:baseline;font-size:13px;color:var(--mut)}
+.hint{color:var(--mut);font-size:13px;margin-top:6px}
 code{background:var(--sunk);border:1px solid var(--hair);border-radius:5px;
-padding:1px 6px;font-family:var(--mono);font-size:12.5px}
+padding:1px 6px;font-family:var(--mono);font-size:.86em}
+/* Команда копируется щелчком по ней самой: отдельная кнопка рядом с
+   каждой командой занимала строку и дублировала очевидное действие. */
+code.copy{cursor:copy;position:relative;overflow-wrap:anywhere}
+code.copy:hover{border-color:var(--acc);color:var(--acc)}
+code.copy.big{display:inline-block;padding:5px 9px;font-size:12.5px}
+code.copy.done::after{content:"скопировано";position:absolute;left:0;
+top:-1.9em;font:11px var(--sans);background:var(--ink);color:var(--paper);
+padding:2px 6px;border-radius:4px;white-space:nowrap}
 pre{background:var(--sunk);border:1px solid var(--hair);border-radius:7px;
-padding:11px;overflow-x:auto;font-size:12px;line-height:1.45;margin:7px 0 0;
+padding:11px;overflow-x:auto;font-size:12.5px;line-height:1.5;margin:7px 0 0;
 font-family:var(--mono)}
 
 /* --- шкала времени --- */
 .tl{background:var(--card);border:1px solid var(--line);border-radius:8px;
-padding:12px 14px}
-.tlrow{display:grid;grid-template-columns:118px 1fr;gap:11px;
-align-items:center;margin-bottom:5px}
-.tlrow .who{font:12px/1.3 var(--mono);color:var(--mut);overflow:hidden;
-text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+padding:10px 14px 12px;overflow:hidden}
+.tlbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;
+margin-bottom:10px}
+.tlbar button{font-size:12.5px;padding:3px 9px}
+.tlbar .sep{width:1px;height:18px;background:var(--line);margin:0 3px}
+.tlbar .legend{margin:0 0 0 auto}
+.tlbar select{font:inherit;font-size:12.5px;padding:3px 6px;border-radius:6px;
+border:1px solid var(--line);background:var(--card);color:var(--ink)}
+.seg.now{background-image:repeating-linear-gradient(135deg,rgb(255 255 255 / .35)
+0 4px,transparent 4px 8px)!important;animation:pulse 2.2s ease-in-out infinite}
+@media(prefers-reduced-motion:reduce){.seg.now{animation:none}}
+.tlgrid{position:relative;user-select:none}
+.tlrow{display:grid;grid-template-columns:230px 1fr;gap:12px;
+align-items:center;height:24px}
+.tlrow .who{font-size:13px;overflow:hidden;text-overflow:ellipsis;
+white-space:nowrap;cursor:pointer;color:var(--mut)}
+.tlrow .who .id{font:12px var(--mono);color:var(--faint);margin-right:6px}
 .tlrow .who:hover{color:var(--acc)}
-.track{position:relative;height:15px;background:var(--sunk);border-radius:3px}
-.seg{position:absolute;top:0;bottom:0;border-radius:2px;min-width:2px}
-.seg.mark{width:3px;border-radius:1px;top:-2px;bottom:-2px}
-.tlaxis{display:flex;justify-content:space-between;color:var(--faint);
-font:11px var(--mono);margin-top:7px;border-top:1px solid var(--hair);
-padding-top:5px}
+.tlrow:hover .track{background:var(--hair)}
+.track{position:relative;height:16px;background:var(--sunk);border-radius:3px;
+cursor:crosshair}
+.seg{position:absolute;top:1px;bottom:1px;border-radius:2px;min-width:3px;
+cursor:pointer}
+.seg.mark{width:3px;min-width:0;top:-2px;bottom:-2px;border-radius:1px}
+.seg:hover{outline:2px solid var(--ink);outline-offset:0;z-index:2}
+.seg.sel{outline:2px solid var(--ink);outline-offset:1px;z-index:3}
+.brk{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(
+135deg,var(--line) 0 2px,transparent 2px 6px);opacity:.8}
+.tlaxis{position:relative;height:30px;margin-left:242px;
+border-top:1px solid var(--hair);margin-top:4px;font:11.5px var(--mono);
+color:var(--faint)}
+.tlaxis span{position:absolute;top:5px;transform:translateX(-50%);
+white-space:nowrap}
+.tlaxis span.gap{color:var(--mut);font-style:italic}
+.tlaxis i{position:absolute;top:0;height:4px;width:1px;background:var(--line)}
+.brush{position:absolute;top:0;bottom:0;background:var(--accbg);
+border:1px solid var(--acc);opacity:.6;pointer-events:none}
+.tldet{margin-top:10px;border-top:1px solid var(--hair);padding-top:9px;
+font-size:13.5px;min-height:1.6em;color:var(--mut)}
+.tldet b{color:var(--ink)}
+.tldet .sw{display:inline-block;width:10px;height:10px;border-radius:2px;
+margin-right:6px;vertical-align:-1px}
+.tldet .kv{display:flex;gap:4px 16px;flex-wrap:wrap;margin-top:3px}
 
 /* --- задачи --- */
 .bar{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:0 0 10px}
-input[type=search]{font:inherit;font-size:13.5px;padding:6px 10px;
+input[type=search]{font:inherit;font-size:14px;padding:6px 10px;
 border-radius:6px;border:1px solid var(--line);background:var(--card);
 color:var(--ink);flex:1;min-width:170px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
-margin-bottom:7px;overflow:hidden}
-.head{display:grid;grid-template-columns:auto 1fr auto auto;gap:11px;
-align-items:baseline;padding:10px 13px;cursor:pointer}
+margin-bottom:7px}
+.card.open{border-color:var(--mut);box-shadow:0 1px 6px rgb(0 0 0 / .06)}
+.head{display:grid;grid-template-columns:52px minmax(0,1fr) auto auto;gap:4px 12px;
+align-items:baseline;padding:10px 14px;cursor:pointer;border-radius:8px}
 .head:hover{background:var(--sunk)}
-.head .id{font:12px var(--mono);color:var(--faint)}
-.head .t{font-weight:600}
-.head .spark{display:flex;gap:2px;align-items:flex-end;height:14px}
-.head .spark i{width:4px;background:var(--acc);border-radius:1px;display:block}
-.head .spark i.zero{background:var(--ok);height:2px}
-.badge{font:11px/1.5 var(--mono);letter-spacing:.05em;padding:1px 8px;
+.card.open .head{border-bottom:1px solid var(--hair);border-radius:8px 8px 0 0}
+.head .id{font:12.5px var(--mono);color:var(--faint)}
+.head .t{font-weight:600;overflow-wrap:anywhere}
+.head .meta{grid-column:2/-1;color:var(--mut);font-size:13px;
+display:flex;gap:4px 12px;flex-wrap:wrap;align-items:center}
+.spark{display:flex;gap:2px;align-items:flex-end;height:14px}
+.spark i{width:4px;background:var(--acc);border-radius:1px;display:block}
+.spark i.zero{background:var(--ok);height:2px}
+.badge{font:12px/1.5 var(--mono);padding:1px 8px;
 border-radius:3px;border:1px solid var(--line);color:var(--mut);
 white-space:nowrap}
 .b-done{color:var(--ok);border-color:var(--ok)}
 .b-blocked{color:var(--bad);border-color:var(--bad);background:var(--badbg)}
 .b-pending{color:var(--mut)}
 .b-progress{color:var(--live);border-color:var(--live);background:var(--warnbg)}
-.meta{color:var(--mut);font-size:12.5px;padding:0 13px 10px}
-.body{border-top:1px solid var(--hair);padding:13px;display:none}
-.card.open .body{display:block}
-.card.open .head{background:var(--sunk)}
-.sec{margin-bottom:15px}
+/* Вес находки — цветом везде одинаково: в шапке карточки, в
+   сводке, у самой находки. */
+.sev{font:600 11.5px/1.5 var(--mono);padding:0 7px;border-radius:3px;
+white-space:nowrap;border:1px solid transparent}
+.sev-blocker{color:var(--bad);background:var(--badbg);border-color:var(--bad)}
+.sev-major{color:var(--warn);background:var(--warnbg);border-color:var(--warn)}
+.sev-minor{color:var(--mut);background:var(--sunk);border-color:var(--line)}
+.vd{font:600 12px/1.5 var(--mono);padding:0 7px;border-radius:3px}
+.vd-approve{color:var(--ok);background:var(--okbg)}
+.vd-request_changes{color:var(--warn);background:var(--warnbg)}
+.vd-failed{color:var(--bad);background:var(--badbg)}
+.tabs{display:flex;gap:2px;padding:6px 10px 0;border-bottom:1px solid var(--hair);
+overflow-x:auto}
+.tabs button{border:none;border-bottom:2px solid transparent;border-radius:0;
+background:none;padding:7px 11px;color:var(--mut);white-space:nowrap}
+.tabs button:hover{color:var(--ink)}
+.tabs button.on{color:var(--ink);border-bottom-color:var(--acc);
+background:none;font-weight:600}
+.tabs .n{font:11.5px var(--mono);color:var(--faint);margin-left:4px}
+.pane{padding:14px}
+.sec{margin-bottom:18px}
 .sec:last-child{margin-bottom:0}
-.sec h3{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;
-margin:0 0 6px;color:var(--faint)}
-.spec{font-size:13.5px;line-height:1.55;background:var(--sunk);
-border:1px solid var(--hair);border-radius:7px;padding:10px 12px}
-.spec code{background:var(--card)}
-.rich p{margin:0 0 7px}
+.sec h3{font:650 13px var(--sans);margin:0 0 7px;color:var(--mut);
+display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.spec{font-size:14.5px;line-height:1.65;max-width:88ch}
+.rich p{margin:0 0 8px}
+.rich p.rh{font-weight:650;margin:12px 0 4px}
+.rich p:first-child{margin-top:0}
 .rich p:last-child,.rich .ri:last-child{margin-bottom:0}
 .ri{display:grid;grid-template-columns:2.3em 1fr;margin:0 0 6px}
-.ri .rn{color:var(--faint);font:12px/1.9 var(--mono)}
-.rich code,h1 code,.card .t code,ul.acc code,.find code{font-size:.86em;
-padding:0 .3em;overflow-wrap:anywhere}
-h1 code{font-weight:500}
-details.goal{max-width:82ch;margin:0 0 8px}
-details.goal .rich{margin-top:8px;font-size:14px;line-height:1.6;
-background:var(--card);border:1px solid var(--hair);border-radius:7px;
-padding:12px 14px}
-ul.acc{margin:0;padding-left:19px}
-ul.acc li{margin:3px 0}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
-th,td{text-align:left;padding:4px 8px;border-bottom:1px solid var(--hair)}
-th{color:var(--faint);font-weight:500;font-family:var(--mono);
-font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.ri .rn{color:var(--faint);font:12.5px/1.95 var(--mono)}
+.rich code,h1 code,.card .t code,ul.acc code,.find code{overflow-wrap:anywhere}
+/* Код в заголовках — моноширинным начертанием без плашки: плашки на
+   полужирном 25px превращали название в ряд кнопок. */
+h1 code,.head .t code,.ask .q code{background:none;border:none;padding:0;
+font-size:.9em;font-weight:inherit}
+ul.acc{margin:0;padding-left:20px;max-width:88ch}
+ul.acc li{margin:4px 0}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--hair)}
+th{color:var(--mut);font-weight:600;font-size:12px}
 td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .scroll{overflow-x:auto}
-.find{border-left:3px solid var(--line);padding:5px 0 5px 11px;margin:8px 0}
-.find.blocker{border-color:var(--bad)}
-.find.major{border-color:var(--warn)}
-.find.minor{border-color:var(--line)}
-.find .top{font:11px var(--mono);color:var(--faint);margin-bottom:2px;
-letter-spacing:.04em}
-.find .sug{color:var(--acc);font-size:13px;margin-top:3px}
+.round{border:1px solid var(--hair);border-radius:7px;margin-bottom:9px}
+.round>.rhd{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+padding:8px 11px;cursor:pointer;font-size:13.5px}
+.round>.rhd:hover{background:var(--sunk)}
+.round>.rhd .rname{font:12.5px var(--mono);color:var(--faint)}
+.round>.rhd .sum{flex:1 1 300px;color:var(--ink)}
+.round>.rbd{display:none;padding:2px 11px 11px}
+.round.open>.rbd{display:block}
+.round.open>.rhd{border-bottom:1px solid var(--hair)}
+.fold{color:var(--faint);font:12px var(--mono);width:1em}
+.round.open>.rhd .fold::before,.dfile.open>.dh .fold::before{content:"▾"}
+.fold::before{content:"▸"}
+.find{border:1px solid var(--hair);border-left:4px solid var(--line);
+border-radius:6px;padding:8px 11px;margin:9px 0;background:var(--card)}
+.find.blocker{border-left-color:var(--bad);background:color-mix(in srgb,var(--badbg) 55%,var(--card))}
+.find.major{border-left-color:var(--warn);background:color-mix(in srgb,var(--warnbg) 55%,var(--card))}
+.find .top{display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+font-size:12.5px;color:var(--mut);margin-bottom:4px}
+.find .sug{color:var(--acc);font-size:14px;margin-top:5px}
+.analysis{color:var(--mut);font-size:14px;line-height:1.6;max-width:88ch}
 .qa{border-left:3px solid var(--live);padding:7px 0 7px 12px;margin:10px 0}
 .qa.answered{border-color:var(--ok)}
-.qa .ans{color:var(--mut);font-size:13px;margin-top:4px}
+.qa .ans{color:var(--mut);font-size:13.5px;margin-top:4px}
 details{margin:7px 0}
-summary.det{cursor:pointer;color:var(--acc);font-size:13px;list-style:none}
+summary.det{cursor:pointer;color:var(--acc);font-size:13.5px;list-style:none}
 summary.det::-webkit-details-marker{display:none}
 summary.det::before{content:"▸ "}
 details[open] summary.det::before{content:"▾ "}
 
+/* --- дифф --- */
+.dstat{display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+font-size:13.5px;margin-bottom:9px}
+.add{color:var(--addfg);font-family:var(--mono)}
+.del{color:var(--delfg);font-family:var(--mono)}
+.dbar{display:inline-flex;gap:1px;vertical-align:middle}
+.dbar i{width:7px;height:8px;border-radius:1px;background:var(--line)}
+.dbar i.a{background:var(--ok)}
+.dbar i.d{background:var(--bad)}
+.dfile{border:1px solid var(--hair);border-radius:7px;margin-bottom:6px;
+overflow:hidden}
+.dfile>.dh{display:flex;gap:10px;align-items:center;padding:6px 10px;
+cursor:pointer;font:12.5px var(--mono);background:var(--sunk)}
+.dfile>.dh:hover{background:var(--hair)}
+.dfile>.dh .p{flex:1;overflow-wrap:anywhere}
+.dfile .dcode{display:none;overflow-x:auto}
+.dfile.open .dcode{display:block}
+table.dl{font:12.5px/1.5 var(--mono);border-collapse:collapse;width:100%}
+table.dl td{border:none;padding:0 8px;white-space:pre;vertical-align:top}
+table.dl td.ln{width:1%;color:var(--faint);text-align:right;user-select:none;
+border-right:1px solid var(--hair)}
+table.dl tr.a td{background:var(--addbg)}
+table.dl tr.a td.c{color:var(--addfg)}
+table.dl tr.d td{background:var(--delbg)}
+table.dl tr.d td.c{color:var(--delfg)}
+table.dl tr.h td{background:var(--accbg);color:var(--acc)}
+.dmore{padding:6px 10px;border-top:1px solid var(--hair)}
+
 /* --- события и хроника --- */
 .log{background:var(--card);border:1px solid var(--line);border-radius:8px;
 padding:4px 13px}
-.ev{font-size:13px;padding:5px 0;border-bottom:1px solid var(--hair);
-display:grid;grid-template-columns:62px 168px 1fr;gap:10px}
+.ev{font-size:13.5px;padding:6px 0;border-bottom:1px solid var(--hair);
+display:grid;grid-template-columns:70px 170px 1fr;gap:10px}
 .ev:last-child{border-bottom:none}
 .ev .tm{color:var(--faint);font-family:var(--mono);font-size:12px;
 font-variant-numeric:tabular-nums}
-.ev .kd{font-family:var(--mono);font-size:12px}
-.ev .dt{color:var(--mut);overflow:hidden;text-overflow:ellipsis;
-white-space:nowrap}
+.ev .kd{font-family:var(--mono);font-size:12.5px}
+.ev .dt{color:var(--mut);overflow-wrap:anywhere}
 .ev.hot .kd{color:var(--bad)}
-@media(max-width:640px){.ev{grid-template-columns:56px 1fr}.ev .dt{grid-column:1/-1;white-space:normal}}
+@media(max-width:700px){.ev{grid-template-columns:56px 1fr}.ev .dt{grid-column:1/-1}
+.tlrow{grid-template-columns:90px 1fr}.tlaxis{margin-left:102px}
+.tlrow .who .tt{display:none}.head{grid-template-columns:44px minmax(0,1fr) auto}
+.head .spark{display:none}}
 .empty{color:var(--mut);background:var(--card);border:1px dashed var(--line);
 border-radius:8px;padding:16px}
-.foot{color:var(--mut);font-size:12px;margin-top:34px;
+.foot{color:var(--mut);font-size:12.5px;margin-top:34px;
 border-top:1px solid var(--hair);padding-top:12px}
 .hidden{display:none!important}
 """
@@ -818,15 +984,34 @@ const RICH_CODE = new RegExp([
 const richEsc = s => String(s ?? '').replace(/[&<>"]/g, c =>
   ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 
+// ID задач и ADR cod-doc (`ADO-226`, `ADR-028`) — ссылками в веб-интерфейс
+// cod-doc. Ссылкой становится только ID с префиксом, который доска видела
+// в названии задачи или вехе (`RICH_LINK.prefixes`): `UTF-8` или `TA-1` из
+// прозы в ссылку наугад не превратятся. Нет адреса cod-doc — нет ссылок.
+let RICH_LINK = null;
+const RICH_ID = /\b([A-Z][A-Z0-9]{1,6})-(\d{1,5})\b/g;
+
+function richText(s) {
+  const t = richEsc(s);
+  if (!RICH_LINK) return t;
+  return t.replace(RICH_ID, (id, pre) => {
+    if (!RICH_LINK.prefixes.has(pre)) return id;
+    const kind = pre === 'ADR' ? 'adr' : 'tasks';
+    return '<a class="cd" target="_blank" rel="noopener" href="' +
+      richEsc(RICH_LINK.base + '/' + kind + '/' + id) +
+      '" title="открыть в cod-doc">' + id + '</a>';
+  });
+}
+
 function richInline(text) {
   const s = String(text ?? '');
   let out = '', at = 0;
   for (const m of s.matchAll(RICH_CODE)) {
-    out += richEsc(s.slice(at, m.index)) +
+    out += richText(s.slice(at, m.index)) +
       '<code>' + richEsc(m[1] ?? m[0]) + '</code>';
     at = m.index + m[0].length;
   }
-  return out + richEsc(s.slice(at));
+  return out + richText(s.slice(at));
 }
 
 // Пункты: «(1) … (2) …» и «1. … 2. …» — в том числе внутри одной строки;
@@ -858,9 +1043,16 @@ function richMarks(s) {
   return out.sort((a, b) => a.at - b.at);
 }
 
+// Строка, целиком стоящая отдельно и кончающаяся двоеточием («Критерии
+// приёмки:»), — заголовок части постановки. Двоеточие посреди строки
+// («Две причины: (1) …») заголовком не считается: за ним идёт текст.
 function richParas(s) {
-  return s.split(/\n+/).map(x => x.trim()).filter(Boolean)
-    .map(x => '<p>' + richInline(x) + '</p>').join('');
+  const lines = s.split(/\n+/);
+  const closed = /\n\s*$/.test(s);
+  return lines.map((x, i) => [x.trim(), i < lines.length - 1 || closed])
+    .filter(([x]) => x)
+    .map(([x, whole]) => (whole && x.length <= 60 && /:$/.test(x)
+      ? '<p class="rh">' : '<p>') + richInline(x) + '</p>').join('');
 }
 
 function rich(text) {
@@ -878,9 +1070,47 @@ function rich(text) {
   });
   return out;
 }
+
+// --- дифф: файлы, счётчики, номера строк ------------------------------------
+// Дифф был одним <pre> на десятки килобайт без цвета: ни какие файлы
+// тронуты, ни где добавлено, а где удалено. Разбор — по заголовкам
+// `diff --git` и ханкам; всё до первого ханка (index, ---/+++) —
+// служебное и в строки не идёт.
+function parseDiff(text) {
+  const files = [];
+  let f = null, oldN = 0, newN = 0;
+  for (const line of String(text ?? '').split('\n')) {
+    const h = /^diff --git a\/(.*?) b\/(.*)$/.exec(line);
+    if (h) {
+      f = {path: h[2], add: 0, del: 0, lines: [], hunks: false,
+           bin: false, created: false, gone: false};
+      files.push(f);
+      continue;
+    }
+    if (!f) continue;
+    if (line.startsWith('@@')) {
+      const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
+      if (m) { oldN = +m[1]; newN = +m[2]; }
+      f.hunks = true;
+      f.lines.push(['h', '', '', line]);
+      continue;
+    }
+    if (!f.hunks) {
+      if (line.startsWith('Binary files')) f.bin = true;
+      if (line.startsWith('new file')) f.created = true;
+      if (line.startsWith('deleted file')) f.gone = true;
+      continue;
+    }
+    if (line.startsWith('+')) { f.add++; f.lines.push(['a', '', newN++, line.slice(1)]); }
+    else if (line.startsWith('-')) { f.del++; f.lines.push(['d', oldN++, '', line.slice(1)]); }
+    else if (line.startsWith(' ')) f.lines.push(['c', oldN++, newN++, line.slice(1)]);
+    else if (line.startsWith('\\')) f.lines.push(['m', '', '', line]);
+  }
+  return files;
+}
 """
 
-JS = """
+JS = r"""
 // `let`, не `const`: живое обновление перепривязывает D к свежему payload
 // (см. apply()) — переменную, объявленную const, переприсвоить нельзя.
 let D = JSON.parse(document.getElementById('data').textContent);
@@ -888,18 +1118,52 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // Имена — из vocab через payload, а не третьей копией здесь: копия уже
 // разошлась (исход раунда шёл по-английски, пока why говорил по-русски).
-const V = D.vocab || {};
-const SEV = V.severity || {};
-const CAT = V.category || {};
-const ST = V.status || {};
-const OUT = V.outcome || {};
-const PH = V.phase || {};
+let V = D.vocab || {};
+let SEV = V.severity || {};
+let CAT = V.category || {};
+let ST = V.status || {};
+let OUT = V.outcome || {};
+let PH = V.phase || {};
 const CLS = {done:'b-done', blocked:'b-blocked', pending:'b-pending',
              in_progress:'b-progress', in_review:'b-progress'};
+const SEV_ORDER = ['blocker', 'major', 'minor'];
 // Цвет фазы — один и тот же на шкале и в легенде денег.
 const PCOL = {implement:'var(--acc)', review:'var(--live)', gate:'var(--ok)',
               scope:'var(--faint)', verification:'var(--mut)',
               policy:'var(--mut)', integrity:'var(--bad)'};
+
+// Состояние интерфейса живёт здесь, а не в DOM: живое обновление
+// подменяет разметку целиком, и раскрытая карточка, выбранная вкладка,
+// развёрнутый файл диффа и масштаб шкалы обязаны это пережить.
+const OPEN = new Set();        // раскрытые карточки
+const TAB = new Map();         // id задачи → вкладка
+const FOLD = new Map();        // ключ складки → раскрыта ли
+const DFULL = new Set();       // файлы диффа, показанные целиком
+const TL = {sess: null, win: null, sel: null};
+let BRIEF_OPEN = false;
+let DIFFS = new Map();         // id задачи → разобранный дифф
+let HAY = new Map();           // id задачи → текст для поиска
+
+function init() {
+  V = D.vocab || {}; SEV = V.severity || {}; CAT = V.category || {};
+  ST = V.status || {}; OUT = V.outcome || {}; PH = V.phase || {};
+  DIFFS = new Map(); HAY = new Map();
+  // Префиксы ID cod-doc — только те, что стоят в начале названия задачи,
+  // в вехе или в заголовке цели: там ID ставит сам протокол роя.
+  if (D.coddoc) {
+    const pre = new Set(['ADR']);
+    const take = s => { const m = /^([A-Z][A-Z0-9]{1,6})-\d+/.exec(String(s || '').trim());
+                        if (m) pre.add(m[1]); };
+    (D.tasks || []).forEach(t => { take(t.title); take(t.milestone); });
+    take(D.goal);
+    RICH_LINK = {base: D.coddoc, prefixes: pre};
+  } else RICH_LINK = null;
+  document.querySelectorAll('[data-rich]').forEach(el => {
+    if (el.dataset.src === undefined) el.dataset.src = el.textContent;
+    el.innerHTML = el.dataset.rich === 'block'
+      ? rich(el.dataset.src) : richInline(el.dataset.src);
+  });
+}
 
 // Длительность словами: секунды нужны только пока их мало.
 function dur(s) {
@@ -909,28 +1173,35 @@ function dur(s) {
   const m = Math.floor(s / 60), r = s % 60;
   if (m < 60) return r ? m + ' мин ' + r + ' с' : m + ' мин';
   const h = Math.floor(m / 60);
-  return h + ' ч ' + (m % 60) + ' мин';
+  if (h < 48) return h + ' ч ' + (m % 60) + ' мин';
+  return Math.floor(h / 24) + ' д ' + (h % 24) + ' ч';
 }
-function clock(t) {
-  return t ? new Date(t * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+function clock(t, sec) {
+  if (!t) return '';
+  const o = {hour:'2-digit', minute:'2-digit'};
+  if (sec) o.second = '2-digit';
+  return new Date(t * 1000).toLocaleTimeString([], o);
+}
+function day(t) {
+  return new Date(t * 1000).toLocaleDateString([], {day:'2-digit', month:'2-digit'});
 }
 
-function copy(text, btn) {
-  navigator.clipboard.writeText(text).then(() => {
-    const was = btn.textContent; btn.textContent = 'скопировано';
-    setTimeout(() => btn.textContent = was, 1200);
-  });
+// Команда копируется щелчком по ней самой. Буфер обмена бывает закрыт
+// (file:// в части браузеров) — тогда запасной путь через выделение.
+function copy(el) {
+  const text = el.dataset.cmd || el.textContent;
+  const done = () => { el.classList.add('done');
+                       setTimeout(() => el.classList.remove('done'), 1100); };
+  const fallback = () => {
+    const r = document.createRange(); r.selectNodeContents(el);
+    const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    try { document.execCommand('copy'); done(); } catch (e) {}
+  };
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, fallback);
+  else fallback();
 }
-// Команда для копирования лежит в data-атрибуте: inline-onclick с JSON
-// внутри одинарных кавычек разрывался апострофом в пути корня.
-document.addEventListener('click', ev => {
-  const btn = ev.target.closest('button.copy');
-  if (btn) copy(btn.dataset.cmd, btn);
-});
 
 // Тема: выбор человека сильнее системной, поэтому живёт в localStorage.
-// Хранилище бывает недоступно (приватное окно) — молча остаёмся на
-// системной теме, страница обязана работать и так.
 function theme(next) {
   const root = document.documentElement;
   const cur = root.getAttribute('data-theme');
@@ -956,63 +1227,421 @@ function tick() {
 }
 setInterval(tick, 1000);
 
+// --- постановка прогона ----------------------------------------------------
+// Видна сразу и размечена: заголовки частей, пункты, код. Длинная — видна
+// первыми строками с кнопкой «целиком», а не спрятана за ссылкой.
+function brief() {
+  const box = document.querySelector('.brief');
+  if (!box) return;
+  const body = box.querySelector('.rich');
+  const btn = box.querySelector('.more');
+  box.classList.remove('clamp');
+  const tall = body.scrollHeight > 23 * parseFloat(getComputedStyle(body).fontSize);
+  if (!tall) { btn.classList.add('hidden'); return; }
+  btn.classList.remove('hidden');
+  box.classList.toggle('clamp', !BRIEF_OPEN);
+  btn.textContent = BRIEF_OPEN ? 'свернуть постановку' : 'показать постановку целиком';
+}
+
 // --- шкала времени --------------------------------------------------------
-// Не украшение: топтание, ретраи и дорогое ревью видно формой быстрее,
-// чем чтением таблиц. Строим из тех же метрик, что и суммы.
+// История прогона растёт: у стенда cod-doc за 98 ч было пять сессий с
+// паузами по суткам, и на линейной оси каждая фаза становилась черточкой.
+// Поэтому ось кусочная: паузы дольше GAP сжаты в узкие штрихованные
+// разрывы, по умолчанию показана последняя сессия, масштаб — протяжкой
+// мышью по шкале, ⌘/Ctrl + колесом или кнопками; щелчок по отрезку
+// показывает его подробности под шкалой.
+const GAP = 20 * 60;
+const BRK = 2.5;          // ширина разрыва, % дорожки
+
+function tlNow() { return D.run && D.run.live ? Date.now() / 1000 : 0; }
+
+function sessions() {
+  const segs = [...allSegs()].sort((a, b) => a.t0 - b.t0);
+  const out = [];
+  segs.forEach(s => {
+    const last = out[out.length - 1];
+    if (last && s.t0 - last.b <= GAP) { last.b = Math.max(last.b, s.t1); last.segs.push(s); }
+    else out.push({a: s.t0, b: s.t1, segs: [s]});
+  });
+  const last = out[out.length - 1];
+  if (last) last.b = Math.max(last.b, tlNow());
+  out.forEach(x => { x.tasks = new Set(x.segs.map(s => s.task)).size; });
+  return out;
+}
+
+function tlWindow(ss) {
+  if (TL.win) return TL.win;
+  const i = TL.sess === null ? ss.length - 1 : TL.sess;
+  if (i < 0) return {a: ss[0].a, b: ss[ss.length - 1].b};
+  return {a: ss[i].a, b: ss[i].b};
+}
+
+// Куски оси: сессии, обрезанные окном; ширина — по длительности, но не
+// меньше 6 % — короткая сессия рядом с долгой иначе не видна вовсе.
+function layout(ss, win) {
+  const parts = ss.map(x => ({a: Math.max(x.a, win.a), b: Math.min(x.b, win.b)}))
+    .filter(x => x.b > x.a || (x.b === x.a && x.a >= win.a && x.a <= win.b));
+  if (!parts.length) parts.push({a: win.a, b: win.b});
+  const avail = 100 - BRK * (parts.length - 1);
+  const total = parts.reduce((n, p) => n + Math.max(p.b - p.a, 1), 0);
+  let w = parts.map(p => Math.max(Math.max(p.b - p.a, 1) / total * avail, avail * 0.06));
+  const k = avail / w.reduce((n, v) => n + v, 0);
+  let x = 0;
+  parts.forEach((p, i) => { p.x0 = x; p.w = w[i] * k; x += p.w + BRK; });
+  return parts;
+}
+function tx(parts, t) {
+  for (const p of parts) {
+    if (t <= p.b || p === parts[parts.length - 1]) {
+      const c = Math.min(Math.max(t, p.a), p.b);
+      return p.x0 + (p.b > p.a ? (c - p.a) / (p.b - p.a) : 0) * p.w;
+    }
+  }
+  return 0;
+}
+function xt(parts, x) {
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (x <= p.x0 + p.w) return x < p.x0 ? p.a : p.a + (x - p.x0) / p.w * (p.b - p.a);
+  }
+  return parts[parts.length - 1].b;
+}
+
+function ticks(p, px) {
+  const span = p.b - p.a;
+  const steps = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+  const want = Math.max(1, Math.floor(px / 95));
+  const step = steps.find(s => span / s <= want) || 86400;
+  const off = new Date().getTimezoneOffset() * 60;
+  const out = [];
+  for (let t = Math.ceil((p.a - off) / step) * step + off; t <= p.b; t += step) out.push(t);
+  return out;
+}
+
+function segKey(s) { return s.task + '|' + s.phase + '|' + s.t0; }
+
+// Идущая фаза: метрика пишется в конце фазы, и семь минут работы
+// исполнителя на шкале не было видно вовсе. Рисуется из отметки
+// «сейчас» штрихованным отрезком до текущего момента.
+function liveSeg() {
+  const n = D.run && D.run.live && D.run.now;
+  const t0 = n && Date.parse(n.since) / 1000;
+  if (!n || !t0) return null;
+  const t1 = Date.now() / 1000;
+  return {task: String(n.task || ''), phase: String(n.phase || ''), iter: n.iter,
+          t0, t1, dur: t1 - t0, live: true};
+}
+function allSegs() {
+  const l = liveSeg();
+  return l ? [...(D.timeline || []), l] : (D.timeline || []);
+}
+
 function timeline() {
   const box = document.getElementById('timeline');
   if (!box) return;
-  const segs = D.timeline || [];
-  if (!segs.length) { box.innerHTML = ''; return; }
-  const t0 = Math.min(...segs.map(s => s.t0));
-  const live = D.run && D.run.live;
-  const t1 = Math.max(...segs.map(s => s.t1), live ? Date.now() / 1000 : 0);
-  const span = Math.max(1, t1 - t0);
-  const byTask = new Map();
-  segs.forEach(s => {
-    if (!byTask.has(s.task)) byTask.set(s.task, []);
-    byTask.get(s.task).push(s);
+  const all = allSegs();
+  if (!all.length) { box.innerHTML = ''; return; }
+  const ss = sessions();
+  const win = tlWindow(ss);
+  const parts = layout(ss, win);
+  const inWin = all.filter(s => s.t1 >= win.a && s.t0 <= win.b);
+  const title = (D.tasks || []).reduce((m, t) => (m[t.id] = t.title || '', m), {});
+  const rows = new Map();
+  [...inWin].sort((a, b) => a.t0 - b.t0).forEach(s => {
+    if (!rows.has(s.task)) rows.set(s.task, []);
+    rows.get(s.task).push(s);
   });
-  const title = D.tasks.reduce((m, t) => (m[t.id] = t.title || '', m), {});
-  let h = '';
-  byTask.forEach((list, task) => {
+
+  const cur = TL.win ? null : (TL.sess === null ? ss.length - 1 : TL.sess);
+  let h = '<div class="tlbar">';
+  if (ss.length > 1) h += `<button data-tl-sess="-1" class="${cur === -1 ? 'on' : ''}"
+      title="все сессии, паузы сжаты">вся история · ${esc(dur(ss[ss.length - 1].b - ss[0].a))}</button>`;
+  // Кнопками — последние сессии; старые — списком: у стенда cod-doc
+  // их было 13, и кнопки занимали три строки над самой шкалой.
+  const CHIPS = 5;
+  const label = x => day(x.a) + ' ' + clock(x.a) + ' · ' + dur(x.b - x.a);
+  if (ss.length > CHIPS) {
+    h += `<select data-tl-old><option value="">раньше: ${ss.length - CHIPS} сесс.</option>` +
+      ss.slice(0, -CHIPS).map((x, i) => `<option value="${i}" ${cur === i ? 'selected' : ''}>
+        ${esc(label(x) + ', задач ' + x.tasks)}</option>`).join('') + `</select>`;
+  }
+  ss.forEach((x, i) => {
+    if (i < ss.length - CHIPS) return;
+    h += `<button data-tl-sess="${i}" class="${cur === i ? 'on' : ''}"
+      title="${esc(day(x.a) + ' ' + clock(x.a) + ' – ' + clock(x.b) + ', задач ' + x.tasks)}">
+      ${esc(label(x))}</button>`;
+  });
+  h += `<span class="sep"></span><button data-tl-zoom="0.5" title="приблизить">+</button>
+    <button data-tl-zoom="2" title="отдалить">−</button>`;
+  if (TL.win) h += `<button data-tl-reset>сбросить масштаб</button>`;
+  h += `<span class="legend">` + ['implement', 'review', 'gate', 'scope'].map(p =>
+    `<span><b class="sw" style="background:${PCOL[p]}"></b>${esc(PH[p] || p)}</span>`).join('') +
+    `<span><b class="sw" style="background:var(--bad)"></b>гейт красный</span></span></div>`;
+
+  const brks = parts.slice(1).map(p => `<i class="brk" style="left:${p.x0 - BRK}%;width:${BRK}%"></i>`).join('');
+  h += '<div class="tlgrid">';
+  rows.forEach((list, task) => {
     const bars = list.map(s => {
-      const left = (s.t0 - t0) / span * 100;
-      const w = Math.max((s.t1 - s.t0) / span * 100, 0);
+      const l = tx(parts, s.t0), r = tx(parts, s.t1);
+      const w = r - l;
       const col = s.phase === 'gate' && s.ok === false ? 'var(--bad)'
                 : (PCOL[s.phase] || 'var(--mut)');
-      const bits = [PH[s.phase] || s.phase];
-      if (s.iter) bits.push('раунд ' + s.iter);
-      if (s.dur) bits.push(dur(s.dur));
-      if (s.cost) bits.push('$' + s.cost.toFixed(2));
-      if (s.verdict) bits.push(s.verdict);
-      if (s.reused) bits.push('без прогона: дерево не менялось');
-      if (s.ok === false) bits.push('провал');
-      if (s.note) bits.push(s.note);
-      return `<i class="seg ${w < 0.4 ? 'mark' : ''}" style="left:${left}%;
-        width:${w < 0.4 ? '' : w + '%'};background:${col}"
-        title="${esc(bits.join(' · '))}"></i>`;
+      const k = segKey(s);
+      const mark = w < 0.25 || !s.dur;
+      return `<i class="seg ${mark ? 'mark' : ''} ${s.live ? 'now' : ''} ${TL.sel === k ? 'sel' : ''}" data-seg="${esc(k)}"
+        style="left:${l}%;${mark ? '' : 'width:' + w + '%;'}background:${col}"
+        title="${esc((PH[s.phase] || s.phase) + (s.dur ? ' · ' + dur(s.dur) : '') + (s.cost ? ' · $' + s.cost.toFixed(2) : ''))}"></i>`;
     }).join('');
-    h += `<div class="tlrow"><div class="who" data-goto="${esc(task)}"
-      title="${esc(title[task] || task)}">${esc(task || 'прогон')}</div>
-      <div class="track">${bars}</div></div>`;
+    h += `<div class="tlrow"><div class="who" data-goto="${esc(task)}" title="${esc(title[task] || task)}">
+      <span class="id">${esc(task || 'прогон')}</span><span class="tt">${esc(title[task] || '')}</span></div>
+      <div class="track">${brks}${bars}</div></div>`;
   });
-  h += `<div class="tlaxis"><span>${clock(t0)}</span>
-    <span>${dur(span)}</span><span>${clock(t1)}</span></div>`;
+  h += '</div><div class="tlaxis">';
+  const px = Math.max(200, box.clientWidth - 270);
+  // Подписи оси не имеют права лезть друг на друга: у близких разрывов
+  // «пауза 39 мин» ложилась на «пауза 21 ч». Подпись ставится, только
+  // если её оценочная ширина не задевает предыдущую в том же ряду.
+  const lanes = {tick: -1e9, gap: -1e9};
+  const place = (lane, pct, text) => {
+    const c = pct / 100 * px, half = text.length * 3.6 + 6;
+    if (c - half < lanes[lane]) return false;
+    lanes[lane] = c + half;
+    return true;
+  };
+  parts.forEach((p, i) => {
+    let prevDay = null;
+    ticks(p, px * p.w / 100).forEach(t => {
+      const d = day(t);
+      const lab = d !== prevDay && (prevDay !== null || i > 0 || TL.sess === -1) ? d + ' ' + clock(t) : clock(t);
+      prevDay = d;
+      const x = tx(parts, t);
+      h += `<i style="left:${x}%"></i>`;
+      if (place('tick', x, lab)) h += `<span style="left:${x}%">${esc(lab)}</span>`;
+    });
+    if (i > 0) {
+      const lab = 'пауза ' + dur(p.a - parts[i - 1].b);
+      const x = p.x0 - BRK / 2;
+      if (place('gap', x, lab)) h += `<span class="gap" style="left:${x}%;top:17px">${esc(lab)}</span>`;
+    }
+  });
+  h += `</div><div class="tldet" id="tldet">${tlDetail()}</div>`;
   box.innerHTML = h;
+  box._parts = parts;
 }
 
+function tlDetail() {
+  const s = allSegs().find(x => segKey(x) === TL.sel);
+  if (!s) return 'Щёлкните по отрезку — здесь будут его подробности. Протяните мышью ' +
+    'по дорожке — приближение выбранного отрезка времени; ⌘/Ctrl + колесо — масштаб. ' +
+    'Засечка вместо отрезка — у фазы нет измеренной длительности.';
+  const t = (D.tasks || []).find(x => x.id === s.task);
+  const kv = [];
+  kv.push(`${esc(day(s.t0))} ${esc(clock(s.t0, true))}${s.dur ? ' – ' + esc(clock(s.t1, true)) : ''}`);
+  if (s.dur) kv.push('длительность <b>' + esc(dur(s.dur)) + '</b>');
+  if (s.iter) kv.push('раунд <b>' + esc(s.iter) + '</b>');
+  if (s.cost) kv.push('<b>$' + s.cost.toFixed(2) + '</b>');
+  if (s.verdict) kv.push(verdictPill(s.verdict));
+  if (s.ok === false) kv.push('<span class="vd vd-failed">провал</span>');
+  if (s.reused) kv.push('без прогона: дерево не менялось');
+  if (s.live) kv.push('<b>идёт сейчас</b>');
+  if (s.note) kv.push(esc(s.note));
+  const col = s.phase === 'gate' && s.ok === false ? 'var(--bad)' : (PCOL[s.phase] || 'var(--mut)');
+  return `<div><span class="sw" style="background:${col}"></span><b>${esc(PH[s.phase] || s.phase)}</b>
+    · задача <b>${esc(s.task || 'прогон')}</b> ${t ? richInline(t.title) : ''}
+    ${t ? ` · <button class="link" data-goto="${esc(s.task)}">открыть карточку</button>` : ''}</div>
+    <div class="kv">${kv.map(x => '<span>' + x + '</span>').join('')}</div>`;
+}
+
+function tlZoom(factor, at) {
+  const ss = sessions();
+  const w = tlWindow(ss);
+  const box = document.getElementById('timeline');
+  const parts = box._parts || layout(ss, w);
+  const c = at === undefined ? (w.a + w.b) / 2 : xt(parts, at);
+  const half = Math.max(30, (w.b - w.a) * factor / 2);
+  const lo = ss[0].a, hi = ss[ss.length - 1].b;
+  if (half * 2 >= hi - lo) { TL.win = null; TL.sess = -1; }
+  else TL.win = {a: Math.max(lo, c - half), b: Math.min(hi, c + half)};
+  timeline();
+}
+
+// Протяжка по дорожке: выделенный отрезок времени становится окном.
+let drag = null;
+document.addEventListener('mousedown', ev => {
+  const track = ev.target.closest('#timeline .track');
+  if (!track || ev.target.closest('.seg') || ev.button !== 0) return;
+  const grid = track.closest('.tlgrid');
+  const r = track.getBoundingClientRect();
+  drag = {r, x0: ev.clientX, el: document.createElement('div'), grid};
+  drag.el.className = 'brush';
+  drag.el.style.left = (r.left - grid.getBoundingClientRect().left + ev.clientX - r.left) + 'px';
+  drag.el.style.width = '0px';
+  grid.appendChild(drag.el);
+  ev.preventDefault();
+});
+document.addEventListener('mousemove', ev => {
+  if (!drag) return;
+  const gl = drag.grid.getBoundingClientRect().left;
+  const x = Math.min(Math.max(ev.clientX, drag.r.left), drag.r.right);
+  drag.el.style.left = (Math.min(x, drag.x0) - gl) + 'px';
+  drag.el.style.width = Math.abs(x - drag.x0) + 'px';
+});
+document.addEventListener('mouseup', ev => {
+  if (!drag) return;
+  const d = drag; drag = null; d.el.remove();
+  const x = Math.min(Math.max(ev.clientX, d.r.left), d.r.right);
+  if (Math.abs(x - d.x0) < 6) return;
+  const parts = document.getElementById('timeline')._parts;
+  const pct = v => (v - d.r.left) / d.r.width * 100;
+  const a = xt(parts, pct(Math.min(x, d.x0))), b = xt(parts, pct(Math.max(x, d.x0)));
+  if (b - a < 20) return;
+  TL.win = {a, b};
+  timeline();
+});
+document.addEventListener('wheel', ev => {
+  const grid = ev.target.closest('#timeline .tlgrid');
+  if (!grid || !(ev.ctrlKey || ev.metaKey)) return;
+  ev.preventDefault();
+  const tr = grid.querySelector('.track').getBoundingClientRect();
+  tlZoom(ev.deltaY > 0 ? 1.25 : 0.8, (ev.clientX - tr.left) / tr.width * 100);
+}, {passive: false});
+
+// --- задачи ---------------------------------------------------------------
+function verdictPill(v) {
+  const name = {approve: 'approve', request_changes: 'правки'}[v] || v;
+  return `<span class="vd vd-${esc(v)}">${esc(name)}</span>`;
+}
+function sevChips(counts) {
+  return SEV_ORDER.filter(s => counts[s]).map(s =>
+    `<span class="sev sev-${s}">${esc(SEV[s] || s)} ${counts[s]}</span>`).join(' ');
+}
+function sevCount(list) {
+  const c = {};
+  (list || []).forEach(f => { if (f && typeof f === 'object') c[f.severity] = (c[f.severity] || 0) + 1; });
+  return c;
+}
+function allFindings(t) {
+  return (t._verdicts || []).flatMap(v => v.findings || []);
+}
+function diffOf(t) {
+  if (!DIFFS.has(t.id)) DIFFS.set(t.id, t._patch ? parseDiff(t._patch) : []);
+  return DIFFS.get(t.id);
+}
+function diffTotals(files) {
+  return files.reduce((n, f) => ({add: n.add + f.add, del: n.del + f.del}), {add: 0, del: 0});
+}
+function isOpen(key, dflt) { return FOLD.has(key) ? FOLD.get(key) : dflt; }
+
 function findings(list) {
-  if (!list.length) return '';
-  return list.map(f => `<div class="find ${esc(f.severity)}">
-    <div class="top">${esc(SEV[f.severity] || f.severity)} · ${esc(CAT[f.category] || f.category)}
-    ${f.file ? '· ' + esc(f.file) + (f.line ? ':' + f.line : '') : ''}</div>
+  const rank = f => { const i = SEV_ORDER.indexOf(f.severity); return i < 0 ? 9 : i; };
+  return [...list].filter(f => f && typeof f === 'object').sort((a, b) => rank(a) - rank(b))
+    .map(f => `<div class="find ${esc(f.severity)}"><div class="top">
+      <span class="sev sev-${esc(f.severity)}">${esc(SEV[f.severity] || f.severity)}</span>
+      <span>${esc(CAT[f.category] || f.category || '')}</span>
+      ${f.file ? `<code class="copy">${esc(f.file)}${f.line ? ':' + esc(f.line) : ''}</code>` : ''}</div>
     <div>${richInline(f.issue)}</div>
     ${f.suggestion ? `<div class="sug">→ ${richInline(f.suggestion)}</div>` : ''}
   </div>`).join('');
 }
 
-function taskBody(t) {
+function paneReview(t) {
+  let h = '';
+  const vs = t._verdicts || [];
+  const total = sevCount(allFindings(t));
+  if (t._rounds?.length) {
+    h += `<div class="sec"><h3>Траектория схождения ${sevChips(total)}</h3><div class="scroll">
+      <table><tr><th>раунд</th><th>вердикт</th><th>исход</th>
+      <th class="n">находок</th><th class="n">о замысле</th></tr>` +
+      t._rounds.map(r => `<tr><td>${esc(r.round)}</td><td>${r.verdict ? verdictPill(r.verdict) : ''}</td>
+        <td>${esc(OUT[r.outcome] || r.outcome)}</td><td class="n">${esc(r.findings ?? '')}</td>
+        <td class="n">${esc(r.intent ?? '')}</td></tr>`).join('') +
+      `</table></div><div class="hint">${esc(trend(t._rounds))}</div></div>`;
+  }
+  if (vs.length) h += `<div class="sec"><h3>Вердикты ревьюера по раундам</h3>`;
+  vs.forEach((v, i) => {
+    const key = t.id + '|r|' + v.round;
+    const open = isOpen(key, i === vs.length - 1);
+    const c = sevCount(v.findings);
+    const pill = v.failed ? '<span class="vd vd-failed">нет ответа</span>' : verdictPill(v.verdict);
+    const sum = v.failed ? esc(v.why) : richInline(v.summary);
+    let body = '';
+    if (!v.failed) {
+      body += findings(v.findings || []);
+      if (v.requests?.length) body += `<div class="hint">запрошены проверки: ` +
+        v.requests.map(r => esc(r.kind)).join(', ') + `</div>`;
+      if (v.notes?.length) body += `<div class="sec" style="margin-top:12px"><h3>Замечено вне рамок задачи</h3>
+        <ul class="acc">${v.notes.map(n => `<li>${richInline(n)}</li>`).join('')}</ul>
+        <div class="hint">готовый бэклог: ревьюер это увидел, но чинить не просил</div></div>`;
+      if (v.analysis) {
+        const ak = key + '|an';
+        body += `<div class="round ${isOpen(ak, false) ? 'open' : ''}" style="margin-top:10px">
+          <div class="rhd" data-fold="${esc(ak)}"><span class="fold"></span>рассуждение ревьюера</div>
+          <div class="rbd"><div class="analysis rich">${isOpen(ak, false) ? rich(v.analysis) : ''}</div></div></div>`;
+      }
+      if (!body) body = '<div class="hint">находок нет</div>';
+    } else body = `<div class="hint">${esc(v.why)}</div>`;
+    h += `<div class="round ${open ? 'open' : ''}">
+      <div class="rhd" data-fold="${esc(key)}"><span class="fold"></span>
+        <span class="rname">${esc(v.round)}</span>${pill}${sevChips(c)}
+        <span class="sum">${open ? '' : sum}</span></div>
+      <div class="rbd">${open && !v.failed && v.summary ? `<p class="spec" style="margin:8px 0">${richInline(v.summary)}</p>` : ''}${open ? body : ''}</div></div>`;
+  });
+  if (vs.length) h += `</div>`;
+  if (t._suppressed?.length) h += `<div class="sec"><h3>Подавлено политиками прогона</h3>
+    ${t._suppressed.map(s => `<div class="find minor"><div class="top">${esc(s.policy || '')}
+    ${s.severity ? `<span class="sev sev-${esc(s.severity)}">${esc(SEV[s.severity] || s.severity)}</span>` : ''}</div>
+    <div>${richInline(s.issue)}</div></div>`).join('')}</div>`;
+  return h || '<div class="hint">ревью не запускалось</div>';
+}
+
+function paneDiff(t) {
+  const files = diffOf(t);
+  const tot = diffTotals(files);
+  let h = `<div class="dstat">`;
+  if (t._subject) h += `<b>${richInline(t._subject)}</b>`;
+  h += `<span>файлов ${files.length}</span><span class="add">+${tot.add}</span>
+    <span class="del">−${tot.del}</span>
+    <code class="copy" title="щелчок — скопировать">git show ${esc(t.commit)}</code>
+    ${files.length > 1 ? `<button class="link" data-dall="1">развернуть все</button>
+      <button class="link" data-dall="0">свернуть все</button>` : ''}</div>`;
+  if (t._patch_cut) h += `<div class="hint" style="margin:-3px 0 9px">дифф на странице обрезан:
+    показано ${Math.round(t._patch.length / 1000)} из ${Math.round(t._patch_cut / 1000)} тыс. знаков —
+    полностью командой выше</div>`;
+  // Коротко по умолчанию: маленький дифф открыт целиком, большой —
+  // первым файлом с превью в LIM строк; остальное по щелчку.
+  const small = files.reduce((n, f) => n + f.lines.length, 0) <= 160;
+  files.forEach((f, i) => {
+    const key = t.id + '|f|' + f.path;
+    const open = isOpen(key, small || i === 0);
+    const n = f.add + f.del;
+    const blocks = n ? Math.round(f.add / n * 5) : 0;
+    const bar = '<span class="dbar">' + [0, 1, 2, 3, 4].map(i =>
+      `<i class="${!n ? '' : i < blocks ? 'a' : 'd'}"></i>`).join('') + '</span>';
+    const tag = f.created ? ' <span class="sev sev-minor">новый</span>'
+              : f.gone ? ' <span class="sev sev-minor">удалён</span>' : '';
+    h += `<div class="dfile ${open ? 'open' : ''}"><div class="dh" data-fold="${esc(key)}">
+      <span class="fold"></span><span class="p">${esc(f.path)}${tag}</span>
+      <span class="add">+${f.add}</span><span class="del">−${f.del}</span>${bar}</div>
+      <div class="dcode">${open ? fileCode(f, key) : ''}</div></div>`;
+  });
+  return h;
+}
+
+function fileCode(f, key) {
+  if (f.bin) return '<div class="dmore hint">двоичный файл</div>';
+  const LIM = 80;
+  const full = DFULL.has(key) || f.lines.length <= LIM + 20;
+  const rows = full ? f.lines : f.lines.slice(0, LIM);
+  let h = '<table class="dl">' + rows.map(([k, o, n, text]) => k === 'h' || k === 'm'
+    ? `<tr class="h"><td class="ln"></td><td class="ln"></td><td class="c">${esc(text)}</td></tr>`
+    : `<tr class="${k === 'c' ? '' : k}"><td class="ln">${o}</td><td class="ln">${n}</td>
+       <td class="c">${k === 'a' ? '+' : k === 'd' ? '−' : ' '}${esc(text)}</td></tr>`).join('') + '</table>';
+  if (!full) h += `<div class="dmore"><button class="link" data-full="${esc(key)}">
+    показать ещё ${f.lines.length - LIM} строк</button></div>`;
+  return h;
+}
+
+function paneSpec(t) {
   let h = '';
   if (t.spec) h += `<div class="sec"><h3>Что просили сделать</h3>
     <div class="spec rich">${rich(t.spec)}</div></div>`;
@@ -1020,68 +1649,71 @@ function taskBody(t) {
     <ul class="acc">${t.acceptance.map(a => `<li>${richInline(a)}</li>`).join('')}</ul></div>`;
   if (t.human_decisions?.length) h += `<div class="sec"><h3>Ваши решения по задаче</h3>
     <ul class="acc">${t.human_decisions.map(d => `<li>${richInline(d)}</li>`).join('')}</ul></div>`;
+  const u = t._unclear;
+  if (u && (u.items || []).length) h += `<div class="sec"><h3>Развилки спецификации
+    <span class="sev sev-major">${esc(u.count ?? u.items.length)}</span></h3>
+    ${u.summary ? `<div class="hint" style="margin:0 0 6px">${richInline(u.summary)}</div>` : ''}
+    ${u.items.map(i => `<div class="find major"><div>${richInline(i.question)}</div>
+      ${i.why_it_matters ? `<div class="hint">от чего зависит: ${richInline(i.why_it_matters)}</div>` : ''}
+      ${i.where ? `<div class="hint">где молчит спека: ${richInline(i.where)}</div>` : ''}</div>`).join('')}</div>`;
+  if (t.paths?.length) h += `<div class="sec"><h3>Границы задачи</h3>
+    ${t.paths.map(p => `<code class="copy">${esc(p)}</code>`).join(' ')}</div>`;
+  if (t.deps?.length) h += `<div class="sec"><h3>Зависит от</h3>${t.deps.map(esc).join(', ')}</div>`;
+  return h || '<div class="hint">постановки нет</div>';
+}
 
-  if (t._rounds?.length) {
-    h += `<div class="sec"><h3>Траектория схождения</h3><div class="scroll">
-      <table><tr><th>раунд</th><th>вердикт</th><th>исход</th>
-      <th class="n">находок</th><th class="n">о замысле</th></tr>` +
-      t._rounds.map(r => `<tr><td>${esc(r.round)}</td><td>${esc(r.verdict)}</td>
-        <td>${esc(OUT[r.outcome] || r.outcome)}</td><td class="n">${esc(r.findings ?? '')}</td>
-        <td class="n">${esc(r.intent ?? '')}</td></tr>`).join('') +
-      `</table></div><div class="hint">${esc(trend(t._rounds))}</div></div>`;
-  }
-
-  if (t._phases?.length) h += `<div class="sec"><h3>Как шла работа</h3><div class="scroll">
+function paneWork(t) {
+  let h = '';
+  if (t._phases?.length) h += `<div class="sec"><h3>Фазы по порядку</h3><div class="scroll">
     <table><tr><th>время</th><th>раунд</th><th>фаза</th><th>итог</th>
-    <th class="n">сек</th><th class="n">$</th></tr>` +
-    t._phases.map(p => `<tr><td>${esc(p.ts)}</td><td>${esc(p.iter ?? '')}</td>
-      <td>${esc(p.phase)}</td><td>${esc(p.result)}</td>
-      <td class="n">${p.dur ? p.dur.toFixed(1) : ''}</td>
+    <th class="n">длительность</th><th class="n">$</th></tr>` +
+    t._phases.map(p => `<tr><td class="num">${esc(p.ts)}</td><td>${esc(p.iter ?? '')}</td>
+      <td>${esc(p.phase)}</td><td>${['approve', 'request_changes'].includes(p.result) ? verdictPill(p.result)
+        : p.result === 'провал' ? '<span class="vd vd-failed">провал</span>' : esc(p.result)}</td>
+      <td class="n">${p.dur ? esc(dur(p.dur)) : ''}</td>
       <td class="n">${p.cost ? p.cost.toFixed(2) : ''}</td></tr>`).join('') +
     `</table></div></div>`;
-
-  (t._verdicts || []).forEach(v => {
-    if (v.failed) {
-      h += `<div class="sec"><h3>Ревьюер, ${esc(v.round)} — ответа нет</h3>
-        <div class="hint">${esc(v.why)}</div></div>`;
-      return;
-    }
-    h += `<div class="sec"><h3>Ревьюер, ${esc(v.round)} → ${esc(v.verdict)}</h3>
-      <div>${esc(v.summary)}</div>` +
-      (v.analysis ? `<details><summary class="det">рассуждение ревьюера</summary>
-        <div class="spec">${esc(v.analysis)}</div></details>` : '') +
-      findings(v.findings) +
-      (v.requests?.length ? `<div class="hint">запрошены проверки: ` +
-        v.requests.map(r => esc(r.kind)).join(', ') + `</div>` : '') +
-      (v.notes?.length ? `<div class="sec"><h3>Замечено вне рамок задачи</h3>
-        <ul class="acc">${v.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>
-        <div class="hint">готовый бэклог: ревьюер это увидел, но чинить не просил</div>
-        </div>` : '') + `</div>`;
-  });
-
-  if (t._suppressed?.length) h += `<div class="sec"><h3>Подавлено политиками прогона</h3>
-    ${t._suppressed.map(s => `<div class="find minor"><div class="top">${esc(s.policy || '')}
-    ${s.severity ? '· ' + esc(SEV[s.severity] || s.severity) : ''}</div>
-    <div>${esc(s.issue)}</div></div>`).join('')}</div>`;
-
   (t._questions || []).forEach(q => {
     const cmd = `swarm --root ${D.root} answer ${q.qid} "…"`;
     h += `<div class="sec"><div class="qa ${q.status === 'answered' ? 'answered' : ''}">
       <div><b>${esc(q.qid)}</b> · ${esc(q.qkind || '')}</div>
-      <div>${esc(q.question)}</div>
+      <div>${richInline(q.question)}</div>
       ${q.answer ? `<div class="ans">→ ${esc(q.answer)}</div>` :
-        `<div class="cmd"><code>${esc(cmd)}</code>
-         <button class="copy" data-cmd="${esc(cmd)}">скопировать</button></div>`}
+        `<div class="hint"><code class="copy big">${esc(cmd)}</code></div>`}
     </div></div>`;
   });
-
-  if (t._diff) h += `<div class="sec"><h3>Что вошло в код</h3>
-    <pre>${esc(t._diff)}</pre></div>`;
-
   if (t._streams?.length) h += `<div class="sec"><h3>Сырые логи</h3>
     <div class="hint">потоки исполнителя не встроены (сотни КБ):
-    <code>${esc(D.swarm_dir)}/log/</code> — ${t._streams.map(esc).join(', ')}</div></div>`;
-  return h;
+    <code class="copy">${esc(D.swarm_dir)}/log/</code> — ${t._streams.map(esc).join(', ')}</div></div>`;
+  return h || '<div class="hint">фаз ещё не было</div>';
+}
+
+function tabsOf(t) {
+  const tabs = [];
+  const nf = allFindings(t).length;
+  if (t._verdicts?.length || t._rounds?.length)
+    tabs.push(['review', 'Ревью', nf ? 'находок ' + nf : 'без находок']);
+  if (t._patch) { const d = diffTotals(diffOf(t)); tabs.push(['diff', 'Дифф', `+${d.add} −${d.del}`]); }
+  tabs.push(['spec', 'Постановка', '']);
+  tabs.push(['work', 'Ход работы', t._phases?.length ? 'фаз ' + t._phases.length : '']);
+  return tabs;
+}
+function defaultTab(t, tabs) {
+  const has = k => tabs.some(x => x[0] === k);
+  if (allFindings(t).length && has('review')) return 'review';
+  if (t.status === 'blocked') return has('review') ? 'review' : 'work';
+  if (has('diff')) return 'diff';
+  return 'spec';
+}
+
+function taskBody(t) {
+  const tabs = tabsOf(t);
+  let tab = TAB.get(t.id);
+  if (!tabs.some(x => x[0] === tab)) tab = defaultTab(t, tabs);
+  const pane = {review: paneReview, diff: paneDiff, spec: paneSpec, work: paneWork}[tab];
+  return `<div class="tabs">${tabs.map(([k, name, n]) =>
+    `<button data-tab="${k}" class="${k === tab ? 'on' : ''}">${name}${n ? `<span class="n">${esc(n)}</span>` : ''}</button>`).join('')}
+    </div><div class="pane">${pane(t)}</div>`;
 }
 
 // Ряд находок читается строго (§9.3): убывание — только строгое, ровный
@@ -1097,106 +1729,164 @@ function trend(rounds) {
   return 'ряд находок неровный — сходимость не подтверждается';
 }
 
+function card(t) {
+  const bits = [];
+  if (t.type) bits.push(`<span>${esc(t.type)}</span>`);
+  if (t._cost) bits.push(`<span class="num">$${t._cost}</span>`);
+  if (t.iterations) bits.push(`<span>раундов ${esc(t.iterations)}</span>`);
+  const chips = sevChips(sevCount(allFindings(t)));
+  if (chips) bits.push(`<span>${chips}</span>`);
+  if (t._patch) {
+    const d = diffTotals(diffOf(t));
+    bits.push(`<span><span class="add">+${d.add}</span> <span class="del">−${d.del}</span></span>`);
+  }
+  // Поля прошлого исхода не чистятся при закрытии задачи: показывать
+  // «причина: invalid_verdict» рядом с «закрыта» — вводить в заблуждение.
+  if (t.status === 'blocked') {
+    if (t.reason) bits.push(`<span>причина: <b>${esc(t.reason)}</b></span>`);
+    if (t.diagnosis) bits.push(`<span>диагноз: ${esc(t.diagnosis)}</span>`);
+  }
+  if (t.deps?.length && t.status === 'pending')
+    bits.push(`<span>ждёт: ${esc(t.deps.join(', '))}</span>`);
+  // Спарклайн — траектория схождения, читаемая не открывая карточку.
+  const series = (t._rounds || []).map(r => r.findings).filter(x => typeof x === 'number');
+  const top = Math.max(1, ...series);
+  const spark = series.length > 1 ? `<span class="spark">` + series.map(v =>
+    `<i class="${v ? '' : 'zero'}" style="height:${v ? Math.max(3, v / top * 14) : 2}px"
+      title="находок ${v}"></i>`).join('') + `</span>` : '<span></span>';
+  const open = OPEN.has(t.id);
+  return `<div class="card ${open ? 'open' : ''}" data-id="${esc(t.id)}">
+    <div class="head" title="${open ? 'свернуть' : 'раскрыть'}"><span class="id">${esc(t.id)}</span>
+    <span class="t">${richInline(t.title)}</span>${spark}
+    <span class="badge ${CLS[t.status] || ''}">${esc(ST[t.status] || t.status)}</span>
+    <div class="meta">${bits.join('')}</div></div>
+    ${open ? `<div class="body">${taskBody(t)}</div>` : ''}</div>`;
+}
+
+function redrawCard(id) {
+  const t = (D.tasks || []).find(x => x.id === id);
+  const el = document.querySelector(`#tasks .card[data-id="${CSS.escape(id)}"]`);
+  if (t && el) el.outerHTML = card(t);
+}
+
 function tasks() {
   const q = document.getElementById('search').value.toLowerCase();
   const filter = document.querySelector('.bar button.on')?.dataset.f || 'all';
   const box = document.getElementById('tasks');
   const order = ['in_progress', 'blocked', 'pending', 'in_review', 'done'];
-  const sorted = [...D.tasks].sort((a, b) =>
-    order.indexOf(a.status) - order.indexOf(b.status));
-  let shown = 0;
-  box.innerHTML = sorted.map(t => {
-    const hay = JSON.stringify(t).toLowerCase();
-    const okF = filter === 'all' || t.status === filter;
-    const okQ = !q || hay.includes(q);
-    if (!(okF && okQ)) return '';
-    shown++;
-    const bits = [`тип ${esc(t.type || '—')}`];
-    if (t.paths?.length) bits.push('файлы: ' + esc(t.paths.join(', ')));
-    if (t._cost) bits.push(`$${t._cost}`);
-    if (t.commit) bits.push(`коммит ${esc(t.commit)}`);
-    // Поля прошлого исхода не чистятся при закрытии задачи: показывать
-    // «причина: invalid_verdict» рядом с «закрыта» — вводить в заблуждение.
-    if (t.status === 'blocked') {
-      if (t.reason) bits.push(`причина: ${esc(t.reason)}`);
-      if (t.stash) bits.push(`работа сохранена: ${esc(t.stash)}`);
-      if (t.diagnosis) bits.push(`диагноз: ${esc(t.diagnosis)}`);
+  // Внутри статуса — свежие сверху: история растёт, и вчерашнее не
+  // должно заслонять последнее.
+  const last = {};
+  (D.timeline || []).forEach(s => { last[s.task] = Math.max(last[s.task] || 0, s.t1); });
+  const sorted = [...(D.tasks || [])].sort((a, b) =>
+    order.indexOf(a.status) - order.indexOf(b.status) || (last[b.id] || 0) - (last[a.id] || 0));
+  const shown = sorted.filter(t => {
+    if (!HAY.has(t.id)) {
+      const {_patch, ...rest} = t;
+      HAY.set(t.id, JSON.stringify(rest).toLowerCase());
     }
-    if (t.deps?.length && t.status === 'pending')
-      bits.push(`ждёт: ${esc(t.deps.join(', '))}`);
-    if (t.iterations) bits.push(`раундов ${esc(t.iterations)}`);
-    const nf = (t._verdicts || []).reduce((n, v) => n + (v.findings?.length || 0), 0);
-    if (nf) bits.push(`находок ${nf}`);
-    // Спарклайн — та же траектория схождения, но читаемая не открывая
-    // карточку: столбики по раундам, зелёная риска — раунд без находок.
-    const series = (t._rounds || []).map(r => r.findings)
-      .filter(x => typeof x === 'number');
-    const top = Math.max(1, ...series);
-    // Один раунд — не ряд: столбик из одного значения формы не несёт, а
-    // выглядит соринкой у каждой закрытой с первого раза задачи.
-    const spark = series.length > 1 ? `<span class="spark">` + series.map(v =>
-      `<i class="${v ? '' : 'zero'}" style="height:${v ? Math.max(3, v / top * 14) : 2}px"
-        title="находок ${v}"></i>`).join('') + `</span>` : '<span></span>';
-    return `<div class="card" data-id="${esc(t.id)}" onclick="if(!event.target.closest('button'))
-        this.classList.toggle('open')">
-      <div class="head"><span class="id">${esc(t.id)}</span>
-      <span class="t">${richInline(t.title)}</span>${spark}
-      <span class="badge ${CLS[t.status] || ''}">${esc(ST[t.status] || t.status)}</span></div>
-      <div class="meta">${bits.join(' · ')}</div>
-      <div class="body">${taskBody(t)}</div></div>`;
-  }).join('');
-  if (!shown) box.innerHTML = '<div class="empty">ничего не найдено</div>';
+    return (filter === 'all' || t.status === filter) && (!q || HAY.get(t.id).includes(q));
+  });
+  box.innerHTML = shown.length ? shown.map(card).join('')
+    : '<div class="empty">ничего не найдено</div>';
 }
 
-function render() { tasks(); timeline(); tick(); }
+function openCard(id) {
+  OPEN.add(id);
+  const f = document.querySelector('.bar button.on');
+  if (f && f.dataset.f !== 'all') {
+    document.querySelectorAll('.bar button[data-f]').forEach(x => x.classList.toggle('on', x.dataset.f === 'all'));
+  }
+  document.getElementById('search').value = '';
+  tasks();
+  const el = document.querySelector(`#tasks .card[data-id="${CSS.escape(id)}"]`);
+  if (el) el.scrollIntoView({block: 'start', behavior: 'smooth'});
+}
 
-// Привязка обработчиков — отдельной функцией, а не разовым кодом при
-// загрузке: после живой подмены .wrap (см. apply()) старые кнопки и
-// поле поиска уже не те DOM-узлы, к которым что-то привязано, и без
-// повторного вызова фильтр с поиском переставали бы отвечать на клики.
-function bind() {
-  document.querySelectorAll('.bar button[data-f]').forEach(b => b.onclick = () => {
+function render() { tasks(); timeline(); brief(); tick(); }
+
+// Все щелчки — одним делегатом на документе: он переживает живую подмену
+// разметки, и порядок проверок явный. Карточку сворачивает и раскрывает
+// ТОЛЬКО её шапка: раньше щелчок в любом месте тела (по тексту, по
+// находке) захлопывал карточку посреди чтения.
+document.addEventListener('click', ev => {
+  const el = ev.target;
+  if (el.closest('a')) return;
+  const cp = el.closest('code.copy');
+  if (cp) { copy(cp); return; }
+  const tl = el.closest('[data-tl-sess]');
+  if (tl) { TL.sess = +tl.dataset.tlSess; TL.win = null; timeline(); return; }
+  const z = el.closest('[data-tl-zoom]');
+  if (z) { tlZoom(+z.dataset.tlZoom); return; }
+  if (el.closest('[data-tl-reset]')) { TL.win = null; timeline(); return; }
+  const seg = el.closest('#timeline .seg');
+  if (seg) { TL.sel = TL.sel === seg.dataset.seg ? null : seg.dataset.seg; timeline(); return; }
+  const go = el.closest('[data-goto]');
+  if (go) { if (go.dataset.goto) openCard(go.dataset.goto); return; }
+  if (el.closest('.brief .more')) { BRIEF_OPEN = !BRIEF_OPEN; brief(); return; }
+  if (el.closest('#theme')) { theme(); return; }
+  const fb = el.closest('.bar button[data-f]');
+  if (fb) {
     document.querySelectorAll('.bar button[data-f]').forEach(x => x.classList.remove('on'));
-    b.classList.add('on'); tasks();
-  });
-  document.getElementById('search').oninput = tasks;
-  const th = document.getElementById('theme');
-  if (th) th.onclick = () => theme();
-  const ev = document.getElementById('toggle-ev');
-  if (ev) ev.onclick = e => {
-    const el = document.getElementById('events');
-    el.classList.toggle('hidden');
-    e.target.textContent = el.classList.contains('hidden')
+    fb.classList.add('on'); tasks(); return;
+  }
+  if (el.closest('#toggle-ev')) {
+    const box = document.getElementById('events');
+    box.classList.toggle('hidden');
+    el.closest('#toggle-ev').textContent = box.classList.contains('hidden')
       ? 'показать хронику прогона' : 'скрыть хронику';
-  };
-  // Клик по имени задачи на шкале открывает её карточку: шкала
-  // показывает форму, а объяснение формы лежит в карточке.
-  document.querySelectorAll('.tlrow .who').forEach(w => w.onclick = () => {
-    const card = document.querySelector(`#tasks .card[data-id="${CSS.escape(w.dataset.goto)}"]`);
-    if (!card) return;
-    card.classList.add('open');
-    card.scrollIntoView({block: 'center', behavior: 'smooth'});
-  });
-}
-// Шапка отрендерена сервером экранированным текстом — разбор здесь,
-// тем же разборщиком, что и карточки: второй копии правил нет.
-document.querySelectorAll('[data-rich]').forEach(el => {
-  el.innerHTML = el.dataset.rich === 'block'
-    ? rich(el.textContent) : richInline(el.textContent);
+    return;
+  }
+  const cardEl = el.closest('#tasks .card');
+  if (!cardEl) return;
+  const id = cardEl.dataset.id;
+  const tab = el.closest('.tabs button[data-tab]');
+  if (tab) { TAB.set(id, tab.dataset.tab); redrawCard(id); return; }
+  const fold = el.closest('[data-fold]');
+  if (fold) {
+    const holder = fold.parentElement;
+    FOLD.set(fold.dataset.fold, !holder.classList.contains('open'));
+    redrawCard(id); return;
+  }
+  const dall = el.closest('[data-dall]');
+  if (dall) {
+    const t = (D.tasks || []).find(x => x.id === id);
+    diffOf(t).forEach(f => FOLD.set(id + '|f|' + f.path, dall.dataset.dall === '1'));
+    redrawCard(id); return;
+  }
+  const full = el.closest('[data-full]');
+  if (full) { DFULL.add(full.dataset.full); redrawCard(id); return; }
+  if (el.closest('.head')) {
+    // Выделение текста в шапке — не щелчок: копирующий название не
+    // должен захлопывать карточку.
+    if (String(getSelection() || '')) return;
+    if (OPEN.has(id)) OPEN.delete(id); else OPEN.add(id);
+    redrawCard(id);
+  }
 });
-bind();
-render();
-bind();   // строки шкалы появились только что — им тоже нужны обработчики
+document.addEventListener('input', ev => {
+  if (ev.target.id === 'search') tasks();
+});
+document.addEventListener('change', ev => {
+  if (ev.target.matches('[data-tl-old]') && ev.target.value !== '') {
+    TL.sess = +ev.target.value; TL.win = null; timeline();
+  }
+});
+let resizeT = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeT); resizeT = setTimeout(() => { timeline(); brief(); }, 150);
+});
 
-// Живое обновление: раньше страница целиком перезагружала саму себя
-// каждые 15 с — рабочий приём, но раскрытая карточка схлопывалась и
-// прокрутка прыгала ровно тогда, когда её читали. Сервер
-// (boardserve.BoardServer) отдаёт по тому же адресу свежий HTML, а
-// сюда — только подмена DOM: страница жива, вкладка не мигает, никакой
-// навигации не происходит вовсе.
+// Совместимость: обработчики теперь делегированы, привязывать нечего.
+function bind() {}
+
+init();
+render();
+
+// Живое обновление: сервер (boardserve.BoardServer) отдаёт по тому же
+// адресу свежий HTML, а сюда — только подмена DOM: страница жива, вкладка
+// не мигает, раскрытое остаётся раскрытым (состояние — в OPEN/TAB/FOLD/TL).
 if (location.protocol !== 'http:' && location.protocol !== 'https:') {
-  // Открыт как файл (file://) — сервера за ним нет и быть не может:
-  // честнее сказать это прямо, чем гонять fetch в никуда.
   document.getElementById('live').textContent =
     'это снимок на диске: живая доска — live_board = true в swarm.toml, ' +
     'её адрес печатает команда запуска — здесь не обновится';
@@ -1215,8 +1905,7 @@ if (location.protocol !== 'http:' && location.protocol !== 'https:') {
       .then(txt => { if (txt) apply(txt); })
       .catch(() => {
         // Три подряд неудачи — не сбой сети, а конец прогона: сервер
-        // живёт, пока жива петля, и его исчезновение — единственный
-        // надёжный признак того, что смотреть дальше некуда.
+        // живёт, пока жива петля.
         if (++misses >= 3) {
           clearInterval(timer);
           document.getElementById('live').textContent =
@@ -1231,16 +1920,12 @@ function apply(txt) {
   const fresh = new DOMParser().parseFromString(txt, 'text/html');
   const freshData = fresh.getElementById('data');
   const curData = document.getElementById('data');
-  // Тот же payload — эхо собственного запроса (или пересборка без
-  // изменений на стороне сервера): перерисовывать нечего.
+  // Тот же payload — эхо собственного запроса: перерисовывать нечего.
   if (!freshData || freshData.textContent === curData.textContent) return;
   const freshWrap = fresh.querySelector('.wrap');
   const curWrap = document.querySelector('.wrap');
   if (!freshWrap || !curWrap) return;
-  // Состояние интерфейса живёт в DOM, а не в D — подмена .wrap его
-  // сотрёт, поэтому снимается ДО подмены и возвращается после.
-  const openIds = [...document.querySelectorAll('#tasks .card.open')]
-    .map(c => c.dataset.id);
+  // Поиск, фильтр и хроника живут в DOM — снимаются ДО подмены.
   const searchVal = document.getElementById('search').value;
   const activeFilter = document.querySelector('.bar button.on')?.dataset.f || 'all';
   const evEl0 = document.getElementById('events');
@@ -1249,7 +1934,6 @@ function apply(txt) {
   curWrap.replaceWith(document.adoptNode(freshWrap));
   curData.textContent = freshData.textContent;
   D = JSON.parse(curData.textContent);
-  bind();   // свежий .wrap принёс новые кнопки и поле поиска
 
   document.getElementById('search').value = searchVal;
   const btn = document.querySelector(`.bar button[data-f="${activeFilter}"]`);
@@ -1259,20 +1943,12 @@ function apply(txt) {
   }
   const evEl = document.getElementById('events');
   const evBtn = document.getElementById('toggle-ev');
-  if (evEl && !evHidden) evEl.classList.remove('hidden');
-  if (evEl && evHidden) evEl.classList.add('hidden');
+  if (evEl) evEl.classList.toggle('hidden', evHidden);
   if (evBtn) evBtn.textContent =
     evHidden ? 'показать хронику прогона' : 'скрыть хронику';
 
+  init();
   render();
-  bind();   // шкала перерисована — её строки снова новые узлы
-  // CSS.escape: id задачи попадает в селектор атрибута буквально, а не
-  // как текст — без экранирования свои же скобки/точки в id ломали бы
-  // запрос вместо того, чтобы найти карточку.
-  openIds.forEach(id => {
-    const card = document.querySelector(`#tasks .card[data-id="${CSS.escape(id)}"]`);
-    if (card) card.classList.add('open');
-  });
   document.getElementById('live').textContent =
     'обновлено ' + new Date().toLocaleTimeString();
 }
@@ -1404,8 +2080,8 @@ def _vitals(
         marks.append(("var(--bad)", "без вердикта", str(lost)))
     legend = _legend(marks)
     finds = sum(severity.values())
-    sev_line = " · ".join(
-        f"{SEVERITY_RU.get(s, s)} {severity[s]}"
+    sev_line = " ".join(
+        f'<span class="sev sev-{e(s)}">{e(SEVERITY_RU.get(s, s))} {severity[s]}</span>'
         for s in ("blocker", "major", "minor")
         if severity.get(s)
     )
@@ -1413,7 +2089,7 @@ def _vitals(
         f'<div class="tile"><div class="cap">ревью</div>'
         f'<div class="big">{rounds}<small> вердиктов, находок '
         f"{finds}</small></div>{bar}{legend}"
-        + (f'<div class="hint">{e(sev_line)}</div>' if sev_line else "")
+        + (f'<div class="hint">{sev_line}</div>' if sev_line else "")
         + "</div>"
     )
 
@@ -1485,9 +2161,8 @@ def _now_panel(board: dict[str, Any]) -> str:
         f'«{e(phase)}»</div><div class="meta">{e(meta)} · петля не '
         f"запущена, а отметка о работе осталась — процесс убит, "
         f"а не завершён</div>"
-        f'<div class="cmd"><code>{e(cmd)}</code>'
-        f'<button class="copy" data-cmd="{e(cmd)}">скопировать</button>'
-        f"</div></div></section>"
+        f'<div class="hint"><code class="copy big">{e(cmd)}</code></div>'
+        f"</div></section>"
     )
 
 
@@ -1512,12 +2187,13 @@ def _decisions(
             f"<span>задача {e(str(q.get('task') or '—'))}</span>"
             f"<span>{e(str(q.get('qkind', '')))}</span>"
             f'<span class="grow"></span>{age}</div>'
-            f'<div class="q">{e(str(q.get("question", "")))}</div>'
-            # Команда — в data-атрибуте, а не в inline-onclick: JSON
-            # экранирует кавычки, но не апостроф, и путь корня с «'»
-            # разрывал одинарно-кавыченный атрибут (инъекция разметки).
-            f'<div class="cmd"><code>{e(cmd)}</code>'
-            f'<button class="copy" data-cmd="{e(cmd)}">скопировать</button></div>'
+            f'<div class="q" data-rich="inline">{e(str(q.get("question", "")))}</div>'
+            # Команда копируется щелчком по ней самой: отдельная кнопка
+            # «скопировать» рядом с каждой командой была лишней строкой.
+            # Текст берётся из узла, а не из inline-onclick: путь корня с
+            # «'» разрывал одинарно-кавыченный атрибут (инъекция разметки).
+            f'<div class="acts"><span>ответить</span>'
+            f'<span><code class="copy big">{e(cmd)}</code></span></div>'
             f'<div class="hint">если решение требует тронуть файл вне границ '
             f"задачи — добавьте <code>--add-path путь</code></div></div>"
         )
@@ -1527,19 +2203,24 @@ def _decisions(
         out.append(
             f'<div class="ask blocked"><div class="top">'
             f"<b>{e(str(t.get('id')))}</b><span>задача заблокирована</span></div>"
-            f'<div class="q">{e(str(t.get("title") or ""))}</div>'
-            + (f'<div class="hint">{e(why)}</div>' if why else "")
+            f'<div class="q" data-rich="inline">{e(str(t.get("title") or ""))}</div>'
+            + (f'<div class="hint" style="margin:-4px 0 8px">{e(why)}</div>'
+               if why else "")
+            # Обе команды — щелчком по тексту: «разбор причины» раньше
+            # копировался только выделением руками, а у повтора была
+            # отдельная кнопка.
+            + f'<div class="acts"><span>разбор причины</span><span>'
+            f'<code class="copy big">swarm --root {e(root)} why '
+            f"{e(str(t.get('id')))}</code></span>"
+            f'<span>повторить</span><span><code class="copy big">{e(cmd)}'
+            f"</code></span>"
             + (
-                f'<div class="hint">работа сохранена: '
-                f"<code>{e(str(t['stash']))}</code></div>"
+                f'<span>работа сохранена</span><span><code class="copy">'
+                f"{e(str(t['stash']))}</code></span>"
                 if t.get("stash")
                 else ""
             )
-            + f'<div class="cmd"><code>{e(cmd)}</code>'
-            f'<button class="copy" data-cmd="{e(cmd)}">скопировать</button>'
-            f'</div><div class="hint">разбор причины: '
-            f"<code>swarm --root {e(root)} why {e(str(t.get('id')))}</code>"
-            f"</div></div>"
+            + "</div></div>"
         )
     return "".join(out)
 
@@ -1604,12 +2285,14 @@ def render(board: dict[str, Any]) -> str:
         f'<h1 data-rich="inline">{e(title or "цель не задана")}</h1>',
     ]
     if brief:
-        # Без JS блок читается как экранированный текст — страницу
-        # открывают и файлом, и разметка не имеет права что-то прятать.
+        # Постановка видна сразу и размечена (заголовки частей, пункты,
+        # код), а не спрятана за ссылкой «целиком»: свёрнутый блок никто
+        # не раскрывал. Длинную JS показывает первыми строками с кнопкой;
+        # без JS она читается целиком экранированным текстом.
         parts.append(
-            '<details class="goal"><summary class="det">постановка целиком'
-            f'</summary><div class="rich" data-rich="block">{e(brief)}'
-            "</div></details>"
+            f'<section class="brief"><div class="rich" data-rich="block">'
+            f"{e(brief)}</div>"
+            '<button class="link more hidden"></button></section>'
         )
     parts.append(f'<div class="sub">{" · ".join(sub)}</div>')
 
@@ -1682,24 +2365,9 @@ def render(board: dict[str, Any]) -> str:
 
     if board.get("timeline"):
         parts.append('<h2>Ход прогона <span class="cnt">по фазам</span></h2>')
+        # Сессии, масштаб, легенду и панель подробностей рисует JS
+        # (timeline()): они зависят от ширины окна и от выбора человека.
         parts.append('<div class="tl" id="timeline"></div>')
-        parts.append(
-            _legend(
-                [
-                    (PHASE_COLOR[p], PHASE_RU.get(p, p), "")
-                    for p in ("implement", "review", "gate", "scope")
-                    if (board.get("totals") or {}).get("phases", {}).get(p)
-                ]
-            )
-        )
-        parts.append(
-            '<div class="hint">строка — задача, отрезок — фаза; '
-            "засечка вместо отрезка значит, что у фазы нет "
-            "измеренной длительности (границы; гейт, взятый без "
-            "прогона, потому что дерево не менялось). Наведите "
-            "на отрезок — время, деньги и исход; щёлкните по имени "
-            "задачи слева — откроется её карточка.</div>"
-        )
 
     parts.append(f'<h2>Задачи <span class="cnt">{len(tasks)}</span></h2>')
     parts.append(
