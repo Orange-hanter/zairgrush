@@ -36,7 +36,8 @@ _HERE = str(pathlib.Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import obs  # noqa: E402 — каталог добавлен строкой выше
+import lockprobe  # noqa: E402 — каталог добавлен строкой выше
+import obs  # noqa: E402
 
 log = obs.get_logger("state")
 
@@ -246,19 +247,9 @@ class SwarmState:
         """
         if self._lock is not None:
             return True            # держим сами: доска строится внутри петли
-        try:
-            fh = self.lock_path.open("r")
-        except OSError:
-            return False           # файла нет — блокировку никто не брал
-        try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return True            # занят — на том конце живой оркестратор
-        else:
-            fcntl.flock(fh, fcntl.LOCK_UN)
-            return False
-        finally:
-            fh.close()
+        # Сам пробник — общий с автодополнением (`clitab`): один ответ
+        # на «жив ли прогон» и для доски, и для Tab.
+        return lockprobe.probe(self.lock_path)
 
     def __enter__(self) -> "SwarmState":
         self.acquire()
