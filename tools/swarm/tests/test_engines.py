@@ -507,7 +507,9 @@ class TestZcodeEnvelope(unittest.TestCase):
 
     def test_report_from_response_text(self):
         env = {"response": 'готово. {"status": "done", "summary": "с"}'}
-        self.assertEqual(eng.report_from_zcode(env)["status"], "done")
+        got = eng.report_from_zcode(env)
+        self.assertEqual(got["status"], "done")
+        self.assertEqual(got["summary"], "с")
 
     def test_unclear_field_is_the_contract(self):
         env = {"response": '{"unclear": [{"question": "q"}], "summary": "s"}'}
