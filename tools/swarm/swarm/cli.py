@@ -20,6 +20,7 @@
     swarm map [--budget N]              карта символов репозитория
     swarm impact <symbol>               кто вызывает символ
     swarm doctor                        проверка окружения
+    swarm completion zsh [--install]    автодополнение: id задач, прогоны, стенды
 
 Проверка окружения (`doctor`) вынесена в отдельную команду сознательно:
 половина дефектов программы экспериментов была не в петле, а в среде —
@@ -320,9 +321,12 @@ for _cli_mod in (
     "clireport",
     "clirun",
     "clitask",
+    "clicomplete",
 ):
     sys.modules.pop(_cli_mod, None)
 
+import registry  # noqa: E402 — без зависимостей, см. registry.py
+from clicomplete import cmd_completion  # noqa: E402
 from cliexplain import (  # noqa: E402,F401
     WHY_ANSWER,
     WHY_EYES,
@@ -378,6 +382,7 @@ __all__ = [
     "cmd_ab",
     "cmd_answer",
     "cmd_board",
+    "cmd_completion",
     "cmd_docmap",
     "cmd_doctor",
     "cmd_go",
@@ -413,6 +418,9 @@ EPILOG = """
   retry <задача> --note "…"   вернуть в очередь с указанием
   board --serve               живая доска вне прогона (снимок: board)
 
+автодополнение (zsh): id задач и вопросов, прогоны, стенды с живым прогоном:
+  completion zsh --install    ~/.zfunc/_swarm; в ~/.zshrc: fpath=(~/.zfunc $fpath)
+
 память между прогонами (E9, инъекция за флагом [experiments]):
   memory search "…"           уроки прошлых прогонов (FTS + вектор)
   memory add "…" --anchor п   урок вручную; useful требует живой якорь
@@ -439,7 +447,7 @@ confirm_lens, board_open/board_port, cod_doc_url (ссылки доски в cod
 """
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     # Карта команд с порядком применения жила в докстринге модуля, то есть
     # была видна кому угодно, кроме того, кто набрал `swarm --help`.
     ap = argparse.ArgumentParser(
@@ -745,13 +753,51 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.set_defaults(func=cmd_why)
 
-    args = ap.parse_args(argv)
+    p = sub.add_parser(
+        "completion",
+        help="автодополнение оболочки (zsh): команды, id задач, прогоны, стенды",
+        description=inspect.getdoc(cmd_completion),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("shell", choices=["zsh"], help="оболочка")
+    p.add_argument(
+        "--install",
+        nargs="?",
+        const="~/.zfunc/_swarm",
+        metavar="FILE",
+        help="записать скрипт в файл (по умолчанию ~/.zfunc/_swarm), а не в stdout",
+    )
+    p.add_argument(
+        "--scan",
+        metavar="DIR",
+        help="разово внести в реестр стенды под каталогом (глубина 3)",
+    )
+    # Скрипт строится из ЭТОГО парсера: так он не расходится с --help.
+    p.set_defaults(func=cmd_completion, parser=ap)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    # Tab оболочки приходит сюда, только если cli.py вызван напрямую, в
+    # обход обёртки swarm-cli (та отправляет __complete в clitab сразу).
+    # Скрытая команда, а не подпарсер: в --help ей не место.
+    if argv[:1] == ["__complete"]:
+        code: int = load_mod("clitab").main(argv)
+        return code
+    args = build_parser().parse_args(argv)
     # Диагностика включается ЗДЕСЬ, в единственной точке входа: модули
     # грузятся по путям и не знают, где состояние прогона, а знать
     # каталог обязан тот, кто разобрал --root.
     load_mod("obs").setup(pathlib.Path(args.root) / ".swarm")
+    # Реестр стендов кормит `--root <Tab>`. Подсказка — не повод ронять
+    # команду: поломка реестра уходит в диагностику с трассировкой.
     try:
-        code: int = args.func(args)
+        registry.touch(args.root)
+    except Exception:
+        log.exception("реестр стендов не обновлён")
+    try:
+        code = args.func(args)
     except state_mod.StateError as e:
         print(f"состояние: {e}", file=sys.stderr)
         return 2

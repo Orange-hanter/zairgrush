@@ -9,6 +9,10 @@ CLI `swarm` и оркестратор мультиагентной петли р
 Проверка — одна команда: `./check.sh` (линт → типы → тесты). Инструменты
 ставятся в `.venv`: `uv venv .venv && uv pip install --python .venv ruff mypy pytest`.
 
+Автодополнение (zsh): `swarm completion zsh --install`, затем в `~/.zshrc`
+до `compinit` — `fpath=(~/.zfunc $fpath)`. Tab подсказывает id задач,
+вопросов, прогонов и стенды с живым прогоном (08-док, §1).
+
 ## Выбор движка исполнителя
 
 Кем именно исполняется задача, решает `swarm/engines.py` (§3.2, E10, E13).

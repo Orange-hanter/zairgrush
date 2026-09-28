@@ -12,4 +12,10 @@ while [ -L "$self" ]; do
         *)  self="$(dirname "$self")/$link" ;;
     esac
 done
-exec python3 "$(cd "$(dirname "$self")" && pwd)/swarm/cli.py" "$@"
+here="$(cd "$(dirname "$self")" && pwd)"
+# Tab оболочки — мимо cli.py: его импорт стоит ~0.3 с, а подсказка
+# обязана успевать за пальцами (см. swarm/clitab.py).
+if [ "$1" = "__complete" ]; then
+    exec python3 "$here/swarm/clitab.py" "$@"
+fi
+exec python3 "$here/swarm/cli.py" "$@"
