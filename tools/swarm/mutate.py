@@ -586,6 +586,26 @@ MUTATIONS = [
      '''        if False:
             return "safeguard"''',
      "test_provider_failure"),
+    # --- гонка писателей: id вопроса и замок транзакции ---
+    ("инбокс: qid снова выбирается вне замка транзакции",
+     "swarm/state.py",
+     """        with self.mutate():
+            used = {str(q["qid"]) for q in self.questions()}""",
+     """        if True:
+            used = {str(q["qid"]) for q in self.questions()}""",
+     "test_inbox"),
+    ("замок: реентерабельность снова на экземпляр, а не на поток",
+     "swarm/state.py",
+     """        if self._mutating_owner == me:""",
+     """        if self._mutating_owner is not None:""",
+     "test_inbox"),
+    ("отчёт: не-объект JSON в потоке снова роняет разбор",
+     "swarm/parsing.py",
+     '''        if not isinstance(ev, dict):
+            continue
+        if ev.get("role") == "assistant"''',
+     '''        if ev.get("role") == "assistant"''',
+     "test_agents"),
 ]
 
 

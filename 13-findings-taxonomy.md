@@ -2,9 +2,9 @@
 title: "ZAIrgRush — Единая таксономия находок"
 type: standard
 status: active
-version: 0.1
+version: 0.2
 created: 2026-09-15
-updated: 2026-09-15
+updated: 2026-09-28
 related:
   - 05-agent-swarm.md
   - 09-cheap-review-contour.md
@@ -26,14 +26,14 @@ summary: >
 одна и та же находка не меняла смысл при переходе: кандидат присяжного →
 kept у адъюдикатора → finding в вердикте → строка findings.jsonl → лейбл
 goldset. Контракт вердикта остаётся в 05-agent-swarm.md §12 (и в
-`tools/swarm/schemas/verdict.schema.json`); здесь — карта всех
+`tools/swarm/schemas/verdict-v1.schema.json`); здесь — карта всех
 поверхностей целиком.
 
 ## 1. Поверхности
 
 | Поверхность | Где живёт | Что производит |
 | --- | --- | --- |
-| Вердикт ревьюера | `verdict.schema.json`, 05 §12 | `findings[]`: severity × category, file:line |
+| Вердикт ревьюера | `verdict-v1.schema.json`, 05 §12 | `findings[]`: severity × category, file:line |
 | Журнал программы | `experiments/findings.jsonl`, 06 §3 | записи с `kind` — эпистемический класс наблюдения |
 | Панель + адъюдикатор | 09 §3 (P2), `experiments/reviewarm/` | кандидаты присяжных → `kept[]`/`dropped[]` адъюдикатора |
 | Goldset | `experiments/goldset/labels.jsonl` | лейблы владельца: subject × disposition |
@@ -45,7 +45,7 @@ goldset. Контракт вердикта остаётся в 05-agent-swarm.md
 
 ## 2. Severity (закрытый enum вердикта)
 
-Источник: `tools/swarm/schemas/verdict.schema.json`, определения 05 §12,
+Источник: `tools/swarm/schemas/verdict-v1.schema.json`, определения 05 §12,
 русские имена `tools/swarm/swarm/vocab.py` (SEVERITY_RU). Подтверждено
 владельцем 2026-09-15 без изменений (бриф C3, 10-decision-briefs.md §3).
 
@@ -153,6 +153,11 @@ report-rev004.md, «Вердикт по P3» и таблицы осей.
 | Вердикт «P3 нежизнеспособен в этой конфигурации» | `decision` | — | решение по метрикам решения, не обобщение на контур |
 
 ## Журнал изменений
+
+### v0.2 (2026-09-28)
+
+- Ссылки на контракт вердикта переведены на `verdict-v1.schema.json`:
+  устаревшая `verdict.schema.json` удалена — код грузит только v1.
 
 ### v0.1 (2026-09-15)
 

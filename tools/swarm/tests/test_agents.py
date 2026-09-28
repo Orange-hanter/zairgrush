@@ -315,6 +315,13 @@ class TestReportExtraction(AgentsCase):
         )
         self.assertEqual(self.agents._extract_report(stream)["status"], "done")
 
+    def test_non_object_json_lines_skipped(self):
+        """Строка-число/массив/строка — валидный JSON, но не событие."""
+        stream = "\n".join(["42", "[1]", '"x"', self._stream(
+            {"role": "assistant",
+             "content": '{"status": "done", "summary": "s"}'})])
+        self.assertEqual(self.agents._extract_report(stream)["status"], "done")
+
     def test_prose_ignored(self):
         stream = self._stream({"role": "assistant", "content": "Готово, отчёта нет"})
         self.assertIsNone(self.agents._extract_report(stream))

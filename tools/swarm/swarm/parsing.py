@@ -216,6 +216,9 @@ def extract_report(stream: str) -> dict[str, Any] | None:
             ev = json.loads(line)
         except ValueError:
             continue
+        # валидный JSON — ещё не событие: строка `42`/`[1]` роняла .get
+        if not isinstance(ev, dict):
+            continue
         if ev.get("role") == "assistant" and isinstance(ev.get("content"), str):
             cand = report_in(ev["content"])
             if cand is not None:
