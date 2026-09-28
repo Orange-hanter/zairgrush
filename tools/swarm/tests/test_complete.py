@@ -492,5 +492,105 @@ class TestNoTraceNoCrash(StandCase):
         self.assertEqual((code, out.strip()), (0, "done\tзакрыта · закрыта"))
 
 
+
+def _pty_zsh(env, cwd, script, keys, settle=0.8):
+    """Прогнать клавиши через интерактивный `zsh -f` в псевдотерминале.
+
+    Меню выбора и вставку совпадения видит только настоящий zle: вызовом
+    функций из `zsh -c` их не проверить (две прошлые поломки Tab прошли
+    мимо именно таких тестов). Возвращает вывод терминала без ESC-кодов.
+    """
+    import pty
+    import re
+    import select
+    import time
+
+    def drain(fd, quiet):
+        out, last, start = b"", time.time(), time.time()
+        while time.time() - start < 15:
+            r, _, _ = select.select([fd], [], [], 0.05)
+            if r:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk
+                last = time.time()
+            elif time.time() - last > quiet:
+                break
+        return out.decode("utf-8", "replace")
+
+    pid, fd = pty.fork()
+    if pid == 0:  # pragma: no cover — дочерний процесс
+        os.chdir(cwd)
+        os.execve(shutil.which("zsh"), ["zsh", "-f", "-i"], env)  # noqa: S606 — сам zsh и нужен
+    out = ""
+    try:
+        drain(fd, settle)
+        os.write(fd, script.encode() + b"\n")
+        drain(fd, settle)
+        for k in keys:
+            os.write(fd, k)
+            out += drain(fd, settle)
+        os.write(fd, b"exit\n")
+        drain(fd, 0.3)
+    finally:
+        os.close(fd)
+        os.waitpid(pid, 0)
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[=>]|\r", "", out)
+
+
+@unittest.skipUnless(shutil.which("zsh"), "нет zsh")
+class TestMenuFromFirstTab(unittest.TestCase):
+    """Стрелки работают с первого Tab — на настоящем zle, без .zshrc."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = pathlib.Path(self.tmp.name)
+        self.zfunc, self.bin, self.cwd = base / "zf", base / "bin", base / "cwd"
+        for d in (self.zfunc, self.bin, self.cwd):
+            d.mkdir()
+        (self.zfunc / "_swarm").write_text(
+            clicomplete.zsh_script(cli.build_parser()), encoding="utf-8")
+        (self.bin / "swarm").symlink_to(SW / "swarm-cli")
+        reg = base / "roots.json"
+        # Два стенда: «новый» работал позже — в меню он первый, «старый» второй.
+        self.stands = []
+        for name, day in (("новый", "2026-09-02"), ("старый", "2026-09-01")):
+            st = base / name
+            (st / ".swarm").mkdir(parents=True)
+            (st / ".swarm" / "metrics.jsonl").write_text(json.dumps(
+                {"run_id": day.replace("-", "") + "T100000-aaaaaa",
+                 "ts": f"{day}T10:00:00+00:00"}) + "\n")
+            self.stands.append(st.resolve())
+        reg.write_text(json.dumps(
+            {str(s): {"seen": "2026-09-03T00:00:00+00:00"} for s in self.stands}))
+        self.env = dict(
+            os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
+            SWARM_REGISTRY=str(reg), HOME=str(base),
+            TERM="xterm-256color", LINES="40", COLUMNS="200")
+        self.env.pop("ZDOTDIR", None)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_one_tab_then_arrow_picks_the_second_stand(self):
+        # Стиль oh-my-zsh (lib/completion.zsh) — как у оператора: наш
+        # стиль обязан его перебить, иначе меню ждёт второго Tab.
+        setup = (f"fpath=({self.zfunc} $fpath); autoload -Uz compinit; "
+                 "compinit -u -D; PS1='> '; "
+                 "zstyle ':completion:*:*:*:*:*' menu select")
+        out = _pty_zsh(self.env, self.cwd, setup, [
+            b"swarm --root ", b"\t", b"\x1b[B", b"\r",  # Tab, вниз, Enter
+            b"\x01echo PICKED: \r",                      # ^A, echo, выполнить
+        ])
+        picked = [ln for ln in out.splitlines() if ln.startswith("PICKED:")]
+        self.assertTrue(picked, out[-1500:])
+        self.assertEqual(picked[-1].strip(),
+                         f"PICKED: swarm --root {self.stands[1]}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
