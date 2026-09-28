@@ -2,9 +2,9 @@
 title: "ZAIrgRush — План декомпозиции монолитов tools/swarm"
 type: plan
 status: done
-version: 0.5
+version: 0.6
 created: 2026-08-20
-updated: 2026-08-21
+updated: 2026-09-28
 related:
   - 05-agent-swarm.md
 summary: >
@@ -136,6 +136,10 @@ chat-fill) и `reviewer.py` (review + wants_verification) вынесены,
 `swarm/loop.py`, …) и состав экспортируемых имён неизменны.
 
 ## Журнал изменений
+
+### v0.6 (2026-09-28)
+
+- Файл переименован `09-swarm-decomposition-plan.md` → `16-swarm-decomposition-plan.md`: номер 09 занят планом дешёвого контура (`09-cheap-review-contour.md`). Содержание не менялось.
 
 ### v0.5 (2026-08-21)
 

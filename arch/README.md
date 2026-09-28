@@ -4,7 +4,7 @@ status: draft
 source_of_truth: true
 owner: cod-doc core
 created: 2026-08-28
-updated: 2026-09-28 (experiments/adr — заглушки; колонка «Проекция» ведёт в docs/adr)
+updated: 2026-09-28 (experiments/adr — заглушки, колонка «Проекция» ведёт в docs/adr; ADR-028: порог doc_skip_max_lines для документного диффа)
 ---
 
 # 🏗️ Architecture
@@ -36,6 +36,7 @@ updated: 2026-09-28 (experiments/adr — заглушки; колонка «Пр
 | ADR-025 | Каноникал ADR — таблица `adr` в DB; `docs/adr/` — проекции, не Documents (`import docs --exclude 'docs/adr'`) | accepted | только в DB (docs/adr/ADR-025.md) |
 | ADR-026 | Ревьюер и исполнитель — разные семейства моделей; совпадение — заявляемое исключение (замерено E15) | accepted | только в DB (docs/adr/ADR-026.md) |
 | ADR-027 | Дешёвый контур ревью: триаж детерминированный — да; haiku-плечо, панель+adjudicator, дайджест — нет (замерено, цикл REV-001…005) | accepted | только в DB (docs/adr/ADR-027.md) |
+| ADR-028 | Документный дифф: skip ADR-027 ограничивается порогом `doc_skip_max_lines` (выкл. по умолчанию) | accepted | только в DB (docs/adr/ADR-028.md) |
 
 ## Исторические (superseded)
 

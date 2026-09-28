@@ -21,7 +21,7 @@ updated: 2026-09-12
 |----------|-------------------|--------|
 | [05-agent-swarm.md](../05-agent-swarm.md) | Системная спецификация петли: роли, FSM, гейты, бюджеты, денежный чан | 🟢 active, живой документ |
 | [09-cheap-review-contour.md](../09-cheap-review-contour.md) | Контур дешёвого ревью: модели, effort, пулы | 🟢 active |
-| [09-swarm-decomposition-plan.md](../09-swarm-decomposition-plan.md) | План декомпозиции сворма (рабочие направления) | 🟡 draft |
+| [16-swarm-decomposition-plan.md](../16-swarm-decomposition-plan.md) | План декомпозиции сворма (рабочие направления) | 🟡 draft |
 | [10-decision-briefs.md](../10-decision-briefs.md) | Брифы решений по компонентам | 🟡 draft |
 
 ## Эталонные спецификации стендов (experiments/)
