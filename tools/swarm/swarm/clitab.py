@@ -16,7 +16,10 @@
   хуже отсутствия подсказки. Это граница деградации (BLE001):
   трассировка уходит в `diag.jsonl`, но только если стенд уже есть.
 
-Вывод — строки `значение:описание`, формат `_describe` zsh.
+Вывод — строки `значение<TAB>описание`; раскладку в список делает
+`_swarm_dyn` в скрипте, а не `_describe`: тот склеивает кандидатов с
+одинаковым описанием в одну строку и при этом пересортировывает весь
+список — прогоны одной минуты без задач ломали порядок «новые первыми».
 """
 
 import json
@@ -45,8 +48,8 @@ TASK_ORDER = ("in_progress", "in_review", "blocked", "pending", "done")
 
 
 def _esc(value: str) -> str:
-    # `_describe` делит строку по первому неэкранированному двоеточию.
-    return value.replace("\\", "\\\\").replace(":", "\\:")
+    # Табуляция — разделитель строки кандидата; в значении ей не место.
+    return value.replace("\t", " ")
 
 
 def _short(text: Any) -> str:
@@ -55,7 +58,7 @@ def _short(text: Any) -> str:
 
 
 def _line(value: str, desc: str) -> str:
-    return f"{_esc(value)}:{_short(desc)}" if desc else _esc(value)
+    return f"{_esc(value)}\t{_short(desc)}"
 
 
 def _tail_rows(path: pathlib.Path, limit: int = TAIL_BYTES) -> list[dict[str, Any]]:

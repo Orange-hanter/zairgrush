@@ -64,21 +64,29 @@ PRELUDE = r"""#compdef swarm
 # Сгенерировано `swarm completion zsh` из парсера cli.py — руками не править:
 # перегенерировать после обновления swarm.
 
-# Значения из состояния стенда: `swarm __complete <вид> --root <корень>`.
-# Порядок кандидатов задаёт swarm (живое и открытое — первым), -V его хранит.
+# Значения из состояния стенда: `swarm __complete <вид> --root <корень>`,
+# строки `значение<TAB>описание`. Порядок задаёт swarm (живое и открытое —
+# первым), -V его хранит. Не `_describe`: тот склеивает кандидатов с
+# одинаковым описанием в одну строку и пересортировывает весь список.
 _swarm_dyn() {
-  local -a items
-  local root=${_swarm_root/#\~/$HOME}
-  items=(${(f)"$($_swarm_cmd __complete $1 --root "$root" 2>/dev/null)"})
-  (( $#items )) || return 1
-  _describe -V -t "swarm-${1%%:*}" "$2" items
+  local -a lines vals disp expl
+  local root=${_swarm_root/#\~/$HOME} ln tab=$'\t'
+  integer w=0
+  lines=(${(f)"$($_swarm_cmd __complete $1 --root "$root" 2>/dev/null)"})
+  (( $#lines )) || return 1
+  for ln in $lines; do
+    vals+=("${ln%%$tab*}")
+    (( ${#vals[-1]} > w )) && w=${#vals[-1]}
+  done
+  for ln in $lines; do
+    disp+=("${(r:w:)${ln%%$tab*}}  -- ${ln#*$tab}")
+  done
+  _wanted -V "swarm-${1%%:*}" expl "$2" compadd -l -d disp -a vals
 }
 
 # --root: сначала известные стенды (живые — первыми), потом любой каталог.
 _swarm_roots() {
-  local -a items
-  items=(${(f)"$($_swarm_cmd __complete roots 2>/dev/null)"})
-  (( $#items )) && _describe -V -t swarm-roots 'стенд' items
+  _swarm_dyn roots 'стенд'
   _directories
 }
 """
@@ -126,7 +134,11 @@ def _value_action(path: tuple[str, ...], a: argparse.Action) -> str:
         if dyn.startswith(("{", "_")):
             return dyn
         label = KIND_LABEL.get(dyn.partition(":")[0], a.dest)
-        return f"_swarm_dyn {dyn} {_q(label)}"
+        # В фигурных скобках: простое действие-функцию _arguments зовёт
+        # со своими опциями compadd (-J, -X …) ПЕРЕД нашими словами, и
+        # вид кандидатов уезжал из $1 — Tab внутри подкоманд молчал.
+        # Скобки исполняются как есть, без вставок.
+        return "{_swarm_dyn " + dyn + " " + _q(label) + "}"
     if a.choices:
         return "(" + " ".join(str(c) for c in a.choices) + ")"
     if a.dest in FILES:

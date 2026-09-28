@@ -102,7 +102,7 @@ class StandCase(unittest.TestCase):
 
     def ids(self, kind, root=None):
         lines = clitab.candidates(kind, root or self.root)
-        return [ln.split(":", 1)[0] for ln in lines]
+        return [ln.split("\t", 1)[0] for ln in lines]
 
 
 # --- скрипт из парсера ---------------------------------------------------
@@ -156,10 +156,13 @@ class TestScriptFollowsParser(unittest.TestCase):
             self.assertIn(key, real, f"запись без аргумента: {key}")
 
     def test_value_hooks_are_wired(self):
-        self.assertIn(":task:_swarm_dyn tasks:blocked ", self.script)  # retry
-        self.assertIn(":id:_swarm_dyn tasks:pending,blocked ", self.script)  # close
-        self.assertIn(":run:_swarm_dyn runs ", self.script)
-        self.assertIn(":qid:_swarm_dyn questions ", self.script)
+        # Форма `{_swarm_dyn …}` обязательна: без скобок _arguments вставляет
+        # свои опции compadd перед аргументами функции, и $1 перестаёт быть
+        # видом — на живом zsh Tab внутри подкоманд молчал.
+        self.assertIn(":task:{_swarm_dyn tasks:blocked ", self.script)  # retry
+        self.assertIn(":id:{_swarm_dyn tasks:pending,blocked ", self.script)  # close
+        self.assertIn(":run:{_swarm_dyn runs ", self.script)
+        self.assertIn(":qid:{_swarm_dyn questions ", self.script)
         self.assertIn("--root=[", self.script)
         self.assertIn(":root:_swarm_roots", self.script)
 
@@ -193,23 +196,40 @@ class TestScriptInRealZsh(StandCase):
         )
         self.assertEqual(r.returncode, 0, r.stderr)
 
-    def test_dyn_reaches_candidates_through_the_wrapper(self):
+    def _dyn(self, kind):
+        """Значения и строки показа, какими их получил бы compadd."""
         # Скрипт без последней строки (`_swarm "$@"` требует compsys);
-        # `_describe` подменён печатью массива — видно, что дошло до zsh.
+        # `_wanted` подменён печатью массивов — видно, что дошло до zsh.
         body = self.script.rsplit('_swarm "$@"', 1)[0]
         prog = body + (
-            '\n_describe() { print -rl -- "${(@P)${@[-1]}}" }\n'
+            '\n_wanted() { print -rl -- "${vals[@]}" --- "${disp[@]}" }\n'
             f"_swarm_cmd={SW / 'swarm-cli'}\n"
             f"_swarm_root={self.root}\n"
-            "_swarm_dyn tasks:blocked 'задача'\n"
+            f"_swarm_dyn {kind} 'x'\n"
         )
         r = subprocess.run(
             ["zsh", "-f", "-c", prog], capture_output=True, text=True, check=False
         )
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(
-            [ln.split(":", 1)[0] for ln in r.stdout.splitlines()], ["blok"]
-        )
+        vals, _, disp = r.stdout.partition("---\n")
+        return vals.splitlines(), disp.splitlines()
+
+    def test_dyn_reaches_candidates_through_the_wrapper(self):
+        vals, disp = self._dyn("tasks:blocked")
+        self.assertEqual(vals, ["blok"])
+        self.assertEqual(disp, ["blok  -- заблокирована · встала"])
+
+    def test_equal_descriptions_keep_order_and_stay_apart(self):
+        # На живом zsh `_describe` склеил прогоны одной минуты без задач в
+        # одну строку и пересортировал список: старые оказались первыми.
+        for rid in ("20260901T100000-aaaaaa", "20260901T100005-bbbbbb",
+                    "20260901T100009-cccccc"):
+            self.journal({"run_id": rid, "ts": "2026-09-01T10:00:30+00:00"},
+                         name="metrics.jsonl")
+        vals, disp = self._dyn("runs")
+        self.assertEqual(vals, ["20260901T100009-cccccc", "20260901T100005-bbbbbb",
+                                "20260901T100000-aaaaaa"])
+        self.assertEqual(len(disp), 3)
 
 
 # --- кандидаты -----------------------------------------------------------
@@ -225,7 +245,7 @@ class TestTaskCandidates(StandCase):
 
     def test_description_names_status_and_title(self):
         line = clitab.candidates("tasks:blocked", self.root)[0]
-        self.assertEqual(line, "blok:заблокирована · встала")
+        self.assertEqual(line, "blok\tзаблокирована · встала")
 
     def test_corrupt_file_is_silence_not_crash(self):
         (self.root / ".swarm" / "tasks.json").write_text("{не json")
@@ -262,9 +282,10 @@ class TestJournalCandidates(StandCase):
         )
         self.assertEqual(self.ids("lessons"), ["l1"])
 
-    def test_colon_in_value_is_escaped(self):
+    def test_colon_in_value_survives(self):
+        # Разделитель — табуляция: двоеточие в значении больше не особое.
         self.write_tasks([_task("a:b", "pending")])
-        self.assertTrue(clitab.candidates("tasks", self.root)[0].startswith("a\\:b:"))
+        self.assertTrue(clitab.candidates("tasks", self.root)[0].startswith("a:b\t"))
 
 
 class TestRunCandidates(StandCase):
@@ -319,7 +340,7 @@ class TestRunCandidates(StandCase):
             lines = clitab.candidates("runs", self.root)
         finally:
             st.release()
-        self.assertTrue(lines[0].startswith("20260903T100000-cccccc:идёт"), lines)
+        self.assertTrue(lines[0].startswith("20260903T100000-cccccc\tидёт"), lines)
         self.assertTrue(all("завершён" in ln for ln in lines[1:]), lines)
 
     def test_tail_read_drops_the_cut_line(self):
@@ -464,11 +485,11 @@ class TestNoTraceNoCrash(StandCase):
             text=True,
             check=True,
         )
-        self.assertEqual(r.stdout.strip(), "blok:заблокирована · встала")
+        self.assertEqual(r.stdout.strip(), "blok\tзаблокирована · встала")
 
     def test_cli_forwards_hidden_command(self):
         code, out = run_cli("__complete", "tasks:done", "--root", str(self.root))
-        self.assertEqual((code, out.strip()), (0, "done:закрыта · закрыта"))
+        self.assertEqual((code, out.strip()), (0, "done\tзакрыта · закрыта"))
 
 
 if __name__ == "__main__":
