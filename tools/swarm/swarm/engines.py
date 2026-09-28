@@ -636,7 +636,8 @@ def _denial_facts(env: dict[str, Any]) -> dict[str, Any]:
     return {
         "denied": len(denials),
         "denied_tools": sorted(
-            {str(d.get("tool_name")) for d in denials if isinstance(d, dict)}
+            {str(d["tool_name"]) for d in denials
+             if isinstance(d, dict) and d.get("tool_name")}
         ),
     }
 

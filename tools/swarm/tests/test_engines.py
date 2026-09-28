@@ -332,6 +332,15 @@ class TestEnvelopeFacts(unittest.TestCase):
         self.assertEqual(facts["denied"], 1)
         self.assertEqual(facts["denied_tools"], ["Bash"])
 
+    def test_denial_without_tool_name_counted_not_named_none(self):
+        """Отказ без tool_name считается, но строка "None" не выдаётся
+        за имя инструмента."""
+        facts = eng.envelope_facts(
+            {"permission_denials": [{"tool_input": {}}, {"tool_name": "Bash"}]}
+        )
+        self.assertEqual(facts["denied"], 2)
+        self.assertEqual(facts["denied_tools"], ["Bash"])
+
     def test_no_denials_no_field(self):
         """Поле, которого нет, лучше поля со значением 0: `denied=0` в
         каждой строке журнала — шум, `denied` в редкой — факт."""
@@ -498,7 +507,9 @@ class TestZcodeEnvelope(unittest.TestCase):
 
     def test_report_from_response_text(self):
         env = {"response": 'готово. {"status": "done", "summary": "с"}'}
-        self.assertEqual(eng.report_from_zcode(env)["status"], "done")
+        got = eng.report_from_zcode(env)
+        self.assertEqual(got["status"], "done")
+        self.assertEqual(got["summary"], "с")
 
     def test_unclear_field_is_the_contract(self):
         env = {"response": '{"unclear": [{"question": "q"}], "summary": "s"}'}

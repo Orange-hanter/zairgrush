@@ -42,7 +42,9 @@ def safe_filename(name: Any) -> str:
     if not text:
         text = _EMPTY_NAME
     if len(text) > _MAX_COMPONENT:
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha256(
+            text.encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:12]
         text = f"{text[: _MAX_COMPONENT - 13]}~{digest}"
     return text
 
