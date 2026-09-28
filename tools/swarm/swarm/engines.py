@@ -82,36 +82,27 @@ EXECUTOR_ALLOWED_TOOLS = "Read,Grep,Glob,Edit,Write,Bash"
 # остаётся единственной преградой — его список шире. clean/rm/revert/
 # cherry-pick однозначны у обоих: read-only форм у них нет, и у claude
 # они закрыты наравне с zcode.
-CLAUDE_DENIED_TOOLS = ",".join(
-    (
-        "Bash(git commit:*)",
-        "Bash(git push:*)",
-        "Bash(git reset:*)",
-        "Bash(git revert:*)",
-        "Bash(git rebase:*)",
-        "Bash(git merge:*)",
-        "Bash(git cherry-pick:*)",
-        "Bash(git checkout:*)",
-        "Bash(git stash:*)",
-        "Bash(git config:*)",
-        "Bash(git clean:*)",
-        "Bash(git rm:*)",
-    )
+#
+# Общая часть — одна база: копия в двух списках уже могла разъехаться
+# молча (тест держит, что каждая запись базы есть в обоих).
+_BASE_DENIED_TOOLS = (
+    "Bash(git commit:*)",
+    "Bash(git push:*)",
+    "Bash(git reset:*)",
+    "Bash(git revert:*)",
+    "Bash(git rebase:*)",
+    "Bash(git merge:*)",
+    "Bash(git cherry-pick:*)",
+    "Bash(git checkout:*)",
+    "Bash(git stash:*)",
+    "Bash(git config:*)",
+    "Bash(git clean:*)",
+    "Bash(git rm:*)",
 )
+CLAUDE_DENIED_TOOLS = ",".join(_BASE_DENIED_TOOLS)
 ZCODE_DENIED_TOOLS = ",".join(
     (
-        "Bash(git commit:*)",
-        "Bash(git push:*)",
-        "Bash(git reset:*)",
-        "Bash(git revert:*)",
-        "Bash(git rebase:*)",
-        "Bash(git merge:*)",
-        "Bash(git cherry-pick:*)",
-        "Bash(git checkout:*)",
-        "Bash(git stash:*)",
-        "Bash(git config:*)",
-        "Bash(git clean:*)",
-        "Bash(git rm:*)",
+        *_BASE_DENIED_TOOLS,
         "Bash(git branch:*)",
         "Bash(git tag:*)",
         # Обход префиксов: `git -C <dir> commit` и `git --git-dir=… commit`
@@ -555,7 +546,11 @@ def report_from_zcode(env: Any, require: str = "status") -> dict[str, Any] | Non
     text = env.get("response")
     blob = "" if text is None else str(text)
     if require == "status":
-        return parsing.report_in(blob)
+        parsed = parsing.report_in(blob)
+        # Пустое значение — не отчёт, как в report_from_envelope.
+        if parsed is not None and parsed.get(require) in (None, ""):
+            return None
+        return parsed
     dec = json.JSONDecoder()
     # Скан с хвоста. Берём самый правый объект с require, но если он
     # вложен в объект с тем же полем, отдаём ВНЕШНИЙ: при равной форме
@@ -579,7 +574,11 @@ def report_from_zcode(env: Any, require: str = "status") -> dict[str, Any] | Non
             # (или заканчивается там же): он внешнее. Кандидат, что
             # закрылся раньше, — отдельный объект левее, правый сильнее.
             match = (cand, end)
-    return match[0] if match else None
+    if match is None or match[0].get(require) in (None, ""):
+        # Пустое значение require — не отчёт (паритет с report_from_envelope);
+        # пустой список пуриста (unclear=[]) при этом валиден.
+        return None
+    return match[0]
 
 
 # Отображение «поле журнала -> синонимы в конверте». Имена у CLI

@@ -305,6 +305,15 @@ MUTATIONS = [
         "test_engines",
     ),
     (
+        "движок: zcode потерял запись общей базы запретов git",
+        "swarm/engines.py",
+        """        *_BASE_DENIED_TOOLS,
+        "Bash(git branch:*)",""",
+        """        *_BASE_DENIED_TOOLS[1:],
+        "Bash(git branch:*)",""",
+        "test_engines",
+    ),
+    (
         "движок: форма вызова kimi поехала (модель после -p)",
         "swarm/engines.py",
         '        cmd[1:1] = ["-m", model]',

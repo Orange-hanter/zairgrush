@@ -44,6 +44,10 @@ def outcome(
     поток цены не несёт, и слово исхода — слово драйвера. Класс без
     разбора отказывает громко, как в stream_pipeline: молчаливый откат
     в kimi-семантику означал бы ложный диагноз исхода.
+
+    Ветка claude НЕ глотает квоту: QuotaExceededError из claude_outcome
+    поднимается к вызывающему как есть — квота лечится ожиданием (§5.3),
+    а не превращением в «нет отчёта».
     """
     if kind == "claude":
         return claude_outcome(agents, task, iteration, result)
@@ -323,6 +327,10 @@ def fill_target(agents: AgentsLike, task: dict[str, Any]) -> pathlib.Path | None
     Ответ chat-fill — весь файл в ОДНОМ fence: формат не умеет назвать,
     к какому из нескольких файлов относится код. Контракт ломается уже
     на втором пути или на маске, а не на исполнении.
+
+    Raises ValueError, если путь задачи выходит за пределы корня
+    (абсолютный, '..', симлинк наружу) — это не None: вызывающий обязан
+    превратить отказ в fill_misconfigured.
     """
     paths = task.get("paths") or []
     if len(paths) != 1 or not isinstance(paths[0], str):
