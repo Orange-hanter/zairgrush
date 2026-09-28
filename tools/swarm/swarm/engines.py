@@ -555,7 +555,11 @@ def report_from_zcode(env: Any, require: str = "status") -> dict[str, Any] | Non
     text = env.get("response")
     blob = "" if text is None else str(text)
     if require == "status":
-        return parsing.report_in(blob)
+        parsed = parsing.report_in(blob)
+        # Пустое значение — не отчёт, как в report_from_envelope.
+        if parsed is not None and parsed.get(require) in (None, ""):
+            return None
+        return parsed
     dec = json.JSONDecoder()
     # Скан с хвоста. Берём самый правый объект с require, но если он
     # вложен в объект с тем же полем, отдаём ВНЕШНИЙ: при равной форме
@@ -579,7 +583,11 @@ def report_from_zcode(env: Any, require: str = "status") -> dict[str, Any] | Non
             # (или заканчивается там же): он внешнее. Кандидат, что
             # закрылся раньше, — отдельный объект левее, правый сильнее.
             match = (cand, end)
-    return match[0] if match else None
+    if match is None or match[0].get(require) in (None, ""):
+        # Пустое значение require — не отчёт (паритет с report_from_envelope);
+        # пустой список пуриста (unclear=[]) при этом валиден.
+        return None
+    return match[0]
 
 
 # Отображение «поле журнала -> синонимы в конверте». Имена у CLI

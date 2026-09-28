@@ -286,6 +286,29 @@ class TestReportFromEnvelope(unittest.TestCase):
             eng.report_from_zcode({"unclear": []}, "unclear"), {"unclear": []}
         )
 
+    def test_zcode_response_channel_rejects_empty_require_value(self):
+        """Паритет в текстовом канале zcode: пустое значение require-поля
+        внутри `response` — не отчёт, как в report_from_envelope. Раньше
+        скан хвоста брал любой объект с ключом require, пустой он или
+        нет. Пустой список пуриста (unclear=[]) остаётся валидным."""
+        self.assertIsNone(
+            eng.report_from_zcode({"response": 'итог {"status": ""}'})
+        )
+        self.assertIsNone(
+            eng.report_from_zcode({"response": 'итог {"unclear": ""}'}, "unclear")
+        )
+        self.assertIsNone(
+            eng.report_from_zcode(
+                {"response": 'итог {"unclear": null}'}, "unclear"
+            )
+        )
+        self.assertEqual(
+            eng.report_from_zcode(
+                {"response": 'итог {"unclear": []}'}, "unclear"
+            ),
+            {"unclear": []},
+        )
+
     def test_no_envelope_no_report(self):
         self.assertIsNone(eng.report_from_envelope(None))
         self.assertIsNone(eng.report_from_envelope("строка"))
