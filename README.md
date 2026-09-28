@@ -83,7 +83,7 @@ python3 -m pytest
 | [`13-findings-taxonomy.md`](13-findings-taxonomy.md) | Единая таксономия находок: severity/category вердикта, kind журнала, словарь панели/адъюдикатора, disposition goldset и отображения между поверхностями. |
 | [`tools/swarm/`](tools/swarm) | Реализация: CLI `swarm`, оркестратор, индексация кода (ctags/tree-sitter), JSON-схемы контрактов (`schemas/`), тесты (`pytest`). |
 | [`stands/`](stands) | Готовые стенды: эталонный `swarm.toml` и порядок развёртывания под конкретный репозиторий. Первый — [`stands/cod-doc/`](stands/cod-doc/README.md). |
-| [`experiments/adr/`](experiments/adr) | Принятые решения экспериментальной программы (Context → Варианты → Решение → Последствия). |
+| [`docs/adr/`](docs/adr) | ADR — проекции таблицы `adr` в БД cod-doc (канон, ADR-025). `experiments/adr/` — заглушки со старыми именами файлов, переадресуют туда же. |
 | `experiments/findings.jsonl` | Сырой журнал наблюдений по экспериментам (см. `.gitignore` — рабочие стенды в git не попадают, только выводы). |
 
 ## Статус
