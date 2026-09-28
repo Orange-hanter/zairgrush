@@ -76,7 +76,7 @@ python3 -m pytest
 | [`06-knowledge-infra-experiments.md`](06-knowledge-infra-experiments.md) | Программа экспериментов над знаниевой инфраструктурой: дублирующие варианты подсистем E1–E8, протокол findings/ADR, правила анти-зоопарка. |
 | [`07-experiments-journal.md`](07-experiments-journal.md) | Связный человекочитаемый журнал программы экспериментов. |
 | [`08-operators-guide.md`](08-operators-guide.md) | Руководство оператора: подготовка стенда, постановка задач, разбор блокировок. |
-| [`09-swarm-decomposition-plan.md`](09-swarm-decomposition-plan.md) | План декомпозиции крупных модулей `tools/swarm` (`cli.py`, `loop.py`, `memory.py`, `agents.py`) без смены публичного API. |
+| [`16-swarm-decomposition-plan.md`](16-swarm-decomposition-plan.md) | План декомпозиции крупных модулей `tools/swarm` (`cli.py`, `loop.py`, `memory.py`, `agents.py`) без смены публичного API. |
 | [`10-decision-briefs.md`](10-decision-briefs.md) | Брифы для решений «на утверждение» 05-документа: лёгкое ревью, пороги §9.1, таксономия §12 — данные программы и рекомендации. |
 | [`11-architecture-diagrams.md`](11-architecture-diagrams.md) | Архитектура в диаграммах (Mermaid): роли и состояние, конечный автомат задачи, цепочка гейтов раунда, учёт раундов, контракт вердикта, потоки контекста, эскалации, память. Документ на английском. |
 | [`12-pilot-journal.md`](12-pilot-journal.md) | Журнал пилота (PILOT-1 на ZeusLogic, Rust): секции 19, 19a–19e и таблица «Все прогоны», вынесенные из 07 с сохранением нумерации. |
