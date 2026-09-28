@@ -82,36 +82,27 @@ EXECUTOR_ALLOWED_TOOLS = "Read,Grep,Glob,Edit,Write,Bash"
 # остаётся единственной преградой — его список шире. clean/rm/revert/
 # cherry-pick однозначны у обоих: read-only форм у них нет, и у claude
 # они закрыты наравне с zcode.
-CLAUDE_DENIED_TOOLS = ",".join(
-    (
-        "Bash(git commit:*)",
-        "Bash(git push:*)",
-        "Bash(git reset:*)",
-        "Bash(git revert:*)",
-        "Bash(git rebase:*)",
-        "Bash(git merge:*)",
-        "Bash(git cherry-pick:*)",
-        "Bash(git checkout:*)",
-        "Bash(git stash:*)",
-        "Bash(git config:*)",
-        "Bash(git clean:*)",
-        "Bash(git rm:*)",
-    )
+#
+# Общая часть — одна база: копия в двух списках уже могла разъехаться
+# молча (тест держит, что каждая запись базы есть в обоих).
+_BASE_DENIED_TOOLS = (
+    "Bash(git commit:*)",
+    "Bash(git push:*)",
+    "Bash(git reset:*)",
+    "Bash(git revert:*)",
+    "Bash(git rebase:*)",
+    "Bash(git merge:*)",
+    "Bash(git cherry-pick:*)",
+    "Bash(git checkout:*)",
+    "Bash(git stash:*)",
+    "Bash(git config:*)",
+    "Bash(git clean:*)",
+    "Bash(git rm:*)",
 )
+CLAUDE_DENIED_TOOLS = ",".join(_BASE_DENIED_TOOLS)
 ZCODE_DENIED_TOOLS = ",".join(
     (
-        "Bash(git commit:*)",
-        "Bash(git push:*)",
-        "Bash(git reset:*)",
-        "Bash(git revert:*)",
-        "Bash(git rebase:*)",
-        "Bash(git merge:*)",
-        "Bash(git cherry-pick:*)",
-        "Bash(git checkout:*)",
-        "Bash(git stash:*)",
-        "Bash(git config:*)",
-        "Bash(git clean:*)",
-        "Bash(git rm:*)",
+        *_BASE_DENIED_TOOLS,
         "Bash(git branch:*)",
         "Bash(git tag:*)",
         # Обход префиксов: `git -C <dir> commit` и `git --git-dir=… commit`

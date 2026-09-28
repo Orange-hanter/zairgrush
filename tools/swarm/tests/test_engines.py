@@ -398,6 +398,18 @@ class TestDeniedCommands(unittest.TestCase):
     def test_no_envelope(self):
         self.assertEqual(eng.denied_commands(None), [])
 
+    def test_base_deny_list_is_in_both_engines(self):
+        """Общая база запретов обязана целиком стоять в обоих списках:
+        zcode = база + свои ведущие формы, а не отдельная копия."""
+        base = eng._BASE_DENIED_TOOLS
+        self.assertIn("Bash(git commit:*)", base)
+        self.assertIn("Bash(git push:*)", base)
+        claude = eng.CLAUDE_DENIED_TOOLS.split(",")
+        zcode = eng.ZCODE_DENIED_TOOLS.split(",")
+        for entry in base:
+            self.assertIn(entry, claude)
+            self.assertIn(entry, zcode)
+
 
 class TestRunKind(unittest.TestCase):
     def test_known_engines(self):
