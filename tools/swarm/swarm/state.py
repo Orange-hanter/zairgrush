@@ -167,7 +167,9 @@ class SwarmState:
         # существует, ПОКА фаза идёт, и исчезает, когда она кончилась.
         self.now_path = self.dir / "now.json"
         self._lock: IO[str] | None = None
-        self._mutating = False
+        # Владелец замка транзакции — id потока, а не флаг экземпляра:
+        # с флагом второй поток, делящий экземпляр, проходил мимо flock.
+        self._mutating_owner: int | None = None
         self._phases: list[dict[str, Any]] = []
 
     def _self_ignore(self, swarm_dir: str) -> None:
@@ -282,20 +284,23 @@ class SwarmState:
         Поэтому замок отдельный и короткий — на окно самой транзакции.
         Ждём, а не отказываем: окно — миллисекунды, и «идёт прогон —
         приходите позже» здесь было бы лекарством хуже болезни.
-        Реентерабелен в пределах экземпляра: вложенная транзакция уже
+        Реентерабелен в пределах ПОТОКА: вложенная транзакция уже
         под замком внешней, второй flock того же файла в том же процессе
-        был бы самоблокировкой.
+        был бы самоблокировкой. Другой поток на том же экземпляре обязан
+        ждать: flock в пределах процесса его не остановит (новый open —
+        новое описание файла, и оно ждёт), а флаг экземпляра пропускал.
         """
-        if self._mutating:
+        me = threading.get_ident()
+        if self._mutating_owner == me:
             yield
             return
         with self.write_lock_path.open("w") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
-            self._mutating = True
+            self._mutating_owner = me
             try:
                 yield
             finally:
-                self._mutating = False
+                self._mutating_owner = None
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
     # --- очередь задач ----------------------------------------------------
@@ -487,15 +492,20 @@ class SwarmState:
         `question_id` в tasks.json: очередь переживает потерю журнала, и
         новый вопрос не имеет права получить id, на который ещё ссылается
         живая задача.
+
+        Выбор id и запись — под замком транзакции, как в add_policy: без
+        него два писателя читали одно и то же и выдавали один qid.
         """
-        used = {str(q["qid"]) for q in self.questions()}
-        used |= {str(t["question_id"]) for t in self.load_tasks().get("tasks", [])
-                 if t.get("question_id")}
-        qid = self._next_id("q", used)
-        # поле называется qkind, а не kind: `kind` уже занят типом записи
-        # журнала, и передача обоих ломала вызов (поймано диагностикой)
-        self.log("question", qid=qid, task=task_id, qkind=kind,
-                 question=question, **context)
+        with self.mutate():
+            used = {str(q["qid"]) for q in self.questions()}
+            used |= {str(t["question_id"])
+                     for t in self.load_tasks().get("tasks", [])
+                     if t.get("question_id")}
+            qid = self._next_id("q", used)
+            # поле называется qkind, а не kind: `kind` уже занят типом записи
+            # журнала, и передача обоих ломала вызов (поймано диагностикой)
+            self.log("question", qid=qid, task=task_id, qkind=kind,
+                     question=question, **context)
         return qid
 
     def answer(self, qid: str, text: str,

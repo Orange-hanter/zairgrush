@@ -11,7 +11,9 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+import unittest.mock
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "swarm"
 spec = importlib.util.spec_from_file_location("cli", ROOT_DIR / "cli.py")
@@ -797,6 +799,82 @@ class TestRetryNoteDoesNotClobberDecisions(unittest.TestCase):
         src = inspect.getsource(cliexplain.cmd_retry)
         self.assertIn("record_decision", src)
         self.assertNotIn('task["human_answer"] = args.note', src)
+
+
+class TestConcurrentWrites(unittest.TestCase):
+    """Выдача id и замок транзакции обязаны держать гонку писателей."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        st_mod.SwarmState(self.root).save_tasks(
+            {"goal": "g", "tasks": []})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_concurrent_ask_distinct_qids(self):
+        """Два экземпляра на одном каталоге не делят один qid.
+
+        Патч _next_id сводит оба потока в точке после выбора id: без
+        замка оба успевают выбрать одно и то же; под замком второй ждёт
+        на flock, барьер рвётся по таймауту, и id выбирается уже после
+        записи первого.
+        """
+        orig = st_mod.SwarmState._next_id
+        barrier = threading.Barrier(2, timeout=0.5)
+
+        def slow_next_id(prefix, used):
+            qid = orig(prefix, used)
+            with contextlib.suppress(threading.BrokenBarrierError):
+                barrier.wait()
+            return qid
+
+        a, b = st_mod.SwarmState(self.root), st_mod.SwarmState(self.root)
+        out = []
+        with unittest.mock.patch.object(
+                st_mod.SwarmState, "_next_id", staticmethod(slow_next_id)):
+            ts = [threading.Thread(target=lambda s=s: out.append(
+                s.ask("t", "k", "?"))) for s in (a, b)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join(5)
+        self.assertEqual(len(out), 2)
+        self.assertNotEqual(out[0], out[1])
+
+    def test_mutate_blocks_other_thread_on_shared_instance(self):
+        """Реентерабельность — на поток, а не на экземпляр."""
+        st = st_mod.SwarmState(self.root)
+        held, release, entered = (threading.Event(), threading.Event(),
+                                  threading.Event())
+
+        def first():
+            # вложенность в том же потоке работает
+            with st.mutate(), st.mutate():
+                held.set()
+                release.wait(5)
+
+        def second():
+            held.wait(5)
+            with st.mutate():
+                entered.set()
+
+        t1 = threading.Thread(target=first)
+        t2 = threading.Thread(target=second)
+        t1.start()
+        t2.start()
+        try:
+            held.wait(5)
+            self.assertFalse(entered.wait(0.3),
+                             "второй поток вошёл, пока первый держит замок")
+        finally:
+            release.set()
+            t1.join(5)
+            t2.join(5)
+        self.assertTrue(entered.is_set())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
