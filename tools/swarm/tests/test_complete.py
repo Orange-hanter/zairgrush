@@ -337,6 +337,16 @@ class TestRegistry(StandCase):
         self.assertEqual(code, 0)
         self.assertIn(str(self.root.resolve()), registry.load())
 
+    def test_loop_taking_the_lock_registers_a_fresh_stand(self):
+        # Первый прогон в репозитории без `.swarm/`: отметка в cli.main
+        # его не видит, а искать через Tab будут именно его.
+        with tempfile.TemporaryDirectory() as d:
+            st = cli.state_mod.SwarmState(d)
+            self.assertNotIn(str(pathlib.Path(d).resolve()), registry.load())
+            st.acquire()
+            st.release()
+            self.assertIn(str(pathlib.Path(d).resolve()), registry.load())
+
     def test_plain_directory_is_not_registered(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertFalse(registry.touch(d))

@@ -38,6 +38,7 @@ if _HERE not in sys.path:
 
 import lockprobe  # noqa: E402 — каталог добавлен строкой выше
 import obs  # noqa: E402
+import registry  # noqa: E402
 
 log = obs.get_logger("state")
 
@@ -226,6 +227,13 @@ class SwarmState:
         self._lock.truncate()
         self._lock.write(f"{os.getpid()}\n")
         self._lock.flush()
+        # Стенд — в реестр для `--root <Tab>` именно здесь: первый
+        # `swarm go` в свежем репозитории стартует без `.swarm/`, и отметка
+        # в cli.main его пропускает — ровно тот прогон, который ищут.
+        try:
+            registry.touch(self.root)
+        except Exception:  # граница деградации: подсказка не роняет прогон
+            log.exception("реестр стендов не обновлён")
 
     def release(self) -> None:
         if self._lock:
