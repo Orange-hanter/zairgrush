@@ -51,7 +51,7 @@ graph TD
 
 > Планы и задачи живут в cod-doc DB (`.cod-doc/state.db`): `cod-doc plan show <scope> -p zairgrush`, `cod-doc task list -p zairgrush`. MCP-конфиги `.cursor/mcp.json` / `.kimi-code/mcp.json` содержат machine-local абсолютные пути — не переносимы между машинами.
 >
-> ADR (ADR-025): каноникал — таблица `adr` в cod-doc DB (`cod-doc adr list -p zairgrush`); `docs/adr/ADR-NNN.md` — генерируемые проекции (`cod-doc adr export`), руками не править; `experiments/adr/` — исторические оригиналы. `cod-doc import docs` запускать с `--exclude 'docs/adr'`.
+> ADR (ADR-025): каноникал — таблица `adr` в cod-doc DB (`cod-doc adr list -p zairgrush`); `docs/adr/ADR-NNN.md` — генерируемые проекции (`cod-doc adr export`), руками не править; `experiments/adr/NNN-*.md` — заглушки-переадресации на канон (прозаические оригиналы — в истории git). `cod-doc import docs` запускать с `--exclude 'docs/adr'`.
 
 ```json
 {
