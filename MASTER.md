@@ -25,13 +25,13 @@ graph TD
 
 ### Specifications
 - **Описание:** Спецификации API, контракты агентов, форматы данных и протоколы взаимодействия.
-- **Ссылка:** `📁 /specs/README.md | 🗃️ doc:specs_README_md | 🔑 sha:cfada21718c2`
+- **Ссылка:** `📁 /specs/README.md | 🗃️ doc:specs_README_md | 🔑 sha:71c8bdd9a967`
 - **Статус:** `🟢 VERIFIED`
 - **Ответственный агент:** `@Orchestrator`
 
 ### Architecture
 - **Описание:** Архитектурные решения, диаграммы компонентов и ADR проекта.
-- **Ссылка:** `📁 /arch/README.md | 🗃️ doc:arch_README_md | 🔑 sha:efc730678e0a`
+- **Ссылка:** `📁 /arch/README.md | 🗃️ doc:arch_README_md | 🔑 sha:d1f02473b7a4`
 - **Статус:** `🟢 VERIFIED`
 - **Ответственный агент:** `@Orchestrator`
 
