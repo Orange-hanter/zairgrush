@@ -180,6 +180,8 @@ class TestEveryEmittedKindIsNamed(unittest.TestCase):
         "memory_synced", "quota_resume", "round_futile",
         "executor_denied", "verdict_salvaged", "futile_exhausted",
         "tests_authored", "tests_not_authored", "agent_gave_up",
+        "review_deferred", "review_immediate", "batch_review",
+        "batch_review_failed", "batch_fix_created",
     ]
 
     def test_every_emitted_kind_has_a_russian_name(self):

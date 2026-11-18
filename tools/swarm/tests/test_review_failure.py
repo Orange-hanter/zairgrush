@@ -505,6 +505,28 @@ class TestBudgetExhausted(RepoCase):
             "размер посчитан по свёрнутому диффу — крупные занижены")
         self.assertGreaterEqual(rows[-1]["diff_files"], 1)
 
+    def test_batch_diff_replaces_the_work_tree(self):
+        """Пакетное ревью (§5.8) судит закоммиченную работу: дифф приходит
+        параметром, рабочее дерево чистое и к пакету отношения не имеет.
+        Ревьюеру пакета нужен `git show` — разобрать вклад задачи по её
+        коммиту; обычному ревью набор инструментов не расширяется."""
+        batch = ("diff --git a/pkg.py b/pkg.py\n--- a/pkg.py\n+++ b/pkg.py\n"
+                 "@@ -0,0 +1,3 @@\n+a\n+b\n+c\n")
+        agents = self._agents([{"structured_output": VALID,
+                                "total_cost_usd": 0.5}])
+        agents.review(dict(self.TASK), "OK", 1, diff=batch)
+        self.assertEqual(len(self.calls), 1, [c[-12:] for c in self.calls])
+        rows = self._review_rows()
+        self.assertEqual((rows[-1]["diff_files"], rows[-1]["diff_lines"]),
+                         (1, 3), "ревью мерило рабочее дерево, а не пакет")
+        tools = self.calls[-1][self.calls[-1].index("--allowedTools") + 1]
+        self.assertIn("git show", tools)
+        (self.root / "mod.py").write_text("x = 2\n")
+        agents.review(dict(self.TASK), "OK", 2)
+        self.assertEqual(len(self.calls), 2)
+        tools = self.calls[-1][self.calls[-1].index("--allowedTools") + 1]
+        self.assertNotIn("git show", tools)
+
     def test_metric_row_carries_severity_split(self):
         """Три minor и три blocker в строке метрик выглядели одинаково."""
         verdict = {"verdict": "request_changes",

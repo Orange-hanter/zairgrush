@@ -216,11 +216,18 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
            attempt: int = 1,
            verify_results: list[dict[str, Any]] | None = None,
            confirming: bool = False,
-           retry_note: str = "") -> dict[str, Any] | None:
+           retry_note: str = "",
+           diff: str | None = None) -> dict[str, Any] | None:
     # Голый `git diff` не показывает созданные файлы: ревьюер получал
     # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
     # в историю. Единый источник — state.work_diff (intent-to-add).
-    raw_diff = agents.work_diff()
+    # Пакетное ревью (§5.8) судит уже закоммиченную работу: его дифф
+    # собран по коммитам пакета (batchreview.batch_diff), и рабочее
+    # дерево к нему отношения не имеет. Своё имя, а не `diff`: строкой
+    # ниже `diff` переприсваивается свёрнутым диффом, и проверка
+    # «пакет ли это» по нему была бы истинной для любого ревью.
+    batch_diff = diff
+    raw_diff = agents.work_diff() if batch_diff is None else batch_diff
     diff = parsing_mod.condense_diff(raw_diff)
     diff_files, diff_lines = parsing_mod.diff_size(raw_diff)
     # NXT-012: гигант исключается ДО триажа — дифф за порогом не уходит
@@ -332,7 +339,13 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
         "--output-format", "stream-json", "--verbose",
         "--include-partial-messages",
         "--json-schema", schema,
-        "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)",
+        # Пакету — ещё `git show`/`git log`: дифф пакета склеен из
+        # нескольких коммитов, и разобрать вклад задачи ревьюер может
+        # только по её коммиту. Обычному ревью они не нужны, и его
+        # набор инструментов не меняется.
+        "--allowedTools", "Read,Grep,Glob,Bash(git diff:*)" + (
+            ",Bash(git show:*),Bash(git log:*)" if batch_diff is not None
+            else ""),
         # Потолок вызова — политика денег, а не деталь argv ревьюера.
         # Умолчание $1 жило здесь и срабатывало: «ревьюер обрублен по
         # бюджету» — штатный диагноз петли. В режиме money_bin флага
@@ -469,7 +482,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
         return review(agents, task, gate_tail, iteration, attempt=2,
                            verify_results=verify_results,
                            confirming=confirming,
-                           retry_note=str(problem))
+                           retry_note=str(problem), diff=batch_diff)
     if not valid or verdict is None:
         # Диагноз — причина, а не факт: «убит по тишине» и «ответ не
         # прошёл схему» лечатся по-разному, и оператору отдаётся то,
@@ -520,7 +533,7 @@ def review(agents: AgentsLike, task: dict[str, Any], gate_tail: str, iteration: 
                                        if r.get("status") == "rejected"))
         confirmed = review(agents, task, gate_tail, iteration,
                                 verify_results=vf.format_results(results),
-                                confirming=confirming)
+                                confirming=confirming, diff=batch_diff)
         # Верификация — УЛУЧШЕНИЕ вердикта, а не условие его силы. Если
         # второй проход не удался (бюджет, квота, невалидный ответ),
         # возвращаем первый — он был полноценным и за него уплачено.

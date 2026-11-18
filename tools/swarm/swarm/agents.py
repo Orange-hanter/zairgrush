@@ -198,7 +198,8 @@ class Agents:
     def review(self, task: dict[str, Any], gate_tail: str, iteration: int,
                attempt: int = 1,
                verify_results: list[dict[str, Any]] | None = None,
-               confirming: bool = False) -> dict[str, Any] | None:
+               confirming: bool = False,
+               diff: str | None = None) -> dict[str, Any] | None:
         # Голый `git diff` не показывает созданные файлы: ревьюер получал
         # пустоту и мог одобрить её, а `git add -A` вносил непроверенное
         # в историю. Единый источник — state.work_diff (intent-to-add).
@@ -208,7 +209,7 @@ class Agents:
         with self.state.phase("review", task["id"], iter=iteration,
                               attempt=attempt, confirming=confirming):
             return reviewer.review(self, task, gate_tail, iteration, attempt,
-                                   verify_results, confirming)
+                                   verify_results, confirming, diff=diff)
 
     # --- хелперы ----------------------------------------------------------
 

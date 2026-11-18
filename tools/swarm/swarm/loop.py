@@ -30,6 +30,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import ambient  # noqa: E402 — каталог добавлен строкой выше
+import batchreview  # noqa: E402
 import board  # noqa: E402
 import duel  # noqa: E402
 import engines  # noqa: E402 — константы движков/плеч, кругов импорта нет
@@ -157,6 +158,8 @@ class Loop:
         self.gate_green: str | None = None
         self.gate_green_tail = ""
         self.live_board = bool(config.get("live_board", False))
+        # Пакеты, уже смотренные в этом прогоне (§5.8): майлстоун + состав.
+        self._batch_tried: set[tuple[str, tuple[str, ...]]] = set()
 
     # --- механические шаги ------------------------------------------------
 
@@ -1044,6 +1047,21 @@ class Loop:
                     }
                     continue
 
+            # Пакетный режим (§5.8): задача без риска закрывается без
+            # ревью и ждёт одного ревью на весь майлстоун. Подтверждающий
+            # раунд сюда не доходит: он бывает только после вердикта, а
+            # отложенная задача вердикта не получает вовсе.
+            if not was_confirmation and batchreview.enabled(self.config):
+                why_now = batchreview.immediate_reason(
+                    self.config, task, self.state.work_diff()
+                )
+                if why_now is None:
+                    return self._defer_review(task, iteration, report)
+                if why_now not in ("no_milestone", "mode"):
+                    self.state.log(
+                        "review_immediate", task=tid, round=iteration, why=why_now
+                    )
+
             verdict = self._review_with_quota_wait(
                 task, tail, iteration, was_confirmation
             )
@@ -1380,6 +1398,93 @@ class Loop:
         self.ui(f"    эскалация [{qid}]: {diagnosis}")
         return "blocked"
 
+    def _defer_review(
+        self, task: dict[str, Any], iteration: int, report: dict[str, Any]
+    ) -> str:
+        """Закрыть задачу без ревью: коммит, done, пометка пакета (§5.8).
+
+        Пустой дифф пометки не получает — пакету в нём судить нечего, и
+        ждать ревью такой задаче незачем.
+        """
+        tid = task["id"]
+        with self.state.step(tid, "commit", head=self.head_before) as step:
+            sha = self.commit(task)
+            step.result(commit=sha)
+        milestone = str(task["milestone"])
+        self.state.set_status(
+            tid,
+            "done",
+            iterations=iteration,
+            commit=sha,
+            exit_code=EXIT_OK,
+            no_change_needed=report.get("status") == "no_change_needed",
+            **({"review_pending": milestone} if sha else {}),
+        )
+        self.state.log(
+            "review_deferred", task=tid, round=iteration, milestone=milestone,
+            commit=sha,
+        )
+        self.ui(
+            f"    done (итерация {iteration}), ревью — пакетом "
+            f"майлстоуна {milestone}"
+        )
+        return "done"
+
+    def _batch_reviews(self, milestones: list[str], force: bool) -> bool:
+        """Пакетные ревью созревших майлстоунов; True — появилась работа.
+
+        Созрел — в майлстоуне нет незакрытой работы либо дифф пакета
+        перерос `batch_max_lines` (внимание ревьюера на длинном диффе
+        падает, а порог гиганта NXT-012 снял бы ревью вовсе). `force` —
+        конец очереди: ждать больше нечего, смотрим всё отложенное.
+        Один пакет (майлстоун + состав задач) — одна попытка на прогон:
+        несостоявшееся ревью повторяется следующим `go`, а не по кругу.
+        """
+        created = False
+        cap = int(self.config.get("batch_max_lines", batchreview.DEFAULT_MAX_LINES))
+        for milestone in milestones:
+            data = self.state.load_tasks()
+            tasks = batchreview.pending(data, milestone)
+            if not tasks:
+                continue
+            key = (milestone, tuple(sorted(str(t["id"]) for t in tasks)))
+            if key in self._batch_tried:
+                continue
+            if (not force and batchreview.work_open(data, milestone)
+                    and batchreview.diff_lines(self, tasks) < cap):
+                continue
+            self._batch_tried.add(key)
+            try:
+                outcome = batchreview.review(self, milestone)
+            except spending.BudgetExhaustedError as e:
+                # Потолок прогона пробит: пакеты ждут следующего `go` с
+                # поднятым бюджетом, пометки ожидания на задачах целы.
+                self.state.log(
+                    "batch_review_failed", milestone=milestone,
+                    tasks=list(key[1]), why="budget_exhausted",
+                    spent=e.spent, budget=e.budget,
+                )
+                self.ui(f"    ПАКЕТ {milestone}: бюджет исчерпан — ревью "
+                        f"отложено до следующего прогона")
+                return created
+            except Exception as e:
+                # Квота — штатная пауза прогона, её путь наверх тот же,
+                # что у ревью задачи (cli: код 4); пометки ожидания на
+                # задачах остаются, и следующий прогон возьмёт пакет.
+                if quota_exception(e):
+                    raise
+                log.exception("пакетное ревью упало",
+                              extra={"swarm_task": f"batch:{milestone}"})
+                self.state.log(
+                    "batch_review_failed", milestone=milestone,
+                    tasks=list(key[1]), why=f"{type(e).__name__}: {e}"[:300],
+                )
+                continue
+            finally:
+                self.refresh_board()
+            created = created or outcome == "fixes"
+        return created
+
     def run(self, limit: int | None = None) -> dict[str, str]:
         results: dict[str, str] = {}
         # Операторская грязь фиксируется на уровне ПРОГОНА, не только
@@ -1397,9 +1502,19 @@ class Loop:
         # Доска должна существовать с первой секунды прогона, а не с
         # первого раунда: открыть её человек хочет сразу.
         self.refresh_board()
+        batch = batchreview.enabled(self.config)
+        self._batch_tried = set()
         while True:
             ready = self.state.ready_tasks()
             if not ready:
+                # Конец очереди — последний шанс для отложенных пакетов:
+                # дальше их никто не дождётся. Задачи-исправления,
+                # заведённые ревью, возвращают петлю в очередь.
+                if batch and self._batch_reviews(
+                    batchreview.pending_milestones(self.state.load_tasks()),
+                    force=True,
+                ):
+                    continue
                 break
             task = ready[0]
             # Бюджет прогона — деньги владельца, а не абстракция: петля
@@ -1491,6 +1606,8 @@ class Loop:
                 # бы её снова, и петля кружила бы по «исчерпано» вечно.
                 results["_budget"] = "exhausted"
                 break
+            if batch and task.get("milestone"):
+                self._batch_reviews([str(task["milestone"])], force=False)
             if limit and len(results) >= limit:
                 break
         if results:

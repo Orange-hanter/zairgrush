@@ -1314,6 +1314,15 @@ class TestStatusSpeaksHuman(CliCase):
         self.assertIn("вердикт не разобран", out)
         self.assertNotIn("invalid_verdict", out)
 
+    def test_unreviewed_batch_work_is_called_out(self):
+        """Пакетный режим (§5.8): задача закрыта без ревью — status обязан
+        это сказать, иначе «готово» читается как «проверено»."""
+        self.state.set_status("aaaa", "done", commit="abc1234",
+                              review_pending="M1")
+        _, out = run_cli("--root", str(self.root), "status")
+        self.assertIn("без ревью, ждёт пакета M1", out)
+        self.assertIn("ЖДУТ ПАКЕТНОГО РЕВЬЮ (1)", out)
+
     def test_status_bucket_is_translated(self):
         _, out = run_cli("--root", str(self.root), "status")
         self.assertIn("в очереди (2)", out)
