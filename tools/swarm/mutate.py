@@ -37,10 +37,10 @@ MUTATIONS = [
     # --- размер диффа и тяжесть находок в строке метрик ---
     ("метрика: размер диффа считается по свёрнутому, а не по сырому",
      "swarm/reviewer.py",
-     """    raw_diff = agents.work_diff()
+     """    raw_diff = agents.work_diff() if batch_diff is None else batch_diff
     diff = parsing_mod.condense_diff(raw_diff)
     diff_files, diff_lines = parsing_mod.diff_size(raw_diff)""",
-     """    raw_diff = agents.work_diff()
+     """    raw_diff = agents.work_diff() if batch_diff is None else batch_diff
     diff = parsing_mod.condense_diff(raw_diff)
     diff_files, diff_lines = parsing_mod.diff_size(diff)""",
      "test_review_failure"),
@@ -376,8 +376,8 @@ MUTATIONS = [
     (
         "вердикт: повтор уходит без причины отказа",
         "swarm/reviewer.py",
-        "                           retry_note=str(problem))",
-        '                           retry_note="")',
+        "                           retry_note=str(problem), diff=batch_diff)",
+        '                           retry_note="", diff=batch_diff)',
         "test_review_failure",
     ),
     (
@@ -652,6 +652,65 @@ MUTATIONS = [
      "    dyn = DYNAMIC.get((path, a.dest))",
      "    dyn = None",
      "test_complete"),
+    # --- пакетное ревью по майлстоуну (§5.8) ---
+    ("пакет: задача без риска всё равно зовёт ревьюера",
+     "swarm/loop.py",
+     ("                if why_now is None:\n"
+      "                    return self._defer_review(task, iteration, report)"),
+     ("                if why_now is None and False:\n"
+      "                    return self._defer_review(task, iteration, report)"),
+     "test_batchreview"),
+    ("пакет: новая зависимость уходит в пакет без немедленного ревью",
+     "swarm/batchreview.py",
+     "    if any(triage.is_dep_manifest(p) for p in paths):",
+     "    if False:",
+     "test_batchreview"),
+    ("пакет: незакрытая работа майлстоуна не держит ревью",
+     "swarm/loop.py",
+     "            if (not force and batchreview.work_open(data, milestone)",
+     "            if (False and batchreview.work_open(data, milestone)",
+     "test_batchreview"),
+    ("пакет: сорвавшийся пакет повторяется в том же прогоне",
+     "swarm/loop.py",
+     "            if key in self._batch_tried:\n                continue",
+     "            if False:\n                continue",
+     "test_batchreview"),
+    ("пакет: поле task ревьюера не читается при разнесении находок",
+     "swarm/batchreview.py",
+     '        tid = str(f.get("task") or "")',
+     '        tid = ""',
+     "test_batchreview"),
+    ("пакет: исправление не получает файлов, названных находками",
+     "swarm/batchreview.py",
+     "            paths.append(p)\n    title =",
+     "            pass\n    title =",
+     "test_batchreview"),
+    ("пакет: задачи без находок остаются в ожидании ревью",
+     "swarm/batchreview.py",
+     '    _close(loop, clean, milestone, "approve")',
+     "    pass",
+     "test_batchreview"),
+    ("пакет: находка о замысле уходит исполнителю, а не человеку",
+     "swarm/batchreview.py",
+     "            if blocked or intent:",
+     "            if blocked:",
+     "test_batchreview"),
+    ("пакет: проверки закрывающей задачи теряются в пакете",
+     "swarm/batchreview.py",
+     '    closing = any(t.get("milestone_close") for t in tasks)',
+     "    closing = False",
+     "test_batchreview"),
+    ("пакет: status молчит о закоммиченной работе без ревью",
+     "swarm/cliexplain.py",
+     ('    unreviewed = [t for t in by_status.get("done", []) '
+      'if t.get("review_pending")]'),
+     "    unreviewed: list[dict[str, Any]] = []",
+     "test_cli"),
+    ("пакет: ревьюер судит рабочее дерево вместо диффа пакета",
+     "swarm/reviewer.py",
+     "    raw_diff = agents.work_diff() if batch_diff is None else batch_diff",
+     "    raw_diff = agents.work_diff()",
+     "test_review_failure"),
 ]
 
 

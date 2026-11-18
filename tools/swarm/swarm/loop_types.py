@@ -31,6 +31,9 @@ class LoopLike(Protocol):
             timeout: float = 900) -> subprocess.CompletedProcess[str]:
         ...
 
+    def gate(self, task: dict[str, Any]) -> tuple[bool, str]:
+        ...
+
     def state_fingerprint(self) -> str | None:
         ...
 

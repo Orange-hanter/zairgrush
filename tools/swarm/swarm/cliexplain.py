@@ -51,6 +51,8 @@ def cmd_status(args: argparse.Namespace) -> int:
                 extra.append(f"stash {t['stash']}")
             if t.get("commit"):
                 extra.append(t["commit"])
+            if t.get("review_pending"):
+                extra.append(f"без ревью, ждёт пакета {t['review_pending']}")
             tail = f"  [{', '.join(extra)}]" if extra else ""
             print(f"  {t.get('id') or '(без id)'}  "
                   f"{str(t.get('title') or '')[:60]}{tail}")
@@ -69,6 +71,15 @@ def cmd_status(args: argparse.Namespace) -> int:
                   f"  [статус {t.get('status')!r}]")
         for b in broken:
             print(f"  (запись не разобрана: {str(b)[:60]})")
+
+    # Пакетный режим (§5.8): закоммиченная, но ещё не смотренная работа.
+    # Петля не пушит — выкладывает человек, и эта строка единственное,
+    # что отделяет «закрыто» от «закрыто и проверено».
+    unreviewed = [t for t in by_status.get("done", []) if t.get("review_pending")]
+    if unreviewed:
+        milestones = sorted({str(t["review_pending"]) for t in unreviewed})
+        print(f"\nЖДУТ ПАКЕТНОГО РЕВЬЮ ({len(unreviewed)}) — закоммичены без "
+              f"ревью, выкладывать рано: {', '.join(milestones)}")
 
     policies = st.policies()
     if policies:
